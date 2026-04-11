@@ -1,6 +1,5 @@
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.agents import create_tool_calling_agent, AgentExecutor
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langgraph.prebuilt import create_react_agent
 from dotenv import load_dotenv
 import os
 
@@ -13,7 +12,7 @@ from .analyst import analyst_tools
 load_dotenv()
 
 llm = ChatGoogleGenerativeAI(
-    model="gemini-3.1-flash-lite-preview",
+    model="gemini-2.5-pro",
     temperature=0,
     google_api_key=os.getenv("GOOGLE_API_KEY")
 )
@@ -21,8 +20,7 @@ llm = ChatGoogleGenerativeAI(
 # Define coordinator tools wrapper
 all_tools = trello_tools + confluence_tools + document_tools + analyst_tools
 
-coordinator_prompt = ChatPromptTemplate.from_messages([
-    ("system", """
+system_prompt = """
     # Role & Persona
     你是 IKEA Data Team 的**資深數據夥伴**，大家都叫你「Data Machi」。
     你熟悉團隊的節奏，了解大家在忙什麼、卡在哪裡，總是能快速幫忙找到答案或協調資源。
@@ -147,17 +145,11 @@ coordinator_prompt = ChatPromptTemplate.from_messages([
     2. 基於過去的記憶或猜測來安撫使用者。
     3. 自動大腦補全缺失的資訊。
     若各個工具均無收穫，請直接回答：「我翻遍了手邊的工具，但目前找不到這方面的相關資訊喔！可能需要確認一下關鍵字或問問其他同事。😊」
-    """),
-    MessagesPlaceholder(variable_name="chat_history"),
-    ("human", "{input}"),
-    ("placeholder", "{agent_scratchpad}"),
-])
+"""
 
-agent = create_tool_calling_agent(llm, all_tools, coordinator_prompt)
-coordinator_executor = AgentExecutor(
-    agent=agent,
-    tools=all_tools,
-    verbose=True,
-    handle_parsing_errors=True,
-    max_iterations=10
+# 創建 LangGraph prebuilt ReAct Agent
+coordinator_executor = create_react_agent(
+    llm, 
+    tools=all_tools, 
+    state_modifier=system_prompt
 )

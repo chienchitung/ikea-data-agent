@@ -3,16 +3,22 @@ from agents.coordinator import coordinator_executor
 
 def process_chat(message: str, chat_history: list) -> str:
     """
-    Process the chat message using the Coordinator Agent.
+    Process the chat message using the LangGraph Coordinator Agent.
     """
     try:
-        response = coordinator_executor.invoke({
-            "input": message,
-            "chat_history": chat_history
+        # Build messages payload for langgraph
+        messages = chat_history + [HumanMessage(content=message)]
+        
+        # Invoke the prebuilt react agent
+        response_state = coordinator_executor.invoke({
+            "messages": messages
         })
         
-        # 修正輸出格式：從回應中提取純文字內容 (matching notebook logic)
-        agent_response_raw = response["output"]
+        # Get the last message from the state
+        last_message = response_state["messages"][-1]
+        
+        # The content can be string or list (e.g. text blocks)
+        agent_response_raw = last_message.content
         agent_response_parts = []
         
         if isinstance(agent_response_raw, list):
