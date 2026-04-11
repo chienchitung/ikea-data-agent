@@ -12,3 +12,4 @@ faiss-cpu
 gspread
 pandas
 oauth2client
+python-multipart
