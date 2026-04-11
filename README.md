@@ -99,6 +99,7 @@
 本專案已包含好 `render.yaml` 藍圖設定檔。
 1. 註冊並登入 [Render](https://render.com/)，在 Dashboard 選擇 **Blueprints** 並綁定你的 GitHub 專案。
 2. Render 會自動讀取 `render.yaml` 建立名為 `ikea-data-agent-backend` 的服務。
+   - *(備註：若你不是使用 Blueprint，而是手動建立 Web Service，請確保填寫 Build Command 為 `cd backend && pip install -r requirements.txt`，Start Command 為 `cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT`)*
 3. 在 Render 控制台把所有的環境變數 (Environment Variables，如 `GOOGLE_API_KEY`、`.json` 的金鑰內容等) 填寫完成。
 4. 部署完成後，會得到一串網址（如：`https://ikea-data-agent-backend.onrender.com`），請把這串網址複製備用。
 
