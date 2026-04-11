@@ -13,7 +13,7 @@ from .analyst import analyst_tools
 load_dotenv()
 
 llm = ChatGoogleGenerativeAI(
-    model="gemini-3.1-flash-lite",
+    model="gemini-3.1-flash-lite-preview",
     temperature=0,
     google_api_key=os.getenv("GOOGLE_API_KEY")
 )
