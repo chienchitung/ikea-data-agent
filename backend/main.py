@@ -65,10 +65,8 @@ async def upload_file(file: UploadFile = File(...)):
         if not file.filename.endswith('.pdf'):
             raise HTTPException(status_code=400, detail="Only PDF files are allowed")
             
-        # Save file to backend directory
-        file_location = f"backend/{file.filename}"
-        # Ensure directory exists (though backend/ should exist)
-        os.makedirs("backend", exist_ok=True)
+        # Save file to current directory (which is 'backend' folder)
+        file_location = file.filename
             
         with open(file_location, "wb+") as buffer:
             shutil.copyfileobj(file.file, buffer)
