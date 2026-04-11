@@ -1,0 +1,26 @@
+services:
+  # 後端 FastAPI 部署設定
+  - type: web
+    name: ikea-data-agent-backend
+    env: python
+    buildCommand: "cd backend && pip install -r requirements.txt"
+    startCommand: "cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.9.6
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: TRELLO_BOARD_ID
+        sync: false
+      - key: TRELLO_API_KEY
+        sync: false
+      - key: TRELLO_TOKEN
+        sync: false
+      - key: CONFLUENCE_URL
+        sync: false
+      - key: CONFLUENCE_USERNAME
+        sync: false
+      - key: CONFLUENCE_API_TOKEN
+        sync: false
+      - key: GOOGLE_SHEET_KEY
+        sync: false

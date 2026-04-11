@@ -8,7 +8,7 @@ import monkeyAvatar from './assets/img/ikea-monkey.png';
 import sharkAvatar from './assets/img/ikea-shark.png';
 import teddyAvatar from './assets/img/ikea-teddy.png';
 
-const API_URL = "http://localhost:8000";
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 const AVATARS = [
     { id: 'bear', name: 'Bear', src: bearAvatar },
