@@ -1,4 +1,5 @@
 import os
+import re
 import gspread
 import pandas as pd
 from oauth2client.service_account import ServiceAccountCredentials
@@ -23,17 +24,37 @@ def get_gspread_client():
     keyfiles = glob.glob("*.json") + glob.glob("backend/*.json")
     # Filter out package*.json
     keyfiles = [f for f in keyfiles if "package" not in f and "lock" not in f]
-    
+
     if not keyfiles:
         raise FileNotFoundError("找不到 Google Service Account JSON 金鑰檔案")
 
     json_keyfile = keyfiles[0]
-    
-    scope = ['https://spreadsheets.google.com/feeds', 
+
+    scope = ['https://spreadsheets.google.com/feeds',
              'https://www.googleapis.com/auth/drive']
     creds = ServiceAccountCredentials.from_json_keyfile_name(json_keyfile, scope)
     gc = gspread.authorize(creds)
     return gc
+
+
+def get_all_records_safe(worksheet) -> list:
+    """
+    使用 get_all_values() 取代 get_all_records()，
+    避免 gspread 遇到空白列就停止讀取的已知問題。
+    """
+    values = worksheet.get_all_values()
+    if not values or len(values) < 2:
+        return []
+    headers = values[0]
+    records = []
+    for row in values[1:]:
+        # 補齊欄位長度（有些列可能比 header 短）
+        padded = row + [''] * (len(headers) - len(row))
+        # 跳過整列都是空白的資料列
+        if not any(str(v).strip() for v in padded):
+            continue
+        records.append(dict(zip(headers, padded)))
+    return records
 
 # 嘗試預先檢查憑證是否存在 (for logs)
 try:
@@ -75,7 +96,7 @@ def get_worksheet_structure(worksheet_name: str) -> str:
         spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
         worksheet = spreadsheet.worksheet(worksheet_name)
         
-        all_records = worksheet.get_all_records()
+        all_records = get_all_records_safe(worksheet)
         _cached_data[worksheet_name] = all_records  # 緩存數據
         
         if not all_records:
@@ -102,169 +123,182 @@ def get_worksheet_structure(worksheet_name: str) -> str:
     except Exception as e:
         return f"讀取工作表結構時發生錯誤: {str(e)}"
 
+def _drop_empty_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """移除完全空白或全為空字串的欄位"""
+    return df.loc[:, df.apply(lambda col: col.replace('', pd.NA).notna().any())]
+
+
+def _detect_date_columns(df: pd.DataFrame) -> list:
+    """找出所有日期相關欄位並轉換為 datetime"""
+    date_keywords = ['date', '日期', 'start', 'due', 'end', '起始', '結束', 'time', '時間']
+    date_cols = [col for col in df.columns if any(k in col.lower() for k in date_keywords)]
+    for col in date_cols:
+        df[col] = pd.to_datetime(df[col], errors='coerce')
+    return date_cols
+
+
+def _extract_date_range(query: str):
+    """從查詢字串中嘗試解析日期區間，回傳 (start, end) 或 (None, None)"""
+    # 支援 YYYY-MM、YYYY/MM、YYYY年MM月 等格式
+    patterns = [
+        r'(\d{4})[-/年](\d{1,2})[-/月]?\s*(?:到|~|至|-)\s*(\d{4})[-/年](\d{1,2})',  # 2025-01 到 2025-06
+        r'(\d{4})[-/年](\d{1,2})',  # 單一年月（當作該月份）
+    ]
+    match = re.search(patterns[0], query)
+    if match:
+        y1, m1, y2, m2 = match.groups()
+        start = pd.Timestamp(f"{y1}-{int(m1):02d}-01")
+        end = pd.Timestamp(f"{y2}-{int(m2):02d}-01") + pd.offsets.MonthEnd(1)
+        return start, end
+    match = re.search(patterns[1], query)
+    if match:
+        y, m = match.groups()
+        start = pd.Timestamp(f"{y}-{int(m):02d}-01")
+        end = start + pd.offsets.MonthEnd(1)
+        return start, end
+    return None, None
+
+
+def _to_markdown_table(df: pd.DataFrame) -> str:
+    """將 DataFrame 轉為 Markdown 表格字串"""
+    df = df.copy()
+    # 將 datetime 欄位格式化為日期字串
+    for col in df.columns:
+        if pd.api.types.is_datetime64_any_dtype(df[col]):
+            df[col] = df[col].dt.strftime('%Y-%m-%d').fillna('N/A')
+        else:
+            df[col] = df[col].astype(str).replace('nan', '').replace('NaT', '')
+
+    header = '| ' + ' | '.join(df.columns) + ' |'
+    separator = '| ' + ' | '.join(['---'] * len(df.columns)) + ' |'
+    rows = ['| ' + ' | '.join(str(v) for v in row) + ' |' for _, row in df.iterrows()]
+    return '\n'.join([header, separator] + rows)
+
+
 @tool
 def query_worksheet_data(worksheet_name: str, query_description: str) -> str:
     """
     根據查詢需求從指定工作表中檢索和分析資料。
     此工具可以執行複雜的資料分析，包括：
     - 統計數量（有多少筆資料、某狀態有幾筆等）
-    - 篩選資料（找出符合特定條件的記錄）
-    - 計算平均值、總和等統計指標
-    - 日期計算（例如：計算起始日期到結束日期的平均天數）
-    - 資料分組與摘要
-    
+    - 依日期區間篩選資料（例如：2025年1月到6月）
+    - 依關鍵字篩選（專案名稱、狀態、負責人等）
+    - 計算平均值、總和、處理天數等統計指標
+    - 專案內容摘要整理
+
     參數:
     - worksheet_name: 工作表的名稱
-    - query_description: 詳細描述要查詢的內容
+    - query_description: 詳細描述要查詢的內容（可包含日期區間、關鍵字、分析需求）
+      重要：若查詢包含相對時間詞彙（如「今年」、「去年」、「上半年」、「本季」等），
+      請先將其轉換為明確的日期區間再傳入，例如「今年」→「2026年1月到12月」。
     """
     try:
-        # 先檢查緩存
+        # 讀取資料（含緩存）
         if worksheet_name not in _cached_data:
             gc = get_gspread_client()
             spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
             worksheet = spreadsheet.worksheet(worksheet_name)
-            all_records = worksheet.get_all_records()
+            all_records = get_all_records_safe(worksheet)
             _cached_data[worksheet_name] = all_records
         else:
             all_records = _cached_data[worksheet_name]
-        
+
         if not all_records:
             return f"工作表 '{worksheet_name}' 中沒有資料。"
-        
-        # 將資料轉換為 DataFrame
-        df = pd.DataFrame(all_records)
-        
-        result = f"針對工作表 '{worksheet_name}' 的查詢結果：\n\n"
-        result += f"總資料筆數: {len(df)}\n\n"
-        
-        # 智能分析查詢意圖
-        query_lower = query_description.lower()
-        
-        # 檢查是否需要進行時間計算
-        if any(keyword in query_lower for keyword in ['平均', 'average', '天數', 'days', '時間', 'time', '花費']):
-            # 嘗試找到日期相關欄位
-            date_columns = [col for col in df.columns if any(x in col.lower() for x in ['date', '日期', 'start', 'due', '起始', '結束'])]
-            
-            if len(date_columns) >= 2:
-                # 轉換日期欄位
-                for col in date_columns:
-                    try:
-                        df[col] = pd.to_datetime(df[col], errors='coerce')
-                    except:
-                        pass
-                
-                # 如果查詢提到「關閉」或「closed"，篩選對應資料
-                if any(keyword in query_lower for keyword in ['關閉', 'closed', '完成', 'done']):
-                    status_cols = [col for col in df.columns if 'status' in col.lower() or '狀態' in col]
-                    if status_cols:
-                        df_filtered = df[df[status_cols[0]].str.contains('Closed|Done|關閉|完成', case=False, na=False)]
-                        if len(df_filtered) > 0:
-                            # 找到起始和結束日期欄位
-                            start_col = next((col for col in date_columns if 'start' in col.lower() or '起始' in col), None)
-                            end_col = next((col for col in date_columns if 'due' in col.lower() or 'end' in col.lower() or '結束' in col or 'due' in col), None)
-                            
-                            if start_col and end_col:
-                                # 計算天數：(結束日期 - 起始日期) + 1，因此當天完成算 1 天
-                                df_filtered['處理天數'] = (df_filtered[end_col] - df_filtered[start_col]).dt.days + 1
-                                df_valid = df_filtered.dropna(subset=['處理天數'])
-                                
-                                if len(df_valid) > 0:
-                                    avg_days = df_valid['處理天數'].mean()
-                                    # 檢查是否有當天完成的工單 (處理天數為 1)
-                                    one_day_count = len(df_valid[df_valid['處理天數'] == 1])
-                                    
-                                    result += f"=== 已關閉工單的處理時間分析 ===\n"
-                                    result += f"有效資料筆數: {len(df_valid)} 筆\n"
-                                    result += f"平均處理天數: {avg_days:.1f} 天\n"
-                                    result += f"最短處理天數: {df_valid['處理天數'].min():.0f} 天\n"
-                                    result += f"最長處理天數: {df_valid['處理天數'].max():.0f} 天\n\n"
-                                    
-                                    if one_day_count > 0:
-                                        result += f"📌 **註**: {one_day_count} 筆工單的處理時間為 1 天（起始日期與結束日期相同，代表當天完成）\n\n"
-                                    
-                                    # 新增 Markdown 表格格式顯示所有工單
-                                    result += "### 詳細處理時間列表\n\n"
-                                    result += "| 工單編號 | 起始日期 | 結束日期 | 處理天數 | 說明 |\n"
-                                    result += "|---------|---------|---------|---------|------|\n"
-                                    
-                                    # 找到 Ticket No. 欄位
-                                    ticket_col = next((col for col in df_filtered.columns if 'ticket' in col.lower() or '工單' in col or 'no' in col.lower()), None)
-                                    
-                                    for idx, row in df_valid.iterrows():
-                                        ticket_no = row[ticket_col] if ticket_col else row.name
-                                        start_date = row[start_col].strftime('%Y-%m-%d') if pd.notna(row[start_col]) else 'N/A'
-                                        end_date = row[end_col].strftime('%Y-%m-%d') if pd.notna(row[end_col]) else 'N/A'
-                                        days = int(row['處理天數'])
-                                        note = "當天完成" if days == 1 else ""
-                                        result += f"| {ticket_no} | {start_date} | {end_date} | {days} 天 | {note} |\n"
-                                    
-                                    return result
-        
-        # 提供資料摘要
-        result += "=== 資料摘要 ===\n"
-        result += f"欄位: {', '.join(df.columns.tolist())}\n\n"
-        
-        # 對每個欄位進行統計
-        for col in df.columns:
-            if df[col].dtype == 'object' or df[col].dtype == 'string':
-                unique_values = df[col].nunique()
-                if unique_values <= 20:
-                    result += f"【{col}】的分布:\n"
-                    value_counts = df[col].value_counts()
-                    for value, count in value_counts.items():
-                        result += f"  - {value}: {count} 筆\n"
-                    result += "\n"
-        
-        # 智能搜尋：檢查是否查詢特定 ID 或關鍵字
-        import re
-        # 嘗試尋找類似 Ticket No 的模式 (例如 REQ2025...)
-        ticket_pattern = r'(REQ\d+|[A-Za-z0-9]{10,})'
-        potential_ids = re.findall(ticket_pattern, query_description, re.IGNORECASE)
-        
-        # 排除常見非 ID 關鍵字
-        exclude_keywords = ['AVERAGE', 'COUNT', 'STATUS', 'SUMMARY', 'REPORT', 'UPDATE', 'PROGRESS', 'DASHBOARD', 'TIME', 'DAYS']
-        potential_ids = [pid for pid in potential_ids if pid.upper() not in exclude_keywords and len(pid) > 5]
-        
-        target_records = []
-        if potential_ids:
-            # 如果發現疑似 ID，嘗試在所有欄位中搜尋
-            for pid in potential_ids:
-                # 在整個 dataframe 中搜尋字串
-                mask = df.astype(str).apply(lambda x: x.str.contains(pid, case=False, na=False)).any(axis=1)
-                matches = df[mask]
-                if not matches.empty:
-                    target_records.append(matches)
-        
-        # 如果有找到特定紀錄，優先顯示
-        if target_records:
-            df_target = pd.concat(target_records).drop_duplicates()
-            result += f"=== 搜尋結果 ({len(df_target)} 筆) ===\n"
-            for idx, row in df_target.iterrows():
-                result += f"\n第 {idx + 1} 筆:\n"
-                for col in df.columns:
-                    result += f"  - {col}: {row[col]}\n"
-            
-            # 如果搜尋結果量少，已經顯示完畢，直接返回
-            return result
 
-        # 顯示資料樣本 (原本的邏輯)
-        if len(df) <= 10:
-            result += "=== 所有資料 ===\n"
-            for idx, row in df.iterrows():
-                result += f"\n第 {idx + 1} 筆:\n"
-                for col in df.columns:
-                    result += f"  - {col}: {row[col]}\n"
-        else:
-            result += f"=== 最近 10 筆資料 ===\n"
-            for idx in range(min(10, len(df))):
-                row = df.iloc[idx]
-                result += f"\n第 {idx + 1} 筆:\n"
-                for col in df.columns:
-                    result += f"  - {col}: {row[col]}\n"
-            result += f"\n(僅顯示前 10 筆，共 {len(df)} 筆資料)"
-        
+        df = pd.DataFrame(all_records)
+        df = _drop_empty_columns(df)
+        total_rows = len(df)
+        query_lower = query_description.lower()
+
+        result = f"工作表：{worksheet_name}　總筆數：{total_rows}\n\n"
+
+        # ── Step 1：偵測日期欄位 ──────────────────────────────
+        date_cols = _detect_date_columns(df)
+
+        # ── Step 2：依日期區間篩選 ────────────────────────────
+        date_start, date_end = _extract_date_range(query_description)
+        if date_start and date_cols:
+            ref_col = date_cols[0]
+            mask = (df[ref_col] >= date_start) & (df[ref_col] <= date_end)
+            df = df[mask]
+            result += f"📅 日期篩選：{date_start.strftime('%Y-%m-%d')} ～ {date_end.strftime('%Y-%m-%d')}（{ref_col}），共 {len(df)} 筆\n\n"
+            if df.empty:
+                return result + "該日期區間內無資料。"
+
+        # ── Step 3：依狀態篩選 ────────────────────────────────
+        status_cols = [col for col in df.columns if 'status' in col.lower() or '狀態' in col]
+        status_filter = None
+        if any(k in query_lower for k in ['關閉', 'closed']):
+            status_filter = 'Closed'
+        elif any(k in query_lower for k in ['完成', 'done']):
+            status_filter = 'Done'
+        elif any(k in query_lower for k in ['進行中', 'doing', 'in progress']):
+            status_filter = 'Doing'
+        elif any(k in query_lower for k in ['待辦', 'to do', 'todo']):
+            status_filter = 'To Do'
+
+        if status_filter and status_cols:
+            df = df[df[status_cols[0]].str.contains(status_filter, case=False, na=False)]
+            result += f"🔍 狀態篩選：{status_filter}，共 {len(df)} 筆\n\n"
+            if df.empty:
+                return result + f"沒有狀態為「{status_filter}」的資料。"
+
+        # ── Step 4：依 Ticket ID 或關鍵字搜尋 ────────────────
+        ticket_pattern = r'(REQ\d+)'
+        potential_ids = re.findall(ticket_pattern, query_description, re.IGNORECASE)
+        if potential_ids:
+            masks = [df.astype(str).apply(lambda x: x.str.contains(pid, case=False, na=False)).any(axis=1)
+                     for pid in potential_ids]
+            combined_mask = masks[0]
+            for m in masks[1:]:
+                combined_mask = combined_mask | m
+            df = df[combined_mask]
+            result += f"🔎 ID 搜尋：{', '.join(potential_ids)}，共 {len(df)} 筆\n\n"
+            if df.empty:
+                return result + "找不到符合的工單 ID。"
+
+        # ── Step 5：統計類查詢（平均天數）────────────────────
+        if any(k in query_lower for k in ['平均', 'average', '天數', '處理時間', '花費']):
+            start_col = next((c for c in date_cols if 'start' in c.lower() or '起始' in c), None)
+            end_col = next((c for c in date_cols if any(k in c.lower() for k in ['due', 'end', '結束'])), None)
+            if start_col and end_col:
+                df = df.copy()
+                df['_處理天數'] = (df[end_col] - df[start_col]).dt.days + 1
+                df_valid = df.dropna(subset=['_處理天數'])
+                if not df_valid.empty:
+                    result += "### 處理時間統計\n\n"
+                    result += f"- 有效筆數：{len(df_valid)}\n"
+                    result += f"- 平均天數：{df_valid['_處理天數'].mean():.1f} 天\n"
+                    result += f"- 最短：{int(df_valid['_處理天數'].min())} 天　最長：{int(df_valid['_處理天數'].max())} 天\n\n"
+
+                    ticket_col = next((c for c in df.columns if 'ticket' in c.lower() or 'no' in c.lower()), None)
+                    display_cols = [c for c in [ticket_col, start_col, end_col, '_處理天數'] if c]
+                    df_display = df_valid[display_cols].rename(columns={'_處理天數': '處理天數(天)'})
+                    result += _to_markdown_table(df_display)
+                    return result
+
+        # ── Step 6：輸出資料內容（Markdown 表格）────────────
+        df = _drop_empty_columns(df)
+
+        # 統計分布（類別欄位、unique <= 15）
+        stat_cols = [col for col in df.columns
+                     if col not in date_cols
+                     and (df[col].dtype == object)
+                     and df[col].nunique() <= 15]
+        if stat_cols:
+            result += "### 欄位分布統計\n\n"
+            for col in stat_cols:
+                counts = df[col].value_counts()
+                result += f"**{col}**：" + "　".join(f"{v}({c}筆)" for v, c in counts.items()) + "\n"
+            result += "\n"
+
+        # 資料表格
+        result += f"### 資料明細（共 {len(df)} 筆）\n\n"
+        result += _to_markdown_table(df)
+
         return result
-    
+
     except gspread.exceptions.WorksheetNotFound:
         return f"找不到名為 '{worksheet_name}' 的工作表。"
     except Exception as e:
