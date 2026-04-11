@@ -88,9 +88,7 @@ def search_confluence_pages(query: str) -> str:
             
             output.append(f"ID: {page_id} | {match_tag} Title: {title} | Link: {markdown_link}")
 
-        return "\n".join(output) if output else "找不到相關頁面，請嘗試其他關鍵字。"
-    except Exception as e:
-        return f"搜尋錯誤: {str(e)}"
+        return "\n".join(output) if output else "⚠️ Confluence 中找不到相關頁面。請不要自己編造答案。"
 
 @tool
 def get_confluence_page_content(page_id: str) -> str:

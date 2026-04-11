@@ -258,14 +258,20 @@ def search_document_base(query: str) -> str:
     
     print(f"\n[Knowledge Search] 正在檢索: {query} ...")
     
-    # 進行相似度搜尋 (k=5 代表回傳前五名最相關的片段)
-    results = vector_db.similarity_search(query, k=5)
+    # 進行相似度搜尋 (k 代表回傳前五名最相關的片段，但透過 score 進行過濾)
+    results_with_scores = vector_db.similarity_search_with_score(query, k=5)
     
+    # Langchain FAISS 中，L2 distance 越小代表越相似。通常大於某個閾值(例如 1.0)就代表很不相關。
+    filtered_results = [(doc, score) for doc, score in results_with_scores if score < 1.2]
+    
+    if not filtered_results:
+        return "⚠️ 文件中未提及此內容（找不到足夠相關的資訊，請不要憑空編造）。"
+
     output = ""
-    for i, doc in enumerate(results):
+    for i, (doc, score) in enumerate(filtered_results):
         # 包含頁碼資訊，方便溯源
         page_num = doc.metadata.get("page", "未知")
-        output += f"\n--- 參考片段 {i+1} (Page {page_num}) ---\n"
+        output += f"\n--- 參考片段 {i+1} (Page {page_num}, Distance: {score:.2f}) ---\n"
         output += doc.page_content
         output += "\n"
     

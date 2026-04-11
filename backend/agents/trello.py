@@ -57,13 +57,15 @@ def get_project_status() -> str:
         for lst in board.list_lists():
             result += f"\n[List: {lst.name}]\n"
             cards = lst.list_cards()
-            if not cards: result += "  (無卡片)\n"
-            for card in cards:
-                labels = [l.name for l in card.labels if l.name]
-                label_str = f"[{','.join(labels)}]" if labels else ""
-                due_str = f"Due:{format_date(card.due)}" if card.due else ""
-                # 這裡列出卡片名稱與 ID，方便 Agent 下一步查細節
-                result += f"  - {card.name} (ID: {card.id}) {label_str} {due_str}\n"
+            if not cards: 
+                result += "  (目前此清單為空，無任何卡片)\n"
+            else:
+                for card in cards:
+                    labels = [l.name for l in card.labels if l.name]
+                    label_str = f"[{','.join(labels)}]" if labels else ""
+                    due_str = f"Due:{format_date(card.due)}" if card.due else ""
+                    # 這裡列出卡片名稱與 ID，方便 Agent 下一步查細節
+                    result += f"  - {card.name} (ID: {card.id}) {label_str} {due_str}\n"
         return result
     except Exception as e:
         return f"讀取看板失敗: {e}"

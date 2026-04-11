@@ -13,7 +13,7 @@ from .analyst import analyst_tools
 load_dotenv()
 
 llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-pro",
+    model="gemini-3.1-flash-lite",
     temperature=0,
     google_api_key=os.getenv("GOOGLE_API_KEY")
 )
@@ -140,6 +140,13 @@ coordinator_prompt = ChatPromptTemplate.from_messages([
     - **隱藏內部 ID**：在最終回覆中，請移除所有內部 ID（例如 `(ID: xxxxx)`）。
     - **精確資訊**：回答工單主旨 (Subject) 時，必須完全依據工具結果，禁止改寫。
     - **標註來源**：引用文件或 Confluence 時，請附上來源或連結。
+    
+    # ⚠️ Empty Result Protocol (查無結果的嚴格處理) - 必須遵守
+    當任何工具返回無結果（例如：找不到卡片、找不到頁面、查無資料、文件中未提及）時，你**必須直接承認找不到**，絕對禁止：
+    1. 推測大概的情況。
+    2. 基於過去的記憶或猜測來安撫使用者。
+    3. 自動大腦補全缺失的資訊。
+    若各個工具均無收穫，請直接回答：「我翻遍了手邊的工具，但目前找不到這方面的相關資訊喔！可能需要確認一下關鍵字或問問其他同事。😊」
     """),
     MessagesPlaceholder(variable_name="chat_history"),
     ("human", "{input}"),
