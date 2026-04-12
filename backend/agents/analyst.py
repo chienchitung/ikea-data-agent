@@ -129,33 +129,61 @@ def _drop_empty_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _detect_date_columns(df: pd.DataFrame) -> list:
-    """找出所有日期相關欄位並轉換為 datetime"""
-    date_keywords = ['date', '日期', 'start', 'due', 'end', '起始', '結束', 'time', '時間']
-    date_cols = [col for col in df.columns if any(k in col.lower() for k in date_keywords)]
-    for col in date_cols:
-        df[col] = pd.to_datetime(df[col], errors='coerce')
-    return date_cols
+    """針對已知的 Google Sheet 欄位，強制將日期欄位轉換為 datetime"""
+    # 已知日期欄位：Start Date, Due Date
+    date_cols = ['Start Date', 'Due Date']
+    existing_cols = [col for col in date_cols if col in df.columns]
+    for col in existing_cols:
+        df[col] = pd.to_datetime(df[col], errors='coerce', format='mixed')
+    return existing_cols
 
 
 def _extract_date_range(query: str):
     """從查詢字串中嘗試解析日期區間，回傳 (start, end) 或 (None, None)"""
-    # 支援 YYYY-MM、YYYY/MM、YYYY年MM月 等格式
+    # 支援各種常見日期格式：
     patterns = [
-        r'(\d{4})[-/年](\d{1,2})[-/月]?\s*(?:到|~|至|-)\s*(\d{4})[-/年](\d{1,2})',  # 2025-01 到 2025-06
-        r'(\d{4})[-/年](\d{1,2})',  # 單一年月（當作該月份）
+        # 格式 A: YYYY-MM 到 YYYY-MM (有包含兩次年份)
+        r'(\d{4})[-/年](\d{1,2})[-/月]?\s*(?:到|~|至|-)\s*(\d{4})[-/年](\d{1,2})',
+        # 格式 B: YYYY年MM月 到 MM月 (省略第二個年份)
+        r'(\d{4})[-/年](\d{1,2})[-/月]?\s*(?:到|~|至|-)\s*(\d{1,2})[-/月]?',
+        # 格式 C: YYYY年MM月 (單一年月)
+        r'(\d{4})[-/年](\d{1,2})',
+        # 格式 D: YYYY年 (整年)
+        r'(20\d{2})\s*年'
     ]
+    
+    # 判斷 A
     match = re.search(patterns[0], query)
     if match:
         y1, m1, y2, m2 = match.groups()
         start = pd.Timestamp(f"{y1}-{int(m1):02d}-01")
         end = pd.Timestamp(f"{y2}-{int(m2):02d}-01") + pd.offsets.MonthEnd(1)
         return start, end
+        
+    # 判斷 B (這是 LLM 最常輸出的 "2026年1月到12月")
     match = re.search(patterns[1], query)
+    if match:
+        y1, m1, m2 = match.groups()
+        start = pd.Timestamp(f"{y1}-{int(m1):02d}-01")
+        end = pd.Timestamp(f"{y1}-{int(m2):02d}-01") + pd.offsets.MonthEnd(1)
+        return start, end
+
+    # 判斷 C
+    match = re.search(patterns[2], query)
     if match:
         y, m = match.groups()
         start = pd.Timestamp(f"{y}-{int(m):02d}-01")
         end = start + pd.offsets.MonthEnd(1)
         return start, end
+
+    # 判斷 D (只講 "2026年")
+    match = re.search(patterns[3], query)
+    if match:
+        y = match.group(1)
+        start = pd.Timestamp(f"{y}-01-01")
+        end = pd.Timestamp(f"{y}-12-31")
+        return start, end
+
     return None, None
 
 
@@ -218,16 +246,17 @@ def query_worksheet_data(worksheet_name: str, query_description: str) -> str:
 
         # ── Step 2：依日期區間篩選 ────────────────────────────
         date_start, date_end = _extract_date_range(query_description)
-        if date_start and date_cols:
-            ref_col = date_cols[0]
-            mask = (df[ref_col] >= date_start) & (df[ref_col] <= date_end)
-            df = df[mask]
-            result += f"📅 日期篩選：{date_start.strftime('%Y-%m-%d')} ～ {date_end.strftime('%Y-%m-%d')}（{ref_col}），共 {len(df)} 筆\n\n"
-            if df.empty:
-                return result + "該日期區間內無資料。"
+        if date_start:
+            # 預設使用 Start Date 進行篩選，若無則降級尋找 Creation Date
+            ref_col = 'Start Date' if 'Start Date' in df.columns else ('Creation Date' if 'Creation Date' in df.columns else None)
+            if ref_col:
+                mask = (df[ref_col] >= date_start) & (df[ref_col] <= date_end)
+                df = df[mask]
+                result += f"📅 日期篩選：{date_start.strftime('%Y-%m-%d')} ～ {date_end.strftime('%Y-%m-%d')}（{ref_col}），共 {len(df)} 筆\n\n"
+                if df.empty:
+                    return result + "該日期區間內無資料。"
 
         # ── Step 3：依狀態篩選 ────────────────────────────────
-        status_cols = [col for col in df.columns if 'status' in col.lower() or '狀態' in col]
         status_filter = None
         if any(k in query_lower for k in ['關閉', 'closed']):
             status_filter = 'Closed'
@@ -238,8 +267,8 @@ def query_worksheet_data(worksheet_name: str, query_description: str) -> str:
         elif any(k in query_lower for k in ['待辦', 'to do', 'todo']):
             status_filter = 'To Do'
 
-        if status_filter and status_cols:
-            df = df[df[status_cols[0]].str.contains(status_filter, case=False, na=False)]
+        if status_filter and 'Status' in df.columns:
+            df = df[df['Status'].str.contains(status_filter, case=False, na=False)]
             result += f"🔍 狀態篩選：{status_filter}，共 {len(df)} 筆\n\n"
             if df.empty:
                 return result + f"沒有狀態為「{status_filter}」的資料。"
@@ -259,12 +288,10 @@ def query_worksheet_data(worksheet_name: str, query_description: str) -> str:
                 return result + "找不到符合的工單 ID。"
 
         # ── Step 5：統計類查詢（平均天數）────────────────────
-        if any(k in query_lower for k in ['平均', 'average', '天數', '處理時間', '花費']):
-            start_col = next((c for c in date_cols if 'start' in c.lower() or '起始' in c), None)
-            end_col = next((c for c in date_cols if any(k in c.lower() for k in ['due', 'end', '結束'])), None)
-            if start_col and end_col:
+        if any(k in query_lower for k in ['平均', 'average', '天數', '處理時間', '花費', '工時']):
+            if 'Start Date' in df.columns and 'Due Date' in df.columns:
                 df = df.copy()
-                df['_處理天數'] = (df[end_col] - df[start_col]).dt.days + 1
+                df['_處理天數'] = (df['Due Date'] - df['Start Date']).dt.days + 1
                 df_valid = df.dropna(subset=['_處理天數'])
                 if not df_valid.empty:
                     result += "### 處理時間統計\n\n"
@@ -272,8 +299,8 @@ def query_worksheet_data(worksheet_name: str, query_description: str) -> str:
                     result += f"- 平均天數：{df_valid['_處理天數'].mean():.1f} 天\n"
                     result += f"- 最短：{int(df_valid['_處理天數'].min())} 天　最長：{int(df_valid['_處理天數'].max())} 天\n\n"
 
-                    ticket_col = next((c for c in df.columns if 'ticket' in c.lower() or 'no' in c.lower()), None)
-                    display_cols = [c for c in [ticket_col, start_col, end_col, '_處理天數'] if c]
+                    ticket_col = 'Ticket No.' if 'Ticket No.' in df.columns else None
+                    display_cols = [c for c in [ticket_col, 'Start Date', 'Due Date', '_處理天數'] if c]
                     df_display = df_valid[display_cols].rename(columns={'_處理天數': '處理天數(天)'})
                     result += _to_markdown_table(df_display)
                     return result

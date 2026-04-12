@@ -183,7 +183,8 @@
     font-family: var(--font-family-ikea);
     font-size: 14px;
     font-weight: 400;
-    height: 58px;
+    min-height: 58px;
+    height: auto;
     line-height: 21.994px;
     margin-top: 4px;
     padding: 10px 5px 10px 20px;
@@ -208,11 +209,12 @@
     line-height: 20px;
     padding: 0;
     min-height: 20px;
-    max-height: 120px;
+    max-height: 200px;
     resize: none;
     outline: none;
     font-family: inherit;
     color: inherit;
+    overflow-y: auto;
 }
 
 .send-button {

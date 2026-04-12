@@ -158,8 +158,12 @@ function App() {
     };
 
     const handleSubmit = async (e) => {
-        e.preventDefault();
+        if (e) e.preventDefault();
         if (!input.trim() || isLoading) return;
+
+        // 重置文字輸入框高度
+        const textarea = document.getElementById('chat-input');
+        if (textarea) textarea.style.height = 'auto';
 
         const userMessage = { role: 'user', content: input };
         setMessages(prev => [...prev, userMessage]);
@@ -422,13 +426,27 @@ function App() {
 
                 <footer className="w-full max-w-4xl mx-auto p-4 bg-transparent">
                     <form onSubmit={handleSubmit} className="chatbot-input-container !bg-white !shadow-lg">
-                        <input
-                            type="text"
+                        <textarea
+                            id="chat-input"
                             value={input}
-                            onChange={(e) => setInput(e.target.value)}
-                            placeholder="Message your agent..."
+                            onChange={(e) => {
+                                setInput(e.target.value);
+                                // 將高度設定回只靠內容與 min-height 撐起
+                                e.target.style.height = "auto";
+                                // 給予新的 scrollHeight 高度（單行時會被 min-height 58px 接住）
+                                e.target.style.height = `${e.target.scrollHeight}px`;
+                            }}
+                            onKeyDown={(e) => {
+                                // 加上 !e.nativeEvent.isComposing 判斷，避免中文選字按 Enter 時把訊息送出去
+                                if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                                    e.preventDefault();
+                                    handleSubmit(e);
+                                }
+                            }}
+                            placeholder="Message your agent... (Shift + Enter for new line)"
                             disabled={isLoading}
-                            className="chatbot-input"
+                            className="chatbot-input py-4 my-auto min-h-[58px] max-h-[200px] overflow-y-auto"
+                            rows={1}
                         />
 
                         <button

@@ -265,7 +265,7 @@ def search_document_base(query: str) -> str:
     filtered_results = [(doc, score) for doc, score in results_with_scores if score < 1.2]
     
     if not filtered_results:
-        return "⚠️ 文件中未提及此內容（找不到足夠相關的資訊，請不要憑空編造）。"
+        return "⚠️ 【系統警告】文件中完全未提及此內容！你必須直接告訴使用者「文件裡沒有寫」，絕對不能憑空編造或推測答案！"
 
     output = ""
     for i, (doc, score) in enumerate(filtered_results):

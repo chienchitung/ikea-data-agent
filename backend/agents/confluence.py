@@ -39,9 +39,16 @@ if CONFLUENCE_URL and CONFLUENCE_USERNAME and CONFLUENCE_API_TOKEN:
         print("  3. CONFLUENCE_API_TOKEN 是否有效")
 
 def clean_html(html_content):
-    """輔助函式：將 Confluence 的 HTML 轉換為純文字，減少 Token 消耗"""
-    soup = BeautifulSoup(html_content, "html.parser")
-    return soup.get_text(separator="\n")
+    """輔助函式：將 Confluence 的 HTML 轉換為 Markdown，以保留表格與排版結構"""
+    try:
+        from markdownify import markdownify
+        # 轉換為 markdown，保留表格結構與標題
+        md_text = markdownify(html_content, heading_style="ATX", tables=True, strip=["img", "script", "style"])
+        return md_text.strip()
+    except ImportError:
+        # Fallback 傳統的 BeautifulSoup
+        soup = BeautifulSoup(html_content, "html.parser")
+        return soup.get_text(separator="\n").strip()
 
 
 # --- 定義給 Agent 使用的工具 (Tools) ---
@@ -58,8 +65,16 @@ def search_confluence_pages(query: str) -> str:
              return "Confluence client is not initialized."
              
         # 使用 CQL 進行全文搜索 (text ~ query) 而不僅是標題搜索
-        # 使用 OR 連接，同時搜索標題和內容，並加上 wildcard
-        cql = f'space = "idtt" AND (title ~ "{query}*" OR text ~ "{query}*")'
+        # 改進：移除特定的 space 限制（以搜尋完整系統），並將含有空格的字串以更寬鬆的方式比對
+        # 如果 user 的關鍵字包含空格（如 "7 customer segments"），直接用精確比對與模糊比對
+        if " " in query:
+            cql = f'(title ~ "{query}" OR text ~ "{query}")'
+        else:
+            cql = f'(title ~ "{query}*" OR text ~ "{query}*")'
+            
+        # 如果你只限於 idtt 空間，請將上方改成 cql = f'space = "idtt" AND ' + cql
+        # 這裡為了解決找不到其他頁面，先幫你開放為全域搜尋，或你可以自行加回 space 的條件
+        
         # 增加 limit 到 10 以利查找更多相關頁面
         results = confluence.cql(cql, limit=10)
 
@@ -88,7 +103,7 @@ def search_confluence_pages(query: str) -> str:
             
             output.append(f"ID: {page_id} | {match_tag} Title: {title} | Link: {markdown_link}")
 
-        return "\n".join(output) if output else "⚠️ Confluence 中找不到相關頁面。請不要自己編造答案。"
+        return "\n".join(output) if output else "⚠️ 【系統警告】Confluence 中完全找不到相關頁面！你必須直接告訴使用者「找不到相關文件」，絕對不能憑空編造標題或連結！"
     except Exception as e:
         return f"搜尋錯誤: {str(e)}"
 
@@ -124,7 +139,10 @@ def get_confluence_page_content(page_id: str) -> str:
         # 清理 HTML
         text_content = clean_html(html_body)
         
-        return f"標題: {title}\n來源連結: {markdown_link}\n內容摘要:\n{text_content[:3000]}..." # 限制長度避免 Context Window 爆炸
+        # 將長度限制放寬至 20000 字元，避免長表格或完整文章被腰斬
+        truncated_content = text_content[:20000] + ("\n... [內容過長已截斷]" if len(text_content) > 20000 else "")
+        
+        return f"標題: {title}\n來源連結: {markdown_link}\n內容摘要:\n{truncated_content}"
     except Exception as e:
         return f"讀取錯誤: {str(e)}"
 
