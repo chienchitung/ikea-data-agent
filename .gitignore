@@ -16,3 +16,4 @@ venv/
 # Agent
 .gemini/
 backend/.venv/
+backend/faiss_index/

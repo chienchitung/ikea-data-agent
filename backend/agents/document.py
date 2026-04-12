@@ -78,18 +78,27 @@ def initialize_knowledge_base():
                 allow_dangerous_deserialization=True
             )
             # 從快取的 metadata 還原 loaded_files
-            loaded_files = list({
+            cached_sources = {
                 doc.metadata.get("source", "")
                 for doc in vector_db.docstore._dict.values()
                 if doc.metadata.get("source")
-            })
-            print(f"\n⚡️ FAISS index 從磁碟快取載入，跳過 embedding（{len(loaded_files)} 個文件）")
-            return {
-                "success": True,
-                "loaded_files": loaded_files,
-                "failed_files": [],
-                "message": f"Loaded from cache: {len(loaded_files)} documents."
             }
+            # 驗證：快取的檔案清單必須與磁碟上的 PDF 完全一致
+            # 若有差異（新增或刪除了 PDF），強制重建 index
+            current_basenames = {os.path.basename(f) for f in pdf_files}
+            if cached_sources == current_basenames:
+                loaded_files = list(cached_sources)
+                print(f"\n⚡️ FAISS index 從磁碟快取載入，跳過 embedding（{len(loaded_files)} 個文件）")
+                return {
+                    "success": True,
+                    "loaded_files": loaded_files,
+                    "failed_files": [],
+                    "message": f"Loaded from cache: {len(loaded_files)} documents."
+                }
+            else:
+                print(f"⚠️ 快取文件清單與磁碟不符，強制重建 index")
+                print(f"   快取：{cached_sources}")
+                print(f"   磁碟：{current_basenames}")
         except Exception as cache_e:
             print(f"⚠️ 快取載入失敗，重新建立 index：{cache_e}")
 

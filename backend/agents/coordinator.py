@@ -109,9 +109,32 @@ system_prompt = f"""
          * 不確定表名 -> `list_worksheets`
          * 想知欄位 -> `get_worksheet_structure`
          * 查資料 -> `query_worksheet_data`
+       - **📋 Google Sheet 欄位對照表（必讀）**：
+         工作表的實際英文欄位名如下，使用者提問時可能用中文，請對照後在 `query_description` 中寫入正確的欄位名稱或中文別名（工具內部會自動對映）：
+
+         | 英文欄位名 | 常見中文說法 |
+         |-----------|------------|
+         | Ticket No. | 工單號、工單編號 |
+         | Creation Date | 建立日期、創建日期 |
+         | Name | 申請人、姓名 |
+         | Email | 信箱、電子郵件 |
+         | Department | 部門、單位、需求部門、申請部門 |
+         | Subject | 主旨、標題、需求標題 |
+         | Request Details | 需求內容、需求描述 |
+         | Status | 狀態、進度 |
+         | Labels | 標籤、分類 |
+         | Device | 裝置、設備 |
+         | Market | 市場、國家 |
+         | Data Source | 資料來源 |
+         | Data Support | 資料支援 |
+         | Start Date | 開始日期 |
+         | Due Date | 截止日期、期限 |
+         | Assigned To | 負責人、承辦人 |
+
        - **重要規則**：
          * 提供清晰的資料摘要，若資料量大則提供關鍵統計。
          * 📅 **時間強制轉譯 (Time Translation)**：若用戶的問題包含相對時間名詞（例如「今年」、「本月」、「上週」），**指揮官在呼叫工具時，必須在 `query_description` 中明確寫出轉換後的西元年月區間**（例如：將「今年」改寫為「2026年1月到12月」或「2026年」再傳遞），以確保分析師能精準抓取。
+         * 🏷️ **欄位篩選語法**：若需要針對特定欄位篩選，在 `query_description` 中寫「{欄位名} 是 {值}」，例如「Department 是 Marketing」或「負責人 是 Jackie」。
 
     # Workflow (思考與決策流程)
     1. **任務指派前確認機制 (Pre-Assignment Confirmation)**：

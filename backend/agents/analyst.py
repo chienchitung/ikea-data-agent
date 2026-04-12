@@ -2,6 +2,7 @@ import os
 import re
 import gspread
 import pandas as pd
+from typing import Optional
 from oauth2client.service_account import ServiceAccountCredentials
 from langchain.tools import tool
 from dotenv import load_dotenv
@@ -14,6 +15,78 @@ _cached_data = {}
 
 # Hardcoded sheet key from notebook
 SPREADSHEET_KEY = os.getenv("GOOGLE_SHEET_KEY", "1bnqghULmnxgZdu4ALDZ2FGUzBxwamD27qYZVGMq1uEo")
+
+# ── 欄位別名對映表 ────────────────────────────────────────────────────────────
+# 對應實際欄位：ID, Ticket No., Creation Date, Name, Email, Department,
+#              Subject, Request Details, Attachments, Status, Labels,
+#              Device, Market, Data Source, Data Support,
+#              Start Date, Due Date, Assigned To, Modified
+COLUMN_ALIASES: dict[str, list[str]] = {
+    "Ticket No.":      ["工單號", "工單編號", "ticket", "工單", "單號"],
+    "Creation Date":   ["建立日期", "建立時間", "創建日期", "創建時間"],
+    "Name":            ["申請人", "姓名", "申請者", "name"],
+    "Email":           ["信箱", "電子郵件", "e-mail"],
+    "Department":      ["部門", "單位", "需求部門", "申請部門", "部处", "department"],
+    "Subject":         ["主旨", "標題", "題目", "需求標題", "subject"],
+    "Request Details": ["需求內容", "需求描述", "詳情", "內容", "request details"],
+    "Attachments":     ["附件", "attachments"],
+    "Status":          ["狀態", "進度", "status"],
+    "Labels":          ["標籤", "分類", "類型", "label", "labels"],
+    "Device":          ["裝置", "設備", "device"],
+    "Market":          ["市場", "國家", "market"],
+    "Data Source":     ["資料來源", "數據來源", "data source"],
+    "Data Support":    ["資料支援", "數據支援", "data support"],
+    "Start Date":      ["開始日期", "開始時間", "起始日期", "start date"],
+    "Due Date":        ["截止日期", "到期日期", "期限", "due date"],
+    "Assigned To":     ["負責人", "指派給", "處理人", "承辦人", "assigned to"],
+    "Modified":        ["修改日期", "更新時間", "modified"],
+}
+
+# 反向查詢表：中文別名 → 英文欄位名（全部小寫 key，加速比對）
+_ALIAS_LOOKUP: dict[str, str] = {
+    alias.lower(): col
+    for col, aliases in COLUMN_ALIASES.items()
+    for alias in aliases
+}
+
+
+def _resolve_column(df: pd.DataFrame, term: str) -> Optional[str]:
+    """
+    將使用者輸入的中文或英文欄位名稱對應到 DataFrame 的實際欄位名。
+    優先完全匹配，其次別名查詢。回傳實際欄位名，找不到回傳 None。
+    """
+    # 1. 直接完全匹配（英文欄位原名）
+    if term in df.columns:
+        return term
+    # 2. 別名查詢（不分大小寫）
+    canonical = _ALIAS_LOOKUP.get(term.lower())
+    if canonical and canonical in df.columns:
+        return canonical
+    # 3. 部分模糊匹配（欄位名包含 term，或 term 包含欄位名）
+    term_lower = term.lower()
+    for col in df.columns:
+        if term_lower in col.lower() or col.lower() in term_lower:
+            return col
+    return None
+
+
+def _extract_column_filters(query: str) -> list[tuple[str, str]]:
+    """
+    從查詢字串中偵測「欄位=值」的篩選條件。
+    支援格式：
+      - "部門 是 Marketing"
+      - "負責人：Jackie"
+      - "Department = HR"
+      - "market 台灣"（欄位別名 + 值，無連接詞）
+    回傳 [(raw_column_term, value), ...] 清單。
+    """
+    filters = []
+    # 格式 A：欄位 [是|為|=|：|:] 值
+    pattern_a = r'([^\s,，]+)\s*(?:是|為|=|：|:)\s*([^\s,，、]+)'
+    for m in re.finditer(pattern_a, query):
+        col_term, value = m.group(1).strip(), m.group(2).strip()
+        filters.append((col_term, value))
+    return filters
 
 def get_gspread_client():
     """
@@ -247,8 +320,8 @@ def query_worksheet_data(worksheet_name: str, query_description: str) -> str:
         # ── Step 2：依日期區間篩選 ────────────────────────────
         date_start, date_end = _extract_date_range(query_description)
         if date_start:
-            # 預設使用 Start Date 進行篩選，若無則降級尋找 Creation Date
-            ref_col = 'Start Date' if 'Start Date' in df.columns else ('Creation Date' if 'Creation Date' in df.columns else None)
+            # 依別名對映找日期欄位，優先 Start Date，次選 Creation Date
+            ref_col = _resolve_column(df, 'Start Date') or _resolve_column(df, 'Creation Date')
             if ref_col:
                 mask = (df[ref_col] >= date_start) & (df[ref_col] <= date_end)
                 df = df[mask]
@@ -257,6 +330,7 @@ def query_worksheet_data(worksheet_name: str, query_description: str) -> str:
                     return result + "該日期區間內無資料。"
 
         # ── Step 3：依狀態篩選 ────────────────────────────────
+        status_col = _resolve_column(df, 'Status')
         status_filter = None
         if any(k in query_lower for k in ['關閉', 'closed']):
             status_filter = 'Closed'
@@ -267,31 +341,47 @@ def query_worksheet_data(worksheet_name: str, query_description: str) -> str:
         elif any(k in query_lower for k in ['待辦', 'to do', 'todo']):
             status_filter = 'To Do'
 
-        if status_filter and 'Status' in df.columns:
-            df = df[df['Status'].str.contains(status_filter, case=False, na=False)]
+        if status_filter and status_col:
+            df = df[df[status_col].str.contains(status_filter, case=False, na=False)]
             result += f"🔍 狀態篩選：{status_filter}，共 {len(df)} 筆\n\n"
             if df.empty:
                 return result + f"沒有狀態為「{status_filter}」的資料。"
 
-        # ── Step 4：依 Ticket ID 或關鍵字搜尋 ────────────────
+        # ── Step 4：依 Ticket ID 搜尋 ────────────────────────
         ticket_pattern = r'(REQ\d+)'
         potential_ids = re.findall(ticket_pattern, query_description, re.IGNORECASE)
         if potential_ids:
             masks = [df.astype(str).apply(lambda x: x.str.contains(pid, case=False, na=False)).any(axis=1)
                      for pid in potential_ids]
-            combined_mask = masks[0]
-            for m in masks[1:]:
-                combined_mask = combined_mask | m
-            df = df[combined_mask]
-            result += f"🔎 ID 搜尋：{', '.join(potential_ids)}，共 {len(df)} 筆\n\n"
-            if df.empty:
-                return result + "找不到符合的工單 ID。"
+            if masks:
+                combined_mask = masks[0]
+                for m in masks[1:]:
+                    combined_mask = combined_mask | m
+                df = df[combined_mask]
+                result += f"🔎 ID 搜尋：{', '.join(potential_ids)}，共 {len(df)} 筆\n\n"
+                if df.empty:
+                    return result + "找不到符合的工單 ID。"
+
+        # ── Step 4.5：依欄位值篩選（中文別名對映）────────────
+        # 例：「部門 是 Marketing」→ Department == Marketing
+        #     「負責人：Jackie」 → Assigned To contains Jackie
+        col_filters = _extract_column_filters(query_description)
+        for col_term, value in col_filters:
+            actual_col = _resolve_column(df, col_term)
+            if actual_col:
+                df = df[df[actual_col].astype(str).str.contains(value, case=False, na=False)]
+                result += f"🏷️ 欄位篩選：{actual_col}（{col_term}）含「{value}」，共 {len(df)} 筆\n\n"
+                if df.empty:
+                    return result + f"沒有符合「{actual_col} = {value}」的資料。"
 
         # ── Step 5：統計類查詢（平均天數）────────────────────
         if any(k in query_lower for k in ['平均', 'average', '天數', '處理時間', '花費', '工時']):
-            if 'Start Date' in df.columns and 'Due Date' in df.columns:
+            start_col = _resolve_column(df, 'Start Date')
+            due_col = _resolve_column(df, 'Due Date')
+            ticket_col = _resolve_column(df, 'Ticket No.')
+            if start_col and due_col:
                 df = df.copy()
-                df['_處理天數'] = (df['Due Date'] - df['Start Date']).dt.days + 1
+                df['_處理天數'] = (df[due_col] - df[start_col]).dt.days + 1
                 df_valid = df.dropna(subset=['_處理天數'])
                 if not df_valid.empty:
                     result += "### 處理時間統計\n\n"
@@ -299,8 +389,7 @@ def query_worksheet_data(worksheet_name: str, query_description: str) -> str:
                     result += f"- 平均天數：{df_valid['_處理天數'].mean():.1f} 天\n"
                     result += f"- 最短：{int(df_valid['_處理天數'].min())} 天　最長：{int(df_valid['_處理天數'].max())} 天\n\n"
 
-                    ticket_col = 'Ticket No.' if 'Ticket No.' in df.columns else None
-                    display_cols = [c for c in [ticket_col, 'Start Date', 'Due Date', '_處理天數'] if c]
+                    display_cols = [c for c in [ticket_col, start_col, due_col, '_處理天數'] if c]
                     df_display = df_valid[display_cols].rename(columns={'_處理天數': '處理天數(天)'})
                     result += _to_markdown_table(df_display)
                     return result

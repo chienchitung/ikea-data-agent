@@ -25,6 +25,8 @@ function App() {
     const [selectedDocuments, setSelectedDocuments] = useState(new Set());
     const [isLoading, setIsLoading] = useState(false);
     const [isUploading, setIsUploading] = useState(false);
+    const [uploadProgress, setUploadProgress] = useState(0);
+    const [uploadStage, setUploadStage] = useState("");
     const [isSourcesExpanded, setIsSourcesExpanded] = useState(true);
     const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
     const [renamingDoc, setRenamingDoc] = useState(null);
@@ -128,22 +130,33 @@ function App() {
         if (!file) return;
 
         setIsUploading(true);
+        setUploadProgress(0);
+        setUploadStage("上傳檔案中...");
         const formData = new FormData();
         formData.append("file", file);
 
         try {
             await axios.post(`${API_URL}/upload`, formData, {
-                headers: {
-                    'Content-Type': 'multipart/form-data',
+                headers: { 'Content-Type': 'multipart/form-data' },
+                onUploadProgress: (e) => {
+                    const pct = Math.round((e.loaded * 90) / e.total);
+                    setUploadProgress(pct);
+                    if (pct < 30) setUploadStage("Uploading file...");
+                    else if (pct < 70) setUploadStage("Transferring data...");
+                    else setUploadStage("File received, processing...");
                 },
             });
+
+            setUploadProgress(95);
+            setUploadStage("Building knowledge base...");
+            await fetchDocuments();
+            setUploadProgress(100);
+            setUploadStage("Done!");
 
             setMessages(prev => [...prev, {
                 role: 'assistant',
                 content: `✅ **PDF Uploaded**: \`${file.name}\` successfully. I can now answer questions about its content.`
             }]);
-
-            fetchDocuments();
         } catch (error) {
             console.error("Upload failed", error);
             const errorMessage = error.response?.data?.message || error.message;
@@ -152,8 +165,12 @@ function App() {
                 content: `❌ **Upload Failed**: ${errorMessage}`
             }]);
         } finally {
-            setIsUploading(false);
-            if (fileInputRef.current) fileInputRef.current.value = "";
+            setTimeout(() => {
+                setIsUploading(false);
+                setUploadProgress(0);
+                setUploadStage("");
+                if (fileInputRef.current) fileInputRef.current.value = "";
+            }, 800);
         }
     };
 
@@ -250,8 +267,8 @@ function App() {
                     >
                         {isUploading ? (
                             <>
-                                <Loader2 className="w-4 h-4 animate-spin" />
-                                Uploading...
+                                <Loader2 className="w-4 h-4 animate-spin flex-shrink-0" />
+                                <span className="truncate">{uploadStage}</span>
                             </>
                         ) : (
                             <>
@@ -260,6 +277,22 @@ function App() {
                             </>
                         )}
                     </button>
+
+                    {isUploading && (
+                        <div className="mt-2">
+                            <div className="flex justify-between text-xs text-gray-500 mb-1">
+                                <span>{uploadStage}</span>
+                                <span>{uploadProgress}%</span>
+                            </div>
+                            <div className="w-full bg-slate-200 rounded-full h-1.5">
+                                <div
+                                    className="bg-[#0058A3] h-1.5 rounded-full transition-all duration-300"
+                                    style={{ width: `${uploadProgress}%` }}
+                                />
+                            </div>
+                        </div>
+                    )}
+
                     <input
                         type="file"
                         accept=".pdf"
