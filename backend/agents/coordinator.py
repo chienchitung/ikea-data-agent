@@ -13,7 +13,7 @@ from .analyst import analyst_tools
 load_dotenv()
 
 llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-pro",
+    model="gemini-2.5-flash",
     temperature=0,
     google_api_key=os.getenv("GOOGLE_API_KEY")
 )
@@ -172,6 +172,7 @@ system_prompt = f"""
     - **智慧工具使用與記憶 (Smart Tool Use & Memory)**：
        * 遇到**新問題**或**新關鍵字**時，必須呼叫工具查詢，禁止靠字面推論。
        * 遇到**後續追問**（例如：「它的下一階段是什麼？」、「那這份規範裡還有提到什麼？」）時，**請先檢查最近的 Chat History 是否已經有足夠的 Tool 結果可以回答**。如果歷史紀錄裡已擁有足夠資訊，**請直接回答，不要再重複呼叫工具**，以節省查詢時間。
+       * ⚠️ **全量查詢例外規則（非常重要）**：當用戶要求「整理所有...」、「列出全部...」、「寫一份報告」、「彙整所有工單」等**需要完整資料**的請求時，**絕對禁止只整理 Chat History 中已有的部分資料**。即使 history 中有近期的 tool 結果，也必須**重新呼叫工具**取得完整的最新資料，確保報告涵蓋所有內容而非片段。
     - **隱藏內部 ID**：在最終回覆的內文中，除了來源標籤以外，請盡量口語化，不要讓使用者覺得冷冰冰。
     - **精確資訊**：回答工單主旨 (Subject) 時，必須完全依據工具結果，禁止改寫。
     
@@ -183,59 +184,119 @@ system_prompt = f"""
     若各個工具皆查無資訊，請直接輸出標準回答：「我幫你翻遍了手邊的工具，但目前真的找不到這方面的相關資訊喔！為確保資訊正確，我不敢亂猜，這部分可能要請你再確認一下關鍵字，或是問問相關負責的同事喔！😊」
 """
 
+import asyncio
 from typing import Annotated, TypedDict
-from langchain_core.messages import BaseMessage, SystemMessage, AIMessage, HumanMessage
+from langchain_core.messages import BaseMessage, SystemMessage, AIMessage, HumanMessage, ToolMessage
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
-from langgraph.prebuilt import ToolNode
 
 # 定義 Graph 狀態，儲存對話歷史
 class AgentState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
 
-tool_node = ToolNode(all_tools)
 # 綁定所有工具給 LLM
 model_with_tools = llm.bind_tools(all_tools)
 
-def agent_node(state: AgentState):
+# 建立工具查詢 map，供 parallel_tool_node 使用
+_tool_map = {t.name: t for t in all_tools}
+
+# Chat history 上限（保留 system + 最近 N 則，避免 token 越來越多）
+MAX_HISTORY = 20
+
+# 需要呼叫工具的關鍵字（module-level 常數，避免每次 agent_node 呼叫都重建）
+_INTERNAL_KEYWORDS = [
+    "專案", "卡片", "trello", "進度", "誰負責", "規定", "文件", "confluence",
+    "規範", "數據", "統計", "請查", "幫我查", "有哪些", "什麼是", "意思",
+    "確定沒有", "真的沒有", "再找找", "再查一次", "確認一下", "你確定"
+]
+
+# 全量查詢關鍵字：即使 history 有 tool 結果也必須重新查詢完整資料
+_COMPREHENSIVE_KEYWORDS = [
+    "所有", "全部", "整理", "報告", "彙整", "彙總", "重點報告", "統整",
+    "全面", "完整", "一份", "總結", "摘要所有", "列出所有", "所有工單",
+    "全部工單", "所有卡片", "全部專案", "整體", "overview", "summary"
+]
+
+async def parallel_tool_node(state: AgentState):
+    """
+    並行執行所有工具呼叫：當 LLM 同時呼叫多個工具時，
+    改為 asyncio.gather 並行處理，大幅減少累積等待時間。
+    """
+    last_message = state["messages"][-1]
+    tool_calls = last_message.tool_calls
+
+    async def execute_one(tc):
+        t = _tool_map.get(tc["name"])
+        if not t:
+            return ToolMessage(
+                content=f"找不到工具: {tc['name']}",
+                tool_call_id=tc["id"],
+                name=tc["name"]
+            )
+        try:
+            # 使用 asyncio.to_thread 避免 sync 工具阻塞 event loop
+            result = await asyncio.to_thread(t.invoke, tc["args"])
+            return ToolMessage(
+                content=str(result),
+                tool_call_id=tc["id"],
+                name=tc["name"]
+            )
+        except Exception as e:
+            return ToolMessage(
+                content=f"工具執行錯誤: {str(e)}",
+                tool_call_id=tc["id"],
+                name=tc["name"]
+            )
+
+    results = await asyncio.gather(*[execute_one(tc) for tc in tool_calls])
+    return {"messages": list(results)}
+
+async def agent_node(state: AgentState):
     """
     LLM 思考節點：決定要呼叫工具，還是直接回答
     我們在這裡加上客製化的防禦邏輯，防堵幻覺。
     """
     messages = state["messages"]
-    
+
     # 確保系統提示詞永遠在對話最前面
     if not messages or getattr(messages[0], "type", "") != "system":
         messages = [SystemMessage(content=system_prompt)] + messages
 
-    response = model_with_tools.invoke(messages)
-    
+    # ✂️ Chat history 截斷：保留 system message + 最近 MAX_HISTORY 則
+    # 避免對話越長、每次傳給 LLM 的 token 越多導致變慢
+    if len(messages) > MAX_HISTORY + 1:
+        messages = messages[:1] + messages[-(MAX_HISTORY):]
+
+    response = await model_with_tools.ainvoke(messages)
+
     # 🕵️‍♂️ 【客製化攔截點：強制檢查工具使用與幻覺防護】
     # 1. 找出使用者最後一句話
     last_human_msg = next((m.content for m in reversed(messages) if isinstance(m, HumanMessage)), "")
-    
-    # 2. 定義需要內部資訊的關鍵字 (新增後續追問字眼)
-    internal_keywords = [
-        "專案", "卡片", "trello", "進度", "誰負責", "規定", "文件", "confluence", 
-        "規範", "數據", "統計", "請查", "幫我查", "有哪些", "什麼是", "意思", 
-        "確定沒有", "真的沒有", "再找找", "再查一次", "確認一下", "你確定"
-    ]
-    needs_tool = any(kw in last_human_msg.lower() for kw in internal_keywords)
-    
+
+    # 2. 判斷是否需要呼叫工具 / 全量查詢（使用 module-level 常數）
+    needs_tool = any(kw in last_human_msg.lower() for kw in _INTERNAL_KEYWORDS)
+    needs_fresh_query = any(kw in last_human_msg.lower() for kw in _COMPREHENSIVE_KEYWORDS)
+
     # 3. 檢查最近是否有 Tool 回傳結果（放寬到 10 句內有即可，即短期的記憶上下文）
     tool_messages = [m for m in messages[-10:] if getattr(m, "type", "") == "tool" or m.__class__.__name__ == "ToolMessage"]
     has_recent_tool_result = len(tool_messages) > 0
-    
+
     # 🛑 防護 A：該查沒查 -> 強制重試 (內部自動 re-prompt)
+    # needs_fresh_query = True 時，即使有近期 tool 結果也要重查（避免只摘要 history 舊資料）
     if not hasattr(response, "tool_calls") or not response.tool_calls:
-        if needs_tool and not has_recent_tool_result:
-            print("\n⚠️ [Guardrail] 偵測到 LLM 試圖不呼叫工具就回答，強制重發 Prompt！")
-            retry_prompt = HumanMessage(content="⚠️ 系統強制攔截：你的回答沒有呼叫任何工具！你是 Data Machi，沒有先驗知識，遇到專案/文件問題『必須』呼叫 Tool 查詢，絕對禁止憑空回答。請立即呼叫相關工具！")
-            response = model_with_tools.invoke(messages + [retry_prompt])
+        if needs_tool and (not has_recent_tool_result or needs_fresh_query):
+            if needs_fresh_query:
+                print("\n⚠️ [Guardrail] 偵測到全量查詢請求，強制重新呼叫工具取得完整資料！")
+                retry_msg = "⚠️ 系統強制攔截：用戶要求取得『全部/所有』資料並整理成報告，你**不能只整理 chat history 中的舊資料**！必須立即呼叫對應工具（例如 query_worksheet_data 或 get_project_status）重新取得完整的最新資料，再進行彙整。請立即呼叫工具！"
+            else:
+                print("\n⚠️ [Guardrail] 偵測到 LLM 試圖不呼叫工具就回答，強制重發 Prompt！")
+                retry_msg = "⚠️ 系統強制攔截：你的回答沒有呼叫任何工具！你是 Data Machi，沒有先驗知識，遇到專案/文件問題『必須』呼叫 Tool 查詢，絕對禁止憑空回答。請立即呼叫相關工具！"
+            retry_prompt = HumanMessage(content=retry_msg)
+            response = await model_with_tools.ainvoke(messages + [retry_prompt])
             # 如果第二次還是不呼叫，就給強制安全回應
             if not hasattr(response, "tool_calls") or not response.tool_calls:
-                 forced_msg = AIMessage(content="我翻遍了手邊的工具，但目前真的找不到這方面的相關資訊喔！為確保資訊正確，我不敢亂猜，可以請您提供更多關鍵字嗎？😊")
-                 return {"messages": [forced_msg]}
+                forced_msg = AIMessage(content="我翻遍了手邊的工具，但目前真的找不到這方面的相關資訊喔！為確保資訊正確，我不敢亂猜，可以請您提供更多關鍵字嗎？😊")
+                return {"messages": [forced_msg]}
 
     # 🛑 防護 B：工具查無資料，但大腦開始亂掰 (幻覺生成) -> 直接覆寫
     if not hasattr(response, "tool_calls") or not response.tool_calls:
@@ -266,7 +327,7 @@ def should_continue(state: AgentState):
 # 建立我們自己的 LangGraph 狀態機 (StateGraph)
 workflow = StateGraph(AgentState)
 workflow.add_node("agent", agent_node)
-workflow.add_node("action", tool_node)
+workflow.add_node("action", parallel_tool_node)
 
 workflow.add_edge(START, "agent")
 workflow.add_conditional_edges("agent", should_continue)

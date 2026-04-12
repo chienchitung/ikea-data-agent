@@ -51,61 +51,146 @@ def clean_html(html_content):
         return soup.get_text(separator="\n").strip()
 
 
+# --- 共用輔助函式 ---
+
+def _build_confluence_url(webui: str) -> str:
+    """將 Confluence webui 相對路徑組合為完整 URL（確保含 /wiki 前綴）"""
+    base_url = os.getenv("CONFLUENCE_URL", "").rstrip('/')
+    if not webui.startswith("/wiki"):
+        webui = f"/wiki{webui}" if webui.startswith("/") else f"/wiki/{webui}"
+    return f"{base_url}{webui}"
+
+
+def _format_confluence_items(items: list, original_query: str) -> list[str]:
+    """將 CQL 結果格式化為 Markdown 連結字串，自動去重並標記標題匹配。"""
+    output = []
+    seen_ids = set()
+    for item in items:
+        content = item.get("content", {})
+        page_id = content.get("id")
+        if not page_id or page_id in seen_ids:
+            continue
+        seen_ids.add(page_id)
+        title = content.get("title", "")
+        full_url = _build_confluence_url(content.get("_links", {}).get("webui", ""))
+        match_tag = "[⭐️標題匹配]" if original_query.lower() in title.lower() else ""
+        output.append(f"ID: {page_id} | {match_tag} Title: {title} | Link: [{title}]({full_url})")
+    return output
+
+
 # --- 定義給 Agent 使用的工具 (Tools) ---
+
+def _build_keyword_variants(query: str) -> list[str]:
+    """
+    自動產生多個關鍵字變體，提高找到正確頁面的機率。
+    例如："7 segments" → ["7 segments", "7segments", "segments", "7"]
+    例如："CEM定義" → ["CEM定義", "CEM", "定義"]
+    """
+    variants = [query]
+
+    # 去除空格的版本（"7 segments" → "7segments"）
+    no_space = query.replace(" ", "")
+    if no_space != query:
+        variants.append(no_space)
+
+    # 拆分成個別關鍵字（取最長的那個，通常最有辨識度）
+    parts = query.split()
+    if len(parts) > 1:
+        # 加入最長的單字作為廣泛搜尋
+        longest = max(parts, key=len)
+        if longest not in variants:
+            variants.append(longest)
+        # 加入第一個關鍵字
+        if parts[0] not in variants:
+            variants.append(parts[0])
+
+    # 移除純數字或過短（1字元）的關鍵字
+    variants = [v for v in variants if len(v) > 1]
+
+    # 去重保持順序
+    seen = set()
+    unique = []
+    for v in variants:
+        if v not in seen:
+            seen.add(v)
+            unique.append(v)
+    return unique
+
+
+def _search_with_cql(query: str, limit: int = 10) -> list:
+    """執行單次 CQL 搜尋，回傳 results list"""
+    if " " in query:
+        cql = f'(title ~ "{query}" OR text ~ "{query}")'
+    else:
+        cql = f'(title ~ "{query}*" OR text ~ "{query}*")'
+    results = confluence.cql(cql, limit=limit)
+    return results.get("results", [])
+
 
 @tool
 def search_confluence_pages(query: str) -> str:
     """
     當不知道確切頁面標題時，使用此工具搜索 Confluence 頁面。
     輸入關鍵字，返回相關頁面的 ID、標題和完整連結。
+    會自動嘗試多種關鍵字變體（含/不含空格、拆分關鍵字），提高找到正確頁面的機率。
     """
     print(f"\n[Tool Call] 正在搜尋 Confluence: {query} ...")
     try:
         if not confluence:
-             return "Confluence client is not initialized."
-             
-        # 使用 CQL 進行全文搜索 (text ~ query) 而不僅是標題搜索
-        # 改進：移除特定的 space 限制（以搜尋完整系統），並將含有空格的字串以更寬鬆的方式比對
-        # 如果 user 的關鍵字包含空格（如 "7 customer segments"），直接用精確比對與模糊比對
-        if " " in query:
-            cql = f'(title ~ "{query}" OR text ~ "{query}")'
-        else:
-            cql = f'(title ~ "{query}*" OR text ~ "{query}*")'
-            
-        # 如果你只限於 idtt 空間，請將上方改成 cql = f'space = "idtt" AND ' + cql
-        # 這裡為了解決找不到其他頁面，先幫你開放為全域搜尋，或你可以自行加回 space 的條件
-        
-        # 增加 limit 到 10 以利查找更多相關頁面
-        results = confluence.cql(cql, limit=10)
+            return "Confluence client is not initialized."
+
+        # 第一輪：直接搜尋原始關鍵字
+        items = _search_with_cql(query)
+        output = _format_confluence_items(items, query)
+        if output:
+            print(f"   → 找到 {len(output)} 筆（原始關鍵字）")
+            return "\n".join(output)
+
+        # 第二輪：自動嘗試關鍵字變體
+        variants = _build_keyword_variants(query)
+        print(f"   → 原始關鍵字無結果，嘗試變體：{variants[1:]}")
+        for variant in variants[1:]:
+            items = _search_with_cql(variant)
+            output = _format_confluence_items(items, query)
+            if output:
+                print(f"   → 找到 {len(output)} 筆（變體：{variant}）")
+                return f"（以關鍵字「{variant}」搜尋到以下結果）\n" + "\n".join(output)
+
+        return "⚠️ 【系統警告】Confluence 中完全找不到相關頁面！你必須直接告訴使用者「找不到相關文件」，絕對不能憑空編造標題或連結！"
+    except Exception as e:
+        return f"搜尋錯誤: {str(e)}"
+
+@tool
+def get_all_pages() -> str:
+    """
+    列出 Confluence 中所有頁面的標題與 ID。
+    當 search_confluence_pages 找不到結果時，使用此工具瀏覽所有頁面標題，
+    從中找到最相關的頁面再用 get_confluence_page_content 取得內容。
+    """
+    print(f"\n[Tool Call] 正在列出所有 Confluence 頁面 ...")
+    try:
+        if not confluence:
+            return "Confluence client is not initialized."
+
+        # 使用 CQL 取得所有頁面，依標題排序，最多回傳 200 筆
+        cql = "type = page ORDER BY title ASC"
+        results = confluence.cql(cql, limit=200)
 
         output = []
-        base_url = os.getenv("CONFLUENCE_URL", "").rstrip('/')
-        
         for item in results.get("results", []):
             content = item.get("content", {})
             page_id = content.get("id")
             title = content.get("title")
-            
-            # 獲取 webui link，處理 URL 結構
-            webui = content.get("_links", {}).get("webui", "")
-            
-            # 強制確保路徑以 /wiki 開頭
-            if not webui.startswith("/wiki"):
-                webui = f"/wiki{webui}" if webui.startswith("/") else f"/wiki/{webui}"
-                
-            full_url = f"{base_url}{webui}"
-            
-            # 預先組裝 Markdown Link，方便 Agent 直接使用
-            markdown_link = f"[{title}]({full_url})"
-            
-            # 標記是否為標題完全匹配（高優先級）
-            match_tag = "[⭐️標題匹配]" if query.lower() in title.lower() else ""
-            
-            output.append(f"ID: {page_id} | {match_tag} Title: {title} | Link: {markdown_link}")
+            full_url = _build_confluence_url(content.get("_links", {}).get("webui", ""))
+            output.append(f"ID: {page_id} | Title: {title} | Link: [{title}]({full_url})")
 
-        return "\n".join(output) if output else "⚠️ 【系統警告】Confluence 中完全找不到相關頁面！你必須直接告訴使用者「找不到相關文件」，絕對不能憑空編造標題或連結！"
+        if not output:
+            return "找不到任何 Confluence 頁面。"
+
+        return f"共找到 {len(output)} 個頁面：\n" + "\n".join(output)
     except Exception as e:
-        return f"搜尋錯誤: {str(e)}"
+        return f"列出頁面錯誤: {str(e)}"
+
 
 @tool
 def get_confluence_page_content(page_id: str) -> str:
@@ -125,15 +210,7 @@ def get_confluence_page_content(page_id: str) -> str:
         title = page.get("title")
         html_body = page.get("body", {}).get("storage", {}).get("value", "")
         
-        # 獲取 URL
-        base_url = os.getenv("CONFLUENCE_URL", "").rstrip('/')
-        webui = page.get("_links", {}).get("webui", "")
-        
-        # 強制確保路徑以 /wiki 開頭
-        if not webui.startswith("/wiki"):
-             webui = f"/wiki{webui}" if webui.startswith("/") else f"/wiki/{webui}"
-             
-        full_url = f"{base_url}{webui}"
+        full_url = _build_confluence_url(page.get("_links", {}).get("webui", ""))
         markdown_link = f"[{title}]({full_url})"
         
         # 清理 HTML
@@ -148,7 +225,7 @@ def get_confluence_page_content(page_id: str) -> str:
 
 
 # 工具列表
-confluence_tools = [search_confluence_pages, get_confluence_page_content]
+confluence_tools = [search_confluence_pages, get_confluence_page_content, get_all_pages]
 
 print("\n✅ Confluence Agent 工具已就緒")
 print(f"   可用工具: {[tool.name for tool in confluence_tools]}")

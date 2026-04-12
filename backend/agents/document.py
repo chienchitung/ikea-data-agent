@@ -1,5 +1,6 @@
 import os
 import glob
+import shutil
 from langchain.tools import tool
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -19,6 +20,9 @@ load_dotenv()
 vector_db = None
 embeddings = None
 loaded_files = []
+
+# FAISS 持久化路徑（與 document.py 同層的 backend/ 目錄下）
+FAISS_INDEX_PATH = os.path.join(os.path.dirname(__file__), "..", "faiss_index")
 
 def get_loaded_files():
     return loaded_files
@@ -50,15 +54,44 @@ def initialize_knowledge_base():
     # 2. Check for PDF
     # Look for any PDF in the backend directory or parent directory
     pdf_files = glob.glob("*.pdf") + glob.glob("../*.pdf") + glob.glob("backend/*.pdf")
+
+    # 提早退出：沒有 PDF 就不需要做任何事
     if not pdf_files:
-        loaded_files = []  # Clear the list when no PDFs found
+        loaded_files = []
         print("Info: No PDF files found for Document Agent knowledge base.")
         return {
-            "success": True, 
-            "loaded_files": [], 
+            "success": True,
+            "loaded_files": [],
             "failed_files": [],
             "message": "No PDF files found."
         }
+
+    # 計算一次，後續複用
+    faiss_index_dir = os.path.abspath(FAISS_INDEX_PATH)
+
+    # ⚡️ 嘗試從磁碟載入已快取的 FAISS index（避免重啟時重新 embedding）
+    if os.path.exists(os.path.join(faiss_index_dir, "index.faiss")):
+        try:
+            vector_db = FAISS.load_local(
+                faiss_index_dir,
+                embeddings,
+                allow_dangerous_deserialization=True
+            )
+            # 從快取的 metadata 還原 loaded_files
+            loaded_files = list({
+                doc.metadata.get("source", "")
+                for doc in vector_db.docstore._dict.values()
+                if doc.metadata.get("source")
+            })
+            print(f"\n⚡️ FAISS index 從磁碟快取載入，跳過 embedding（{len(loaded_files)} 個文件）")
+            return {
+                "success": True,
+                "loaded_files": loaded_files,
+                "failed_files": [],
+                "message": f"Loaded from cache: {len(loaded_files)} documents."
+            }
+        except Exception as cache_e:
+            print(f"⚠️ 快取載入失敗，重新建立 index：{cache_e}")
 
     # Load ALL found PDFs
     all_splits = []
@@ -129,6 +162,14 @@ def initialize_knowledge_base():
         for fname, reason in failed_files:
             print(f"   - {os.path.basename(fname)}: {reason}")
     
+    # 重新建立前先清除舊的磁碟快取，避免下次重啟載入到過期資料
+    if os.path.exists(faiss_index_dir):
+        try:
+            shutil.rmtree(faiss_index_dir)
+            print(f"🗑️ 已清除舊的 FAISS 磁碟快取")
+        except Exception as rm_e:
+            print(f"⚠️ 清除快取失敗：{rm_e}")
+
     if not all_splits:
         print("\n❌ No content extracted from any PDFs.")
         print("   Possible reasons:")
@@ -187,10 +228,18 @@ def initialize_knowledge_base():
         # Update global list
         loaded_files = _local_loaded_files
 
+        # 💾 儲存 FAISS index 到磁碟，下次重啟直接載入、跳過 embedding
+        try:
+            os.makedirs(faiss_index_dir, exist_ok=True)
+            vector_db.save_local(faiss_index_dir)
+            print(f"💾 FAISS index 已儲存到磁碟：{faiss_index_dir}")
+        except Exception as save_e:
+            print(f"⚠️ FAISS index 儲存失敗（不影響運作）：{save_e}")
+
         print("\n✅ Document 憑證已從 Environment Variables 載入")
         print(f"   Loaded Knowledge Base from: {', '.join(loaded_files)}")
         print("✅ Document Knowledge Base Initialized.")
-        
+
         return {
             "success": True,
             "loaded_files": loaded_files,

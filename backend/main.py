@@ -42,7 +42,7 @@ async def chat_endpoint(request: ChatRequest):
     
     # Process
     try:
-        response_text = process_chat(request.message, chat_history)
+        response_text = await process_chat(request.message, chat_history)
         return ChatResponse(response=response_text)
     except Exception as e:
         print(f"❌ Error: {e}")
