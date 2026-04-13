@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import axios from 'axios';
 import { ChatMessage } from './components/ChatMessage';
-import { Send, Loader2, Sparkles, FileText, ChevronDown, Plus, Check, Edit2, Trash2, Menu, User } from 'lucide-react';
+import { Send, Loader2, Sparkles, FileText, ChevronDown, Plus, Check, Edit2, Trash2, Menu, User, MessageSquare, PenSquare } from 'lucide-react';
 import bearAvatar from './assets/img/ikea-bear.png';
 import dogAvatar from './assets/img/ikea-dog.png';
 import monkeyAvatar from './assets/img/ikea-monkey.png';
@@ -9,6 +9,8 @@ import sharkAvatar from './assets/img/ikea-shark.png';
 import teddyAvatar from './assets/img/ikea-teddy.png';
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const STORAGE_KEY = 'ikea_agent_conversations';
+const CURRENT_ID_KEY = 'ikea_agent_current_id';
 
 const AVATARS = [
     { id: 'bear', name: 'Bear', src: bearAvatar },
@@ -18,9 +20,50 @@ const AVATARS = [
     { id: 'teddy', name: 'Teddy', src: teddyAvatar },
 ];
 
+// ── 工具函式 ────────────────────────────────────────────
+function generateId() {
+    return `conv_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function makeTitle(messages) {
+    const first = messages.find(m => m.role === 'user');
+    if (!first) return 'New conversation';
+    return first.content.length > 40 ? first.content.slice(0, 40) + '…' : first.content;
+}
+
+function formatRelativeTime(ts) {
+    const now = Date.now();
+    const diff = now - ts;
+    const mins = Math.floor(diff / 60000);
+    const hours = Math.floor(diff / 3600000);
+    const days = Math.floor(diff / 86400000);
+
+    if (mins < 1) return 'Just now';
+    if (mins < 60) return `${mins}m ago`;
+    if (hours < 24) return `${hours}h ago`;
+    if (days === 1) return 'Yesterday';
+    const d = new Date(ts);
+    return `${d.getMonth() + 1}/${d.getDate()}`;
+}
+
+function loadConversations() {
+    try {
+        return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+    } catch {
+        return [];
+    }
+}
+
+function saveConversations(convs) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(convs));
+}
+// ────────────────────────────────────────────────────────
+
 function App() {
     const [input, setInput] = useState("");
     const [messages, setMessages] = useState([]);
+    const [currentConvId, setCurrentConvId] = useState(null);
+    const [conversations, setConversations] = useState([]);
     const [documents, setDocuments] = useState([]);
     const [selectedDocuments, setSelectedDocuments] = useState(new Set());
     const [isLoading, setIsLoading] = useState(false);
@@ -28,13 +71,64 @@ function App() {
     const [uploadProgress, setUploadProgress] = useState(0);
     const [uploadStage, setUploadStage] = useState("");
     const [isSourcesExpanded, setIsSourcesExpanded] = useState(true);
-    const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+    const [isConvsExpanded, setIsConvsExpanded] = useState(true);
+    const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(
+        () => typeof window !== 'undefined' && window.innerWidth < 768
+    );
     const [renamingDoc, setRenamingDoc] = useState(null);
     const [newDocName, setNewDocName] = useState("");
     const [userAvatar, setUserAvatar] = useState(bearAvatar);
     const [showAvatarPicker, setShowAvatarPicker] = useState(false);
     const messagesEndRef = useRef(null);
     const fileInputRef = useRef(null);
+
+    // ── 初始化：從 localStorage 載入 ─────────────────────
+    useEffect(() => {
+        const saved = loadConversations();
+        setConversations(saved);
+        const lastId = localStorage.getItem(CURRENT_ID_KEY);
+        const found = saved.find(c => c.id === lastId);
+        if (found) {
+            setCurrentConvId(found.id);
+            setMessages(found.messages);
+        } else if (saved.length > 0) {
+            setCurrentConvId(saved[0].id);
+            setMessages(saved[0].messages);
+        }
+    }, []);
+
+    // ── messages 變動時自動存檔 ───────────────────────────
+    useEffect(() => {
+        if (messages.length === 0) return;
+
+        setConversations(prev => {
+            let updated;
+            const exists = prev.find(c => c.id === currentConvId);
+            if (exists) {
+                updated = prev.map(c =>
+                    c.id === currentConvId
+                        ? { ...c, messages, title: makeTitle(messages), updatedAt: Date.now() }
+                        : c
+                );
+            } else {
+                const newConv = {
+                    id: currentConvId,
+                    title: makeTitle(messages),
+                    messages,
+                    createdAt: Date.now(),
+                    updatedAt: Date.now(),
+                };
+                updated = [newConv, ...prev];
+            }
+            saveConversations(updated);
+            return updated;
+        });
+    }, [messages]);
+
+    // currentConvId 變動時同步到 localStorage
+    useEffect(() => {
+        if (currentConvId) localStorage.setItem(CURRENT_ID_KEY, currentConvId);
+    }, [currentConvId]);
 
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -57,6 +151,35 @@ function App() {
         fetchDocuments();
     }, []);
 
+    // ── 對話管理 ─────────────────────────────────────────
+    const startNewConversation = () => {
+        const newId = generateId();
+        setCurrentConvId(newId);
+        setMessages([]);
+    };
+
+    const switchConversation = (conv) => {
+        setCurrentConvId(conv.id);
+        setMessages(conv.messages);
+    };
+
+    const deleteConversation = (e, convId) => {
+        e.stopPropagation();
+        const updated = conversations.filter(c => c.id !== convId);
+        saveConversations(updated);
+        setConversations(updated);
+
+        if (convId === currentConvId) {
+            if (updated.length > 0) {
+                setCurrentConvId(updated[0].id);
+                setMessages(updated[0].messages);
+            } else {
+                startNewConversation();
+            }
+        }
+    };
+
+    // ── 文件管理 ─────────────────────────────────────────
     const toggleDocumentSelection = (doc) => {
         const newSelected = new Set(selectedDocuments);
         if (newSelected.has(doc)) {
@@ -75,27 +198,57 @@ function App() {
         }
     };
 
+    const deleteSelectedDocuments = async () => {
+        if (selectedDocuments.size === 0) return;
+        if (!confirm(`Are you sure you want to delete ${selectedDocuments.size} file(s)?`)) return;
+
+        const toDelete = [...selectedDocuments];
+        const failed = [];
+
+        // Optimistic update: immediately remove from UI
+        setDocuments(prev => prev.filter(doc => !toDelete.includes(doc)));
+        setSelectedDocuments(new Set());
+
+        for (const filename of toDelete) {
+            try {
+                await axios.delete(`${API_URL}/documents/${filename}`);
+            } catch {
+                failed.push(filename);
+            }
+        }
+
+        // Confirm final state from server
+        await fetchDocuments();
+
+        if (failed.length === 0) {
+            setMessages(prev => [...prev, {
+                role: 'assistant',
+                content: `✅ Deleted ${toDelete.length} file(s) successfully.`
+            }]);
+        } else {
+            setMessages(prev => [...prev, {
+                role: 'assistant',
+                content: `⚠️ Deleted ${toDelete.length - failed.length} file(s). Failed: ${failed.join(', ')}`
+            }]);
+        }
+    };
+
     const deleteDocument = async (filename) => {
         if (!confirm(`Are you sure you want to delete "${filename}"?`)) return;
-
+        // Optimistic update: immediately remove from UI
+        setDocuments(prev => prev.filter(doc => doc !== filename));
+        const newSelected = new Set(selectedDocuments);
+        newSelected.delete(filename);
+        setSelectedDocuments(newSelected);
         try {
             await axios.delete(`${API_URL}/documents/${filename}`);
             await fetchDocuments();
-
-            const newSelected = new Set(selectedDocuments);
-            newSelected.delete(filename);
-            setSelectedDocuments(newSelected);
-
-            setMessages(prev => [...prev, {
-                role: 'assistant',
-                content: `✅ File deleted: \`${filename}\``
-            }]);
+            setMessages(prev => [...prev, { role: 'assistant', content: `✅ File deleted: \`${filename}\`` }]);
         } catch (error) {
             console.error("Delete failed:", error);
-            setMessages(prev => [...prev, {
-                role: 'assistant',
-                content: `❌ Delete failed: ${error.message}`
-            }]);
+            // Rollback: re-fetch to restore accurate state
+            await fetchDocuments();
+            setMessages(prev => [...prev, { role: 'assistant', content: `❌ Delete failed: ${error.message}` }]);
         }
     };
 
@@ -106,19 +259,12 @@ function App() {
 
     const confirmRename = async () => {
         if (!newDocName.trim()) return;
-
         try {
-            await axios.put(`${API_URL}/documents/${renamingDoc}`, {
-                new_name: newDocName
-            });
+            await axios.put(`${API_URL}/documents/${renamingDoc}`, { new_name: newDocName });
             await fetchDocuments();
             setRenamingDoc(null);
             setNewDocName("");
-
-            setMessages(prev => [...prev, {
-                role: 'assistant',
-                content: `✅ Renamed: \`${renamingDoc}\` → \`${newDocName}.pdf\``
-            }]);
+            setMessages(prev => [...prev, { role: 'assistant', content: `✅ Renamed: \`${renamingDoc}\` → \`${newDocName}.pdf\`` }]);
         } catch (error) {
             console.error("Rename failed:", error);
             alert(`Rename failed: ${error.message}`);
@@ -146,24 +292,16 @@ function App() {
                     else setUploadStage("File received, processing...");
                 },
             });
-
             setUploadProgress(95);
             setUploadStage("Building knowledge base...");
             await fetchDocuments();
             setUploadProgress(100);
             setUploadStage("Done!");
-
-            setMessages(prev => [...prev, {
-                role: 'assistant',
-                content: `✅ **PDF Uploaded**: \`${file.name}\` successfully. I can now answer questions about its content.`
-            }]);
+            setMessages(prev => [...prev, { role: 'assistant', content: `✅ **PDF Uploaded**: \`${file.name}\` successfully. I can now answer questions about its content.` }]);
         } catch (error) {
             console.error("Upload failed", error);
             const errorMessage = error.response?.data?.message || error.message;
-            setMessages(prev => [...prev, {
-                role: 'assistant',
-                content: `❌ **Upload Failed**: ${errorMessage}`
-            }]);
+            setMessages(prev => [...prev, { role: 'assistant', content: `❌ **Upload Failed**: ${errorMessage}` }]);
         } finally {
             setTimeout(() => {
                 setIsUploading(false);
@@ -174,13 +312,18 @@ function App() {
         }
     };
 
+    // ── 聊天邏輯 ─────────────────────────────────────────
     const handleSubmit = async (e) => {
         if (e) e.preventDefault();
         if (!input.trim() || isLoading) return;
 
-        // 重置文字輸入框高度
         const textarea = document.getElementById('chat-input');
         if (textarea) textarea.style.height = 'auto';
+
+        // 若是全新對話（無 ID），建立一個新 ID
+        if (!currentConvId) {
+            setCurrentConvId(generateId());
+        }
 
         const userMessage = { role: 'user', content: input };
         setMessages(prev => [...prev, userMessage]);
@@ -188,22 +331,17 @@ function App() {
         setIsLoading(true);
 
         try {
-            const payload = {
+            const response = await axios.post(`${API_URL}/chat`, {
                 message: userMessage.content,
                 history: messages
-            };
-
-            const response = await axios.post(`${API_URL}/chat`, payload);
-
-            const agentMessage = { role: 'assistant', content: response.data.response };
-            setMessages(prev => [...prev, agentMessage]);
+            });
+            setMessages(prev => [...prev, { role: 'assistant', content: response.data.response }]);
         } catch (error) {
             console.error("Error:", error);
-            const errorMessage = {
+            setMessages(prev => [...prev, {
                 role: 'assistant',
                 content: "⚠️ **Error**: Could not connect to the Agent. Please check if the backend is running."
-            };
-            setMessages(prev => [...prev, errorMessage]);
+            }]);
         } finally {
             setIsLoading(false);
         }
@@ -211,179 +349,231 @@ function App() {
 
     const handleMessageUpdate = async (index, newContent) => {
         if (isLoading) return;
-
-        // Create new history up to the edited message
-        // 1. Get messages up to (but not including) the edited message for context
         const historyContext = messages.slice(0, index);
-
-        // 2. Create the new user message
         const updatedUserMessage = { ...messages[index], content: newContent };
-
-        // 3. Update local state immediately: Keep history + updated message, remove everything after
         setMessages([...historyContext, updatedUserMessage]);
         setIsLoading(true);
-
         try {
-            const payload = {
+            const response = await axios.post(`${API_URL}/chat`, {
                 message: newContent,
                 history: historyContext
-            };
-
-            const response = await axios.post(`${API_URL}/chat`, payload);
-
-            const agentMessage = { role: 'assistant', content: response.data.response };
-            setMessages(prev => [...prev, agentMessage]);
+            });
+            setMessages(prev => [...prev, { role: 'assistant', content: response.data.response }]);
         } catch (error) {
             console.error("Error regenerating response:", error);
-            const errorMessage = {
+            setMessages(prev => [...prev, {
                 role: 'assistant',
-                content: "⚠️ **Error**: Could not regenerate response. Please check backend connection."
-            };
-            setMessages(prev => [...prev, errorMessage]);
+                content: "⚠️ **Error**: Could not regenerate response."
+            }]);
         } finally {
             setIsLoading(false);
         }
     };
 
+    // ── Render ────────────────────────────────────────────
     return (
         <div className="flex h-screen bg-[#F9F9F9]">
-            {/* Sidebar */}
-            <aside className={`${isSidebarCollapsed ? 'w-0' : 'w-80'} bg-white border-r border-slate-200 flex flex-col transition-all duration-300 overflow-hidden`}>
+
+            {/* Mobile backdrop */}
+            {!isSidebarCollapsed && (
+                <div
+                    className="fixed inset-0 bg-black/30 z-20 md:hidden"
+                    onClick={() => setIsSidebarCollapsed(true)}
+                />
+            )}
+
+            {/* ── Sidebar ── */}
+            <aside className={`
+                ${isSidebarCollapsed ? '-translate-x-full md:translate-x-0 md:w-0' : 'translate-x-0 w-80'}
+                fixed md:relative z-30 md:z-auto h-full
+                bg-white border-r border-slate-200 flex flex-col
+                transition-all duration-300 overflow-hidden
+            `}>
+
+                {/* Sidebar Header */}
                 <div className="h-[72px] flex items-center justify-between px-4 border-b border-slate-100 flex-shrink-0">
-                    <h2 className="text-sm font-semibold text-[#111111]">Sources</h2>
+                    <h2 className="text-sm font-semibold text-[#111111]">Workspace</h2>
                     <button
-                        onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
+                        onClick={() => setIsSidebarCollapsed(true)}
                         className="p-1.5 hover:bg-slate-100 rounded transition-colors"
                     >
                         <Menu className="w-5 h-5 text-gray-600" />
                     </button>
                 </div>
 
-                <div className="p-4 flex-shrink-0">
+                {/* New Chat Button */}
+                <div className="px-4 pt-4 pb-2 flex-shrink-0">
                     <button
-                        onClick={() => fileInputRef.current?.click()}
-                        disabled={isUploading}
-                        className="w-full flex items-center justify-center gap-2 px-4 py-2.5 border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors text-sm font-medium text-gray-700 disabled:opacity-50"
+                        onClick={startNewConversation}
+                        className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-[#0058A3] hover:bg-[#004A8F] text-white rounded-lg transition-colors text-sm font-medium"
                     >
-                        {isUploading ? (
-                            <>
-                                <Loader2 className="w-4 h-4 animate-spin flex-shrink-0" />
-                                <span className="truncate">{uploadStage}</span>
-                            </>
-                        ) : (
-                            <>
-                                <Plus className="w-4 h-4" />
-                                Add Source
-                            </>
-                        )}
+                        <PenSquare className="w-4 h-4" />
+                        New Chat
                     </button>
-
-                    {isUploading && (
-                        <div className="mt-2">
-                            <div className="flex justify-between text-xs text-gray-500 mb-1">
-                                <span>{uploadStage}</span>
-                                <span>{uploadProgress}%</span>
-                            </div>
-                            <div className="w-full bg-slate-200 rounded-full h-1.5">
-                                <div
-                                    className="bg-[#0058A3] h-1.5 rounded-full transition-all duration-300"
-                                    style={{ width: `${uploadProgress}%` }}
-                                />
-                            </div>
-                        </div>
-                    )}
-
-                    <input
-                        type="file"
-                        accept=".pdf"
-                        onChange={handleFileUpload}
-                        style={{ display: 'none' }}
-                        ref={fileInputRef}
-                    />
                 </div>
 
-                <div className="flex-1 overflow-y-auto px-4">
-                    <div className="w-full flex items-center justify-between py-2 text-sm font-medium text-gray-700 rounded px-2">
-                        <button
-                            onClick={toggleSelectAll}
-                            className="flex items-center gap-2 hover:bg-slate-50 rounded px-2 py-1 transition-colors"
-                        >
-                            <div className={`w-4 h-4 rounded border-2 ${selectedDocuments.size === documents.length && documents.length > 0 ? 'border-[#0058A3] bg-[#0058A3]' : 'border-gray-300'} flex items-center justify-center`}>
-                                {selectedDocuments.size === documents.length && documents.length > 0 && (
-                                    <Check className="w-3 h-3 text-white" />
+                <div className="flex-1 overflow-y-auto">
+
+                    {/* ── Conversations Section ── */}
+                    <div className="px-4 pb-2">
+                        <div className="flex items-center justify-between py-2">
+                            <span className="text-[10px] font-semibold text-gray-400 tracking-widest uppercase">Conversations</span>
+                            <button
+                                onClick={() => setIsConvsExpanded(!isConvsExpanded)}
+                                className="p-1 hover:bg-slate-100 rounded transition-colors"
+                            >
+                                <ChevronDown className={`w-3.5 h-3.5 text-gray-400 transition-transform ${isConvsExpanded ? '' : '-rotate-90'}`} />
+                            </button>
+                        </div>
+
+                        {isConvsExpanded && (
+                            <div className="space-y-0.5">
+                                {conversations.length === 0 ? (
+                                    <p className="text-xs text-gray-400 text-center py-4">No conversations yet</p>
+                                ) : (
+                                    conversations
+                                        .slice()
+                                        .sort((a, b) => b.updatedAt - a.updatedAt)
+                                        .map(conv => (
+                                            <div
+                                                key={conv.id}
+                                                onClick={() => switchConversation(conv)}
+                                                className={`group flex items-start gap-2 px-2 py-2 rounded-lg cursor-pointer transition-colors ${conv.id === currentConvId ? 'bg-[#E8F0FA]' : 'hover:bg-slate-50'}`}
+                                            >
+                                                <MessageSquare className={`w-3.5 h-3.5 mt-0.5 flex-shrink-0 ${conv.id === currentConvId ? 'text-[#0058A3]' : 'text-gray-400'}`} />
+                                                <div className="flex-1 min-w-0">
+                                                    <p className={`text-xs font-medium truncate ${conv.id === currentConvId ? 'text-[#0058A3]' : 'text-gray-700'}`}>
+                                                        {conv.title}
+                                                    </p>
+                                                    <p className="text-[10px] text-gray-400 mt-0.5">
+                                                        {formatRelativeTime(conv.updatedAt)}
+                                                    </p>
+                                                </div>
+                                                <button
+                                                    onClick={(e) => deleteConversation(e, conv.id)}
+                                                    className="flex-shrink-0 p-0.5 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 hover:bg-red-100 rounded transition-all"
+                                                    title="Delete conversation"
+                                                >
+                                                    <Trash2 className="w-3 h-3 text-red-500" />
+                                                </button>
+                                            </div>
+                                        ))
                                 )}
                             </div>
-                            <span>Select all</span>
-                        </button>
-                        <button
-                            onClick={() => setIsSourcesExpanded(!isSourcesExpanded)}
-                            className="p-1 hover:bg-slate-100 rounded transition-colors"
-                        >
-                            <ChevronDown className={`w-4 h-4 transition-transform ${isSourcesExpanded ? '' : '-rotate-90'}`} />
-                        </button>
+                        )}
                     </div>
 
-                    {isSourcesExpanded && (
-                        <div className="mt-2 space-y-1">
-                            {documents.length === 0 ? (
-                                <div className="text-center py-8 text-gray-400 text-sm">
-                                    <p>No documents uploaded</p>
-                                    <p className="text-xs mt-1">Click + to add a PDF</p>
-                                </div>
-                            ) : (
-                                documents.map((doc, idx) => (
-                                    <div
-                                        key={idx}
-                                        className="flex items-center gap-2 p-2 rounded-lg hover:bg-slate-50 transition-colors group"
-                                    >
-                                        <button
-                                            onClick={() => toggleDocumentSelection(doc)}
-                                            className="flex-shrink-0"
-                                        >
-                                            <div className={`w-5 h-5 rounded border-2 ${selectedDocuments.has(doc) ? 'border-[#0058A3] bg-[#0058A3]' : 'border-gray-300'} flex items-center justify-center transition-colors`}>
-                                                {selectedDocuments.has(doc) && (
-                                                    <Check className="w-3.5 h-3.5 text-white" />
-                                                )}
-                                            </div>
-                                        </button>
+                    {/* Divider */}
+                    <div className="mx-4 border-t border-slate-100 my-2" />
 
-                                        <div className="flex items-center gap-2 flex-1 min-w-0">
-                                            <FileText className="w-4 h-4 text-red-500 flex-shrink-0" />
-                                            <span className="text-sm text-gray-700 truncate" title={doc}>
-                                                {doc}
-                                            </span>
-                                        </div>
-
-                                        <div className="flex-shrink-0 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                            <button
-                                                onClick={() => startRename(doc)}
-                                                className="p-1 hover:bg-slate-200 rounded transition-colors"
-                                                title="Rename"
-                                            >
-                                                <Edit2 className="w-3.5 h-3.5 text-gray-600" />
-                                            </button>
-                                            <button
-                                                onClick={() => deleteDocument(doc)}
-                                                className="p-1 hover:bg-red-100 rounded transition-colors"
-                                                title="Delete"
-                                            >
-                                                <Trash2 className="w-3.5 h-3.5 text-red-600" />
-                                            </button>
-                                        </div>
-                                    </div>
-                                ))
-                            )}
+                    {/* ── Sources Section ── */}
+                    <div className="px-4">
+                        <div className="flex items-center justify-between py-2">
+                            <span className="text-[10px] font-semibold text-gray-400 tracking-widest uppercase">Sources</span>
+                            <button
+                                onClick={() => setIsSourcesExpanded(!isSourcesExpanded)}
+                                className="p-1 hover:bg-slate-100 rounded transition-colors"
+                            >
+                                <ChevronDown className={`w-3.5 h-3.5 text-gray-400 transition-transform ${isSourcesExpanded ? '' : '-rotate-90'}`} />
+                            </button>
                         </div>
-                    )}
+
+                        <button
+                            onClick={() => fileInputRef.current?.click()}
+                            disabled={isUploading}
+                            className="w-full flex items-center justify-center gap-2 px-4 py-2 border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors text-xs font-medium text-gray-600 disabled:opacity-50 mb-2"
+                        >
+                            {isUploading ? (
+                                <>
+                                    <Loader2 className="w-3.5 h-3.5 animate-spin flex-shrink-0" />
+                                    <span className="truncate">{uploadStage}</span>
+                                </>
+                            ) : (
+                                <>
+                                    <Plus className="w-3.5 h-3.5" />
+                                    Add PDF Source
+                                </>
+                            )}
+                        </button>
+
+                        {isUploading && (
+                            <div className="mt-2">
+                                <div className="flex justify-between text-xs text-gray-500 mb-1">
+                                    <span>{uploadStage}</span>
+                                    <span>{uploadProgress}%</span>
+                                </div>
+                                <div className="w-full bg-slate-200 rounded-full h-1.5">
+                                    <div
+                                        className="bg-[#0058A3] h-1.5 rounded-full transition-all duration-300"
+                                        style={{ width: `${uploadProgress}%` }}
+                                    />
+                                </div>
+                            </div>
+                        )}
+
+                        <input type="file" accept=".pdf" onChange={handleFileUpload} style={{ display: 'none' }} ref={fileInputRef} />
+
+                        {isSourcesExpanded && (
+                            <div className="space-y-0.5">
+                                {documents.length === 0 ? (
+                                    <p className="text-xs text-gray-400 text-center py-4">No documents uploaded</p>
+                                ) : (
+                                    <>
+                                        <div className="flex items-center justify-between mb-1">
+                                            <button
+                                                onClick={toggleSelectAll}
+                                                className="flex items-center gap-2 hover:bg-slate-50 rounded px-2 py-1 transition-colors"
+                                            >
+                                                <div className={`w-3.5 h-3.5 rounded border-2 flex-shrink-0 ${selectedDocuments.size === documents.length && documents.length > 0 ? 'border-[#0058A3] bg-[#0058A3]' : 'border-gray-300'} flex items-center justify-center`}>
+                                                    {selectedDocuments.size === documents.length && documents.length > 0 && <Check className="w-2.5 h-2.5 text-white" />}
+                                                </div>
+                                                <span className="text-xs text-gray-500">Select all</span>
+                                            </button>
+                                            {selectedDocuments.size > 0 && (
+                                                <button
+                                                    onClick={deleteSelectedDocuments}
+                                                    className="flex items-center gap-1 px-2 py-1 text-xs text-red-600 hover:bg-red-50 rounded transition-colors"
+                                                    title={`Delete ${selectedDocuments.size} selected`}
+                                                >
+                                                    <Trash2 className="w-3 h-3" />
+                                                    Delete ({selectedDocuments.size})
+                                                </button>
+                                            )}
+                                        </div>
+                                        {documents.map((doc, idx) => (
+                                            <div key={idx} className="flex items-center gap-2 p-2 rounded-lg hover:bg-slate-50 transition-colors group">
+                                                <button onClick={() => toggleDocumentSelection(doc)} className="flex-shrink-0">
+                                                    <div className={`w-4 h-4 rounded border-2 ${selectedDocuments.has(doc) ? 'border-[#0058A3] bg-[#0058A3]' : 'border-gray-300'} flex items-center justify-center transition-colors`}>
+                                                        {selectedDocuments.has(doc) && <Check className="w-2.5 h-2.5 text-white" />}
+                                                    </div>
+                                                </button>
+                                                <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                                                    <FileText className="w-3.5 h-3.5 text-red-500 flex-shrink-0" />
+                                                    <span className="text-xs text-gray-700 truncate" title={doc}>{doc}</span>
+                                                </div>
+                                                <div className="flex-shrink-0 flex gap-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
+                                                    <button onClick={() => startRename(doc)} className="p-1 hover:bg-slate-200 rounded" title="Rename">
+                                                        <Edit2 className="w-3 h-3 text-gray-500" />
+                                                    </button>
+                                                    <button onClick={() => deleteDocument(doc)} className="p-1 hover:bg-red-100 rounded" title="Delete">
+                                                        <Trash2 className="w-3 h-3 text-red-500" />
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </>
+                                )}
+                            </div>
+                        )}
+                    </div>
                 </div>
 
-                <div className="p-4 border-t border-slate-100 flex-shrink-0">
-                    <div className="text-[10px] text-gray-400 text-center">
-                        Document Agent Active
-                    </div>
+                <div className="p-3 border-t border-slate-100 flex-shrink-0">
+                    <div className="text-[10px] text-gray-400 text-center">Developed by IKEA Data Team</div>
                 </div>
             </aside>
 
+            {/* Sidebar collapsed toggle — shown when sidebar is closed */}
             {isSidebarCollapsed && (
                 <button
                     onClick={() => setIsSidebarCollapsed(false)}
@@ -393,9 +583,12 @@ function App() {
                 </button>
             )}
 
-            <div className="flex-1 flex flex-col">
-                <header className="bg-white h-[72px] flex items-center shadow-sm border-b border-slate-100">
-                    <div className="max-w-4xl mx-auto w-full px-6 flex items-center justify-between">
+            {/* ── Main Content ── */}
+            <div className="flex-1 flex flex-col min-w-0">
+
+                {/* Header */}
+                <header className="bg-white h-[72px] flex items-center shadow-sm border-b border-slate-100 flex-shrink-0">
+                    <div className="max-w-4xl mx-auto w-full px-3 sm:px-6 flex items-center justify-between">
                         <div className="flex items-center">
                             <img
                                 src="https://www.inter.ikea.com/-/media/aboutikea/images/brand-default.svg?rev=23ee61ddbb1948f399b47938edeb3c11"
@@ -407,17 +600,30 @@ function App() {
                                 <p className="text-[10px] text-[#767676] font-medium tracking-wide">ASSISTANT</p>
                             </div>
                         </div>
-                        <button
-                            onClick={() => setShowAvatarPicker(!showAvatarPicker)}
-                            className="p-2 hover:bg-slate-100 rounded-full transition-colors relative"
-                            title="Change avatar"
-                        >
-                            <User className="w-5 h-5 text-gray-600" />
-                        </button>
+                        <div className="flex items-center gap-1">
+                            {/* Clear / New chat button */}
+                            {messages.length > 0 && (
+                                <button
+                                    onClick={startNewConversation}
+                                    className="p-2 hover:bg-slate-100 rounded-full transition-colors"
+                                    title="Start new conversation"
+                                >
+                                    <PenSquare className="w-5 h-5 text-gray-500" />
+                                </button>
+                            )}
+                            <button
+                                onClick={() => setShowAvatarPicker(!showAvatarPicker)}
+                                className="p-2 hover:bg-slate-100 rounded-full transition-colors"
+                                title="Change avatar"
+                            >
+                                <User className="w-5 h-5 text-gray-600" />
+                            </button>
+                        </div>
                     </div>
                 </header>
 
-                <main className="flex-1 overflow-y-auto p-6">
+                {/* Chat Area */}
+                <main className="flex-1 overflow-y-auto p-3 sm:p-6">
                     {messages.length === 0 ? (
                         <div className="flex flex-col items-center justify-center h-full text-center space-y-6 opacity-80">
                             <div className="bg-[#F5F5F5] p-6 rounded-full shadow-sm">
@@ -438,9 +644,7 @@ function App() {
                                     message={msg}
                                     userAvatar={userAvatar}
                                     onUpdate={(newContent) => handleMessageUpdate(idx, newContent)}
-                                    onCopy={(content) => {
-                                        navigator.clipboard.writeText(content);
-                                    }}
+                                    onCopy={(content) => navigator.clipboard.writeText(content)}
                                 />
                             ))}
                             {isLoading && (
@@ -457,20 +661,18 @@ function App() {
                     )}
                 </main>
 
-                <footer className="w-full max-w-4xl mx-auto p-4 bg-transparent">
+                {/* Input */}
+                <footer className="w-full max-w-4xl mx-auto px-2 sm:px-4 py-3 bg-transparent">
                     <form onSubmit={handleSubmit} className="chatbot-input-container !bg-white !shadow-lg">
                         <textarea
                             id="chat-input"
                             value={input}
                             onChange={(e) => {
                                 setInput(e.target.value);
-                                // 將高度設定回只靠內容與 min-height 撐起
                                 e.target.style.height = "auto";
-                                // 給予新的 scrollHeight 高度（單行時會被 min-height 58px 接住）
                                 e.target.style.height = `${e.target.scrollHeight}px`;
                             }}
                             onKeyDown={(e) => {
-                                // 加上 !e.nativeEvent.isComposing 判斷，避免中文選字按 Enter 時把訊息送出去
                                 if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                                     e.preventDefault();
                                     handleSubmit(e);
@@ -481,12 +683,7 @@ function App() {
                             className="chatbot-input py-4 my-auto min-h-[58px] max-h-[200px] overflow-y-auto"
                             rows={1}
                         />
-
-                        <button
-                            type="submit"
-                            disabled={!input.trim() || isLoading}
-                            className="send-button"
-                        >
+                        <button type="submit" disabled={!input.trim() || isLoading} className="send-button">
                             <Send />
                         </button>
                     </form>
@@ -496,6 +693,7 @@ function App() {
                 </footer>
             </div>
 
+            {/* ── Rename Modal ── */}
             {renamingDoc && (
                 <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setRenamingDoc(null)}>
                     <div className="bg-white rounded-lg p-6 w-96 shadow-xl" onClick={(e) => e.stopPropagation()}>
@@ -504,58 +702,33 @@ function App() {
                             type="text"
                             value={newDocName}
                             onChange={(e) => setNewDocName(e.target.value)}
-                            onKeyPress={(e) => e.key === 'Enter' && confirmRename()}
+                            onKeyDown={(e) => e.key === 'Enter' && confirmRename()}
                             className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#0058A3]"
                             placeholder="Enter new name"
                             autoFocus
                         />
                         <div className="flex gap-2 mt-4 justify-end">
-                            <button
-                                onClick={() => setRenamingDoc(null)}
-                                className="px-4 py-2 text-sm font-medium text-gray-700 hover:bg-slate-100 rounded-lg transition-colors"
-                            >
-                                Cancel
-                            </button>
-                            <button
-                                onClick={confirmRename}
-                                className="px-4 py-2 text-sm font-medium text-white bg-[#0058A3] hover:bg-[#004A8F] rounded-lg transition-colors"
-                            >
-                                Confirm
-                            </button>
+                            <button onClick={() => setRenamingDoc(null)} className="px-4 py-2 text-sm font-medium text-gray-700 hover:bg-slate-100 rounded-lg transition-colors">Cancel</button>
+                            <button onClick={confirmRename} className="px-4 py-2 text-sm font-medium text-white bg-[#0058A3] hover:bg-[#004A8F] rounded-lg transition-colors">Confirm</button>
                         </div>
                     </div>
                 </div>
             )}
 
-
-            {/* Avatar Picker Popup */}
+            {/* ── Avatar Picker ── */}
             {showAvatarPicker && (
                 <>
-                    {/* Invisible backdrop to close on outside click */}
-                    <div
-                        className="fixed inset-0 z-40"
-                        onClick={() => setShowAvatarPicker(false)}
-                    />
-                    <div className="fixed top-20 right-6 bg-white rounded-lg p-6 max-w-md w-80 shadow-2xl border border-slate-200 z-50">
+                    <div className="fixed inset-0 z-40" onClick={() => setShowAvatarPicker(false)} />
+                    <div className="fixed top-20 right-3 sm:right-6 bg-white rounded-lg p-4 sm:p-6 w-[min(320px,calc(100vw-1.5rem))] shadow-2xl border border-slate-200 z-50">
                         <h3 className="text-lg font-semibold mb-4">Choose your avatar</h3>
                         <div className="grid grid-cols-3 gap-4">
                             {AVATARS.map((avatar) => (
                                 <button
                                     key={avatar.id}
-                                    onClick={() => {
-                                        setUserAvatar(avatar.src);
-                                        setShowAvatarPicker(false);
-                                    }}
-                                    className={`relative p-2 rounded-lg border-2 transition-all hover:shadow-lg ${userAvatar === avatar.src
-                                        ? 'border-[#0058A3] bg-blue-50'
-                                        : 'border-slate-200 hover:border-slate-300'
-                                        }`}
+                                    onClick={() => { setUserAvatar(avatar.src); setShowAvatarPicker(false); }}
+                                    className={`relative p-2 rounded-lg border-2 transition-all hover:shadow-lg ${userAvatar === avatar.src ? 'border-[#0058A3] bg-blue-50' : 'border-slate-200 hover:border-slate-300'}`}
                                 >
-                                    <img
-                                        src={avatar.src}
-                                        alt={avatar.name}
-                                        className="w-full h-auto rounded"
-                                    />
+                                    <img src={avatar.src} alt={avatar.name} className="w-full h-auto rounded" />
                                     {userAvatar === avatar.src && (
                                         <div className="absolute top-1 right-1 bg-[#0058A3] rounded-full p-1">
                                             <Check className="w-3 h-3 text-white" />
