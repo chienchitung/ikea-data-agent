@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import axios from 'axios';
 import { ChatMessage } from './components/ChatMessage';
-import { Send, Loader2, Sparkles, FileText, ChevronDown, Plus, Check, Edit2, Trash2, Menu, User, MessageSquare, PenSquare } from 'lucide-react';
+import { ArrowUp, Loader2, Sparkles, FileText, ChevronDown, ChevronLeft, ChevronRight, Plus, Check, Edit2, Trash2, User, MessageSquare, PenSquare, Search } from 'lucide-react';
 import bearAvatar from './assets/img/ikea-bear.png';
 import dogAvatar from './assets/img/ikea-dog.png';
 import monkeyAvatar from './assets/img/ikea-monkey.png';
@@ -91,6 +91,9 @@ function App() {
         if (found) {
             setCurrentConvId(found.id);
             setMessages(found.messages);
+        } else if (lastId) {
+            setCurrentConvId(lastId);
+            setMessages([]);
         } else if (saved.length > 0) {
             setCurrentConvId(saved[0].id);
             setMessages(saved[0].messages);
@@ -372,7 +375,7 @@ function App() {
 
     // ── Render ────────────────────────────────────────────
     return (
-        <div className="flex h-screen bg-[#F9F9F9]">
+        <div className="flex h-screen bg-white">
 
             {/* Mobile backdrop */}
             {!isSidebarCollapsed && (
@@ -386,18 +389,20 @@ function App() {
             <aside className={`
                 ${isSidebarCollapsed ? '-translate-x-full md:translate-x-0 md:w-0' : 'translate-x-0 w-80'}
                 fixed md:relative z-30 md:z-auto h-full
-                bg-white border-r border-slate-200 flex flex-col
+                bg-[#F5F5F5] border-r border-[#DFDFDF] flex flex-col
                 transition-all duration-300 overflow-hidden
             `}>
 
                 {/* Sidebar Header */}
-                <div className="h-[72px] flex items-center justify-between px-4 border-b border-slate-100 flex-shrink-0">
-                    <h2 className="text-sm font-semibold text-[#111111]">Workspace</h2>
+                <div className="h-[72px] flex items-center justify-between px-4 border-b border-[#DFDFDF] flex-shrink-0">
+                    <h2 className="text-base font-semibold text-[#111111]">Workspace</h2>
                     <button
                         onClick={() => setIsSidebarCollapsed(true)}
-                        className="p-1.5 hover:bg-slate-100 rounded transition-colors"
+                        className="p-2 hover:bg-[#DFDFDF] rounded-full transition-colors"
+                        aria-label="Collapse sidebar"
+                        title="Collapse sidebar"
                     >
-                        <Menu className="w-5 h-5 text-gray-600" />
+                        <ChevronLeft className="w-5 h-5 text-[#111111]" />
                     </button>
                 </div>
 
@@ -405,7 +410,7 @@ function App() {
                 <div className="px-4 pt-4 pb-2 flex-shrink-0">
                     <button
                         onClick={startNewConversation}
-                        className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-[#0058A3] hover:bg-[#004A8F] text-white rounded-lg transition-colors text-sm font-medium"
+                        className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-[#0058A3] hover:bg-[#004F93] text-white rounded-lg transition-colors text-sm font-medium"
                     >
                         <PenSquare className="w-4 h-4" />
                         New Chat
@@ -417,19 +422,19 @@ function App() {
                     {/* ── Conversations Section ── */}
                     <div className="px-4 pb-2">
                         <div className="flex items-center justify-between py-2">
-                            <span className="text-[10px] font-semibold text-gray-400 tracking-widest uppercase">Conversations</span>
+                            <span className="text-xs font-semibold text-[#767676] tracking-widest uppercase">Conversations</span>
                             <button
                                 onClick={() => setIsConvsExpanded(!isConvsExpanded)}
-                                className="p-1 hover:bg-slate-100 rounded transition-colors"
+                                className="p-1 hover:bg-[#DFDFDF] rounded transition-colors"
                             >
-                                <ChevronDown className={`w-3.5 h-3.5 text-gray-400 transition-transform ${isConvsExpanded ? '' : '-rotate-90'}`} />
+                                <ChevronDown className={`w-3.5 h-3.5 text-[#767676] transition-transform ${isConvsExpanded ? '' : '-rotate-90'}`} />
                             </button>
                         </div>
 
                         {isConvsExpanded && (
                             <div className="space-y-0.5">
                                 {conversations.length === 0 ? (
-                                    <p className="text-xs text-gray-400 text-center py-4">No conversations yet</p>
+                                    <p className="text-sm text-[#767676] text-center py-4">No conversations yet</p>
                                 ) : (
                                     conversations
                                         .slice()
@@ -438,14 +443,14 @@ function App() {
                                             <div
                                                 key={conv.id}
                                                 onClick={() => switchConversation(conv)}
-                                                className={`group flex items-start gap-2 px-2 py-2 rounded-lg cursor-pointer transition-colors ${conv.id === currentConvId ? 'bg-[#E8F0FA]' : 'hover:bg-slate-50'}`}
+                                                className={`group flex items-start gap-2 px-2 py-2 rounded-lg cursor-pointer transition-colors ${conv.id === currentConvId ? 'bg-white' : 'hover:bg-white'}`}
                                             >
-                                                <MessageSquare className={`w-3.5 h-3.5 mt-0.5 flex-shrink-0 ${conv.id === currentConvId ? 'text-[#0058A3]' : 'text-gray-400'}`} />
+                                                <MessageSquare className={`w-3.5 h-3.5 mt-0.5 flex-shrink-0 ${conv.id === currentConvId ? 'text-[#484848]' : 'text-[#767676]'}`} />
                                                 <div className="flex-1 min-w-0">
-                                                    <p className={`text-xs font-medium truncate ${conv.id === currentConvId ? 'text-[#0058A3]' : 'text-gray-700'}`}>
+                                                    <p className={`text-sm font-medium truncate ${conv.id === currentConvId ? 'text-[#484848]' : 'text-[#111111]'}`}>
                                                         {conv.title}
                                                     </p>
-                                                    <p className="text-[10px] text-gray-400 mt-0.5">
+                                                    <p className="text-xs text-[#767676] mt-0.5">
                                                         {formatRelativeTime(conv.updatedAt)}
                                                     </p>
                                                 </div>
@@ -464,24 +469,24 @@ function App() {
                     </div>
 
                     {/* Divider */}
-                    <div className="mx-4 border-t border-slate-100 my-2" />
+                    <div className="mx-4 border-t border-[#DFDFDF] my-2" />
 
                     {/* ── Sources Section ── */}
                     <div className="px-4">
                         <div className="flex items-center justify-between py-2">
-                            <span className="text-[10px] font-semibold text-gray-400 tracking-widest uppercase">Sources</span>
+                            <span className="text-xs font-semibold text-[#767676] tracking-widest uppercase">Sources</span>
                             <button
                                 onClick={() => setIsSourcesExpanded(!isSourcesExpanded)}
-                                className="p-1 hover:bg-slate-100 rounded transition-colors"
+                                className="p-1 hover:bg-[#DFDFDF] rounded transition-colors"
                             >
-                                <ChevronDown className={`w-3.5 h-3.5 text-gray-400 transition-transform ${isSourcesExpanded ? '' : '-rotate-90'}`} />
+                                <ChevronDown className={`w-3.5 h-3.5 text-[#767676] transition-transform ${isSourcesExpanded ? '' : '-rotate-90'}`} />
                             </button>
                         </div>
 
                         <button
                             onClick={() => fileInputRef.current?.click()}
                             disabled={isUploading}
-                            className="w-full flex items-center justify-center gap-2 px-4 py-2 border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors text-xs font-medium text-gray-600 disabled:opacity-50 mb-2"
+                            className="w-full flex items-center justify-center gap-2 px-4 py-2 border border-[#DFDFDF] rounded-lg hover:bg-white transition-colors text-sm font-medium text-[#484848] disabled:opacity-50 mb-2"
                         >
                             {isUploading ? (
                                 <>
@@ -498,11 +503,11 @@ function App() {
 
                         {isUploading && (
                             <div className="mt-2">
-                                <div className="flex justify-between text-xs text-gray-500 mb-1">
+                                <div className="flex justify-between text-xs text-[#767676] mb-1">
                                     <span>{uploadStage}</span>
                                     <span>{uploadProgress}%</span>
                                 </div>
-                                <div className="w-full bg-slate-200 rounded-full h-1.5">
+                                <div className="w-full bg-[#DFDFDF] rounded-full h-1.5">
                                     <div
                                         className="bg-[#0058A3] h-1.5 rounded-full transition-all duration-300"
                                         style={{ width: `${uploadProgress}%` }}
@@ -516,23 +521,23 @@ function App() {
                         {isSourcesExpanded && (
                             <div className="space-y-0.5">
                                 {documents.length === 0 ? (
-                                    <p className="text-xs text-gray-400 text-center py-4">No documents uploaded</p>
+                                    <p className="text-sm text-[#767676] text-center py-4">No documents uploaded</p>
                                 ) : (
                                     <>
                                         <div className="flex items-center justify-between mb-1">
                                             <button
                                                 onClick={toggleSelectAll}
-                                                className="flex items-center gap-2 hover:bg-slate-50 rounded px-2 py-1 transition-colors"
+                                                className="flex items-center gap-2 hover:bg-white rounded px-2 py-1 transition-colors"
                                             >
-                                                <div className={`w-3.5 h-3.5 rounded border-2 flex-shrink-0 ${selectedDocuments.size === documents.length && documents.length > 0 ? 'border-[#0058A3] bg-[#0058A3]' : 'border-gray-300'} flex items-center justify-center`}>
+                                                <div className={`w-3.5 h-3.5 rounded border-2 flex-shrink-0 ${selectedDocuments.size === documents.length && documents.length > 0 ? 'border-[#0058A3] bg-[#0058A3]' : 'border-[#CCCCCC]'} flex items-center justify-center`}>
                                                     {selectedDocuments.size === documents.length && documents.length > 0 && <Check className="w-2.5 h-2.5 text-white" />}
                                                 </div>
-                                                <span className="text-xs text-gray-500">Select all</span>
+                                                <span className="text-sm text-[#484848]">Select all</span>
                                             </button>
                                             {selectedDocuments.size > 0 && (
                                                 <button
                                                     onClick={deleteSelectedDocuments}
-                                                    className="flex items-center gap-1 px-2 py-1 text-xs text-red-600 hover:bg-red-50 rounded transition-colors"
+                                                    className="flex items-center gap-1 px-2 py-1 text-sm text-red-600 hover:bg-red-50 rounded transition-colors"
                                                     title={`Delete ${selectedDocuments.size} selected`}
                                                 >
                                                     <Trash2 className="w-3 h-3" />
@@ -541,19 +546,19 @@ function App() {
                                             )}
                                         </div>
                                         {documents.map((doc, idx) => (
-                                            <div key={idx} className="flex items-center gap-2 p-2 rounded-lg hover:bg-slate-50 transition-colors group">
+                                            <div key={idx} className="flex items-center gap-2 p-2 rounded-lg hover:bg-white transition-colors group">
                                                 <button onClick={() => toggleDocumentSelection(doc)} className="flex-shrink-0">
-                                                    <div className={`w-4 h-4 rounded border-2 ${selectedDocuments.has(doc) ? 'border-[#0058A3] bg-[#0058A3]' : 'border-gray-300'} flex items-center justify-center transition-colors`}>
+                                                    <div className={`w-4 h-4 rounded border-2 ${selectedDocuments.has(doc) ? 'border-[#0058A3] bg-[#0058A3]' : 'border-[#CCCCCC]'} flex items-center justify-center transition-colors`}>
                                                         {selectedDocuments.has(doc) && <Check className="w-2.5 h-2.5 text-white" />}
                                                     </div>
                                                 </button>
                                                 <div className="flex items-center gap-1.5 flex-1 min-w-0">
                                                     <FileText className="w-3.5 h-3.5 text-red-500 flex-shrink-0" />
-                                                    <span className="text-xs text-gray-700 truncate" title={doc}>{doc}</span>
+                                                    <span className="text-sm text-[#111111] truncate" title={doc}>{doc}</span>
                                                 </div>
                                                 <div className="flex-shrink-0 flex gap-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
-                                                    <button onClick={() => startRename(doc)} className="p-1 hover:bg-slate-200 rounded" title="Rename">
-                                                        <Edit2 className="w-3 h-3 text-gray-500" />
+                                                    <button onClick={() => startRename(doc)} className="p-1 hover:bg-[#DFDFDF] rounded" title="Rename">
+                                                        <Edit2 className="w-3 h-3 text-[#484848]" />
                                                     </button>
                                                     <button onClick={() => deleteDocument(doc)} className="p-1 hover:bg-red-100 rounded" title="Delete">
                                                         <Trash2 className="w-3 h-3 text-red-500" />
@@ -568,8 +573,8 @@ function App() {
                     </div>
                 </div>
 
-                <div className="p-3 border-t border-slate-100 flex-shrink-0">
-                    <div className="text-[10px] text-gray-400 text-center">Developed by IKEA Data Team</div>
+                <div className="p-3 border-t border-[#DFDFDF] flex-shrink-0">
+                    <div className="text-xs text-[#767676] text-center">Developed by IKEA Data Team</div>
                 </div>
             </aside>
 
@@ -577,53 +582,66 @@ function App() {
             {isSidebarCollapsed && (
                 <button
                     onClick={() => setIsSidebarCollapsed(false)}
-                    className="fixed left-0 top-20 z-20 bg-white border border-slate-200 rounded-r-lg p-2 shadow-lg hover:bg-slate-50 transition-colors"
+                    className="fixed left-3 top-24 z-20 bg-white border border-[#DFDFDF] rounded-full p-2 shadow-lg hover:bg-[#F5F5F5] transition-colors"
+                    aria-label="Expand sidebar"
+                    title="Expand sidebar"
                 >
-                    <Menu className="w-5 h-5 text-gray-600" />
+                    <ChevronRight className="w-5 h-5 text-[#111111]" />
                 </button>
             )}
 
             {/* ── Main Content ── */}
-            <div className="flex-1 flex flex-col min-w-0">
+            <div className="flex-1 flex flex-col min-w-0 bg-white">
 
                 {/* Header */}
-                <header className="bg-white h-[72px] flex items-center shadow-sm border-b border-slate-100 flex-shrink-0">
-                    <div className="max-w-4xl mx-auto w-full px-3 sm:px-6 flex items-center justify-between">
-                        <div className="flex items-center">
+                <header className="bg-white min-h-[84px] flex items-center shadow-sm border-b border-[#DFDFDF] flex-shrink-0">
+                    <div className="max-w-4xl mx-auto w-full px-4 sm:px-6 py-3 flex items-center justify-between">
+                        <button
+                            type="button"
+                            onClick={startNewConversation}
+                            className="flex items-center gap-4 min-w-0 text-left"
+                            aria-label="Start a new conversation"
+                            title="Start a new conversation"
+                        >
                             <img
                                 src="https://www.inter.ikea.com/-/media/aboutikea/images/brand-default.svg?rev=23ee61ddbb1948f399b47938edeb3c11"
                                 alt="IKEA Logo"
-                                className="h-[28px]"
+                                className="h-[36px] w-auto flex-shrink-0"
                             />
-                            <div className="ml-4 pl-4 border-l border-slate-200">
-                                <h1 className="text-sm font-bold text-[#111111] leading-tight">IKEA Data Agent</h1>
-                                <p className="text-[10px] text-[#767676] font-medium tracking-wide">ASSISTANT</p>
+                            <div className="pl-4 border-l border-[#DFDFDF] min-w-0">
+                                <div className="flex items-center gap-2 min-w-0">
+                                    <h1 className="text-xl sm:text-2xl font-bold text-[#111111] leading-[1.67] truncate">Data Machi</h1>
+                                    <span className="hidden sm:inline-flex rounded-full bg-[#DFDFDF] px-2 py-0.5 text-xs font-bold text-[#111111]">
+                                        Beta
+                                    </span>
+                                </div>
+                                <p className="text-xs text-[#767676] font-medium tracking-wide">Ask your data assistant</p>
                             </div>
-                        </div>
+                        </button>
                         <div className="flex items-center gap-1">
                             {/* Clear / New chat button */}
                             {messages.length > 0 && (
                                 <button
                                     onClick={startNewConversation}
-                                    className="p-2 hover:bg-slate-100 rounded-full transition-colors"
+                                    className="p-2 hover:bg-[#F5F5F5] rounded-full transition-colors"
                                     title="Start new conversation"
                                 >
-                                    <PenSquare className="w-5 h-5 text-gray-500" />
+                                    <PenSquare className="w-5 h-5 text-[#111111]" />
                                 </button>
                             )}
                             <button
                                 onClick={() => setShowAvatarPicker(!showAvatarPicker)}
-                                className="p-2 hover:bg-slate-100 rounded-full transition-colors"
+                                className="p-2 hover:bg-[#F5F5F5] rounded-full transition-colors"
                                 title="Change avatar"
                             >
-                                <User className="w-5 h-5 text-gray-600" />
+                                <User className="w-5 h-5 text-[#111111]" />
                             </button>
                         </div>
                     </div>
                 </header>
 
                 {/* Chat Area */}
-                <main className="flex-1 overflow-y-auto p-3 sm:p-6">
+                <main className="flex-1 overflow-y-auto p-3 sm:p-6 bg-white">
                     {messages.length === 0 ? (
                         <div className="flex flex-col items-center justify-center h-full text-center space-y-6 opacity-80">
                             <div className="bg-[#F5F5F5] p-6 rounded-full shadow-sm">
@@ -662,8 +680,9 @@ function App() {
                 </main>
 
                 {/* Input */}
-                <footer className="w-full max-w-4xl mx-auto px-2 sm:px-4 py-3 bg-transparent">
-                    <form onSubmit={handleSubmit} className="chatbot-input-container !bg-white !shadow-lg">
+                <footer className="w-full max-w-4xl mx-auto px-2 sm:px-4 py-3 bg-white">
+                    <form onSubmit={handleSubmit} className="chatbot-input-container">
+                        {!input.trim() && <Search className="input-leading-icon" aria-hidden="true" />}
                         <textarea
                             id="chat-input"
                             value={input}
@@ -678,14 +697,16 @@ function App() {
                                     handleSubmit(e);
                                 }
                             }}
-                            placeholder="Message your agent... (Shift + Enter for new line)"
+                            placeholder="Type your question here"
                             disabled={isLoading}
-                            className="chatbot-input py-4 my-auto min-h-[58px] max-h-[200px] overflow-y-auto"
+                            className="chatbot-input"
                             rows={1}
                         />
-                        <button type="submit" disabled={!input.trim() || isLoading} className="send-button">
-                            <Send />
-                        </button>
+                        {input.trim() && (
+                            <button type="submit" disabled={isLoading} className="send-button" aria-label="Send message">
+                                <ArrowUp />
+                            </button>
+                        )}
                     </form>
                     <div className="text-center mt-2 pb-2">
                         <p className="text-[10px] text-[#767676] font-medium">AI can make mistakes. Please verify important information.</p>
@@ -703,13 +724,13 @@ function App() {
                             value={newDocName}
                             onChange={(e) => setNewDocName(e.target.value)}
                             onKeyDown={(e) => e.key === 'Enter' && confirmRename()}
-                            className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#0058A3]"
+                            className="w-full px-3 py-2 border border-[#DFDFDF] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#0058A3]"
                             placeholder="Enter new name"
                             autoFocus
                         />
                         <div className="flex gap-2 mt-4 justify-end">
-                            <button onClick={() => setRenamingDoc(null)} className="px-4 py-2 text-sm font-medium text-gray-700 hover:bg-slate-100 rounded-lg transition-colors">Cancel</button>
-                            <button onClick={confirmRename} className="px-4 py-2 text-sm font-medium text-white bg-[#0058A3] hover:bg-[#004A8F] rounded-lg transition-colors">Confirm</button>
+                            <button onClick={() => setRenamingDoc(null)} className="px-4 py-2 text-sm font-medium text-[#111111] hover:bg-[#F5F5F5] rounded-lg transition-colors">Cancel</button>
+                            <button onClick={confirmRename} className="px-4 py-2 text-sm font-medium text-white bg-[#0058A3] hover:bg-[#004F93] rounded-lg transition-colors">Confirm</button>
                         </div>
                     </div>
                 </div>
@@ -719,14 +740,14 @@ function App() {
             {showAvatarPicker && (
                 <>
                     <div className="fixed inset-0 z-40" onClick={() => setShowAvatarPicker(false)} />
-                    <div className="fixed top-20 right-3 sm:right-6 bg-white rounded-lg p-4 sm:p-6 w-[min(320px,calc(100vw-1.5rem))] shadow-2xl border border-slate-200 z-50">
+                    <div className="fixed top-20 right-3 sm:right-6 bg-white rounded-lg p-4 sm:p-6 w-[min(320px,calc(100vw-1.5rem))] shadow-2xl border border-[#DFDFDF] z-50">
                         <h3 className="text-lg font-semibold mb-4">Choose your avatar</h3>
                         <div className="grid grid-cols-3 gap-4">
                             {AVATARS.map((avatar) => (
                                 <button
                                     key={avatar.id}
                                     onClick={() => { setUserAvatar(avatar.src); setShowAvatarPicker(false); }}
-                                    className={`relative p-2 rounded-lg border-2 transition-all hover:shadow-lg ${userAvatar === avatar.src ? 'border-[#0058A3] bg-blue-50' : 'border-slate-200 hover:border-slate-300'}`}
+                                    className={`relative p-2 rounded-lg border-2 transition-all hover:shadow-lg ${userAvatar === avatar.src ? 'border-[#0058A3] bg-[#F5F5F5]' : 'border-[#DFDFDF] hover:border-[#CCCCCC]'}`}
                                 >
                                     <img src={avatar.src} alt={avatar.name} className="w-full h-auto rounded" />
                                     {userAvatar === avatar.src && (

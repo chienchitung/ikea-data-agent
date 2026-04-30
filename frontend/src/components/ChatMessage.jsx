@@ -2,7 +2,7 @@ import { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import clsx from 'clsx';
 import { Copy, Edit2, Check } from 'lucide-react';
 import assistantAvatar from '../assets/img/ikea-assistant.png';
@@ -10,6 +10,34 @@ import assistantAvatar from '../assets/img/ikea-assistant.png';
 // ── Preprocess message content ───────────────────────────
 // 處理 LLM 三種常見的錯誤 code block 格式，統一轉為合法的 Markdown fenced block
 const CODE_LANG_RE = /^(sql|python|javascript|js|typescript|ts|bash|sh|json|yaml|html|css)[ \t]*/i;
+const sqlEditorTheme = {
+    ...vscDarkPlus,
+    'pre[class*="language-"]': {
+        ...vscDarkPlus['pre[class*="language-"]'],
+        color: '#C9D1D9',
+        background: '#252A32',
+    },
+    'code[class*="language-"]': {
+        ...vscDarkPlus['code[class*="language-"]'],
+        color: '#C9D1D9',
+        background: '#252A32',
+    },
+    comment: { color: '#7D8590', fontStyle: 'italic' },
+    prolog: { color: '#7D8590', fontStyle: 'italic' },
+    keyword: { color: '#D783FF' },
+    'keyword.control-flow': { color: '#D783FF' },
+    function: { color: '#59B8FF' },
+    builtin: { color: '#59B8FF' },
+    string: { color: '#98C379' },
+    char: { color: '#98C379' },
+    number: { color: '#F6B26B' },
+    boolean: { color: '#F6B26B' },
+    operator: { color: '#66D9EF' },
+    punctuation: { color: '#C9D1D9' },
+    property: { color: '#C9D1D9' },
+    variable: { color: '#C9D1D9' },
+    constant: { color: '#F6B26B' },
+};
 
 // 在 result 末尾確保有換行（Markdown fenced block 必須在行首）
 function ensureNewline(s) {
@@ -120,35 +148,44 @@ function CodeBlock({ language, code }) {
     };
 
     return (
-        <div className="rounded-lg overflow-hidden border border-slate-700 my-3">
+        <div className="my-4 overflow-hidden rounded-lg bg-[#282C34] shadow-sm">
             {/* Header bar */}
-            <div className="flex items-center justify-between px-4 py-2 bg-[#1e1e2e]">
-                <span className="text-xs font-mono text-slate-400 uppercase tracking-wider">
+            <div className="flex h-10 items-center justify-between bg-[#1F1D2B] px-5">
+                <span className="font-mono text-xs uppercase tracking-wide text-[#DFDFDF]">
                     {language || 'code'}
                 </span>
                 <button
                     onClick={handleCopy}
-                    className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-white transition-colors px-2 py-1 rounded hover:bg-slate-700"
+                    className="flex items-center gap-1.5 rounded px-2 py-1 text-xs font-semibold text-[#DFDFDF] transition-colors hover:bg-[#484848] hover:text-white"
+                    aria-label="Copy code"
                 >
                     {copied
-                        ? <><Check size={12} className="text-green-400" /><span className="text-green-400">Copied!</span></>
-                        : <><Copy size={12} /><span>Copy</span></>
+                        ? <><Check size={13} className="text-green-400" /><span className="text-green-400">Copied</span></>
+                        : <><Copy size={13} /><span>Copy</span></>
                     }
                 </button>
             </div>
             {/* Code content */}
             <SyntaxHighlighter
                 language={language || 'text'}
-                style={oneDark}
+                style={sqlEditorTheme}
                 customStyle={{
                     margin: 0,
                     borderRadius: 0,
-                    padding: '16px',
-                    fontSize: '13px',
-                    lineHeight: '1.6',
+                    padding: '20px',
+                    fontSize: '13.5px',
+                    lineHeight: '1.62',
                     background: '#282c34',
+                    maxHeight: '640px',
+                    overflow: 'auto',
+                    fontFamily: 'SFMono-Regular, Consolas, Liberation Mono, Menlo, monospace',
                 }}
-                wrapLongLines={true}
+                codeTagProps={{
+                    style: {
+                        fontFamily: 'inherit',
+                    }
+                }}
+                wrapLongLines={false}
             >
                 {code}
             </SyntaxHighlighter>
@@ -189,7 +226,7 @@ const markdownComponents = {
             return <code className={className}>{children}</code>;
         }
         return (
-            <code className="bg-slate-100 text-rose-600 px-1.5 py-0.5 rounded text-[0.85em] font-mono">
+            <code className="bg-[#F5F5F5] text-[#CA5008] px-1.5 py-0.5 rounded text-[0.85em] font-mono">
                 {children}
             </code>
         );
@@ -236,20 +273,20 @@ export function ChatMessage({ message, userAvatar, onUpdate, onCopy }) {
                             <textarea
                                 value={editContent}
                                 onChange={(e) => setEditContent(e.target.value)}
-                                className="w-full bg-transparent text-white border border-gray-600 rounded p-2 focus:outline-none focus:border-gray-400 resize-none"
+                                className="w-full bg-transparent text-white border border-[#484848] rounded p-2 focus:outline-none focus:border-[#CCCCCC] resize-none"
                                 rows={Math.max(3, editContent.split('\n').length)}
                                 autoFocus
                             />
                             <div className="flex justify-end gap-2">
                                 <button
                                     onClick={handleCancel}
-                                    className="px-3 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded text-white transition-colors"
+                                    className="px-3 py-1 text-xs bg-[#484848] hover:bg-[#111111] rounded text-white transition-colors"
                                 >
                                     Cancel
                                 </button>
                                 <button
                                     onClick={handleSave}
-                                    className="px-3 py-1 text-xs bg-[#0058A3] hover:bg-[#004A8F] rounded text-white transition-colors"
+                                    className="px-3 py-1 text-xs bg-[#0058A3] hover:bg-[#004F93] rounded text-white transition-colors"
                                 >
                                     Save & Submit
                                 </button>
@@ -275,14 +312,14 @@ export function ChatMessage({ message, userAvatar, onUpdate, onCopy }) {
                                 setEditContent(message.content);
                                 setIsEditing(true);
                             }}
-                            className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors"
+                            className="p-1 text-[#767676] hover:text-[#111111] hover:bg-[#F5F5F5] rounded transition-colors"
                             title="Edit message"
                         >
                             <Edit2 size={14} />
                         </button>
                         <button
                             onClick={handleCopy}
-                            className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors"
+                            className="p-1 text-[#767676] hover:text-[#111111] hover:bg-[#F5F5F5] rounded transition-colors"
                             title="Copy text"
                         >
                             {copied ? <Check size={14} className="text-green-500" /> : <Copy size={14} />}
