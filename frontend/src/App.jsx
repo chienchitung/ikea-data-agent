@@ -615,7 +615,7 @@ function App() {
                                         Beta
                                     </span>
                                 </div>
-                                <p className="text-xs text-[#767676] font-medium tracking-wide">Ask your data assistant</p>
+                                <p className="text-xs text-[#767676] font-medium tracking-wide">Ask your data partner</p>
                             </div>
                         </button>
                         <div className="flex items-center gap-1">
