@@ -72,8 +72,8 @@
 }
 
 .message-avatar {
-    width: 40px;
-    height: 40px;
+    width: 48px;
+    height: 48px;
     border-radius: 50%;
     object-fit: cover;
     flex-shrink: 0;
@@ -107,6 +107,7 @@
 .message-bubble .markdown {
     flex: 1;
     min-width: 0;
+    overflow-wrap: break-word;
 }
 
 .message-bubble .markdown p {
@@ -167,10 +168,18 @@
     color: var(--color-ikea-dark-grey);
 }
 
-.message-bubble .markdown table {
-    border-collapse: collapse;
-    width: 100%;
+.message-bubble .markdown-table-scroll {
     margin: 10px 0;
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+.message-bubble .markdown table {
+    background-color: #fff;
+    border-collapse: collapse;
+    min-width: 900px;
+    width: max-content;
 }
 
 .message-bubble .markdown th,
@@ -178,10 +187,14 @@
     border: 1px solid var(--color-ikea-border-grey);
     padding: 8px;
     text-align: left;
+    vertical-align: top;
+    background-color: #fff;
+    word-break: normal;
+    overflow-wrap: normal;
 }
 
 .message-bubble .markdown th {
-    background-color: var(--color-ikea-light-grey);
+    background-color: #fff;
 }
 
 .bot-bubble .markdown a {

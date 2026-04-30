@@ -198,6 +198,11 @@ const markdownComponents = {
     a: ({ node, ...props }) => (
         <a {...props} target="_blank" rel="noopener noreferrer" />
     ),
+    table: ({ node, ...props }) => (
+        <div className="markdown-table-scroll">
+            <table {...props} />
+        </div>
+    ),
     // pre 攔截 block code（react-markdown v10 正確寫法）
     pre({ children }) {
         const child = Array.isArray(children) ? children[0] : children;
@@ -248,9 +253,7 @@ export function ChatMessage({ message, userAvatar, onUpdate, onCopy }) {
     };
 
     const handleSave = () => {
-        if (editContent.trim() !== message.content) {
-            onUpdate(editContent);
-        }
+        onUpdate(editContent);
         setIsEditing(false);
     };
 

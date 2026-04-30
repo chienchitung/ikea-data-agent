@@ -2,3 +2,5 @@
 - **CEM**：指的是 Customer Experience Management (顧客體驗管理)。
 - **DY**：指的是 Dynamic Yield (個人化推薦工具)。
 - **BQ**：指的是 BigQuery (Google Cloud 數據倉儲)。
+- **GCP**：指的是 Google Cloud Platform (Google Cloud 雲端平台)。
+- **CDP**：指的是 Centralized Data Platform (集中式資料平台)。
