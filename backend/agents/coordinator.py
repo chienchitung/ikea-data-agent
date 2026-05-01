@@ -83,7 +83,9 @@ system_prompt = f"""
 """
 
 import asyncio
-from typing import Annotated, TypedDict
+import json
+import re
+from typing import Annotated, Any, TypedDict
 from langchain_core.messages import BaseMessage, SystemMessage, AIMessage, HumanMessage, ToolMessage
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
@@ -101,30 +103,44 @@ _tool_map = {t.name: t for t in all_tools}
 # Chat history 上限（保留 system + 最近 N 則，避免 token 越來越多）
 MAX_HISTORY = 20
 
-# 需要呼叫工具的關鍵字（module-level 常數，避免每次 agent_node 呼叫都重建）
-_INTERNAL_KEYWORDS = [
-    "專案", "卡片", "trello", "進度", "誰負責", "規定", "文件", "confluence",
-    "規範", "數據", "統計", "請查", "幫我查", "有哪些", "什麼是", "意思",
-    "確定沒有", "真的沒有", "再找找", "再查一次", "確認一下", "你確定",
-    "工單", "工作表", "request", "報告", "分析", "摘要", "彙整", "整理",
-    "dashboard", "tableau", "tableau cloud", "bi", "部署", "發佈", "發布",
-    "publish", "deploy", "cloud", "gcp", "google cloud", "google cloud platform",
-    "bigquery", "bq", "cdp", "centralized data platform",
-    "centratlized data platoform", "customer centralized platform",
-    "customer centratlized platoform", "dynamic yield", "helpdesk"
-]
-
-# 全量查詢關鍵字：即使 history 有 tool 結果也必須重新查詢完整資料
-_COMPREHENSIVE_KEYWORDS = [
-    "所有", "全部", "整理", "報告", "彙整", "彙總", "重點報告", "統整",
-    "全面", "完整", "一份", "總結", "摘要所有", "列出所有", "所有工單",
-    "全部工單", "所有卡片", "全部專案", "整體", "overview", "summary"
-]
-
 _INTERIM_RESPONSE_MARKERS = [
     "請稍等", "請等一下", "稍等一下", "等我一下", "我正在", "正在處理",
     "處理中", "我將", "我會", "我來幫你", "讓我來", "讓我先", "立刻請",
     "馬上請", "我幫你查", "我幫你整理", "我來查", "我來整理"
+]
+
+_DEFAULT_INTENT = {
+    "needs_tool": False,
+    "fresh_query": False,
+    "domain": "none",
+    "reason": "",
+}
+
+_DEFAULT_CLARIFICATION = {
+    "needs_clarification": False,
+    "questions": [],
+    "reason": "",
+}
+
+_CHART_DIMENSION_OPTIONS = [
+    {"label": "依月份", "value": "Month", "description": "看每月 ticket 數量趨勢"},
+    {"label": "依狀態", "value": "Status", "description": "看各狀態的工單數量"},
+    {"label": "依市場", "value": "Market", "description": "比較 TW、HK、IKNA 等市場"},
+    {"label": "依資料來源", "value": "Data Source", "description": "比較 CDP、GA4 等來源"},
+    {"label": "依支援類型", "value": "Data Support", "description": "比較 dashboard、report、support 等類型"},
+    {"label": "依負責人", "value": "Assigned To", "description": "比較各負責人的工單量"},
+]
+
+_REPORT_SCOPE_OPTIONS = [
+    {"label": "Request 工單", "value": "Request worksheet", "description": "分析工單數量、狀態、市場與資料來源"},
+    {"label": "Trello 專案", "value": "Trello board", "description": "整理看板清單、卡片進度與負責狀態"},
+    {"label": "Confluence 文件", "value": "Confluence pages", "description": "彙整文件定義、流程或 dashboard 說明"},
+]
+
+_REPORT_FORMAT_OPTIONS = [
+    {"label": "摘要說明", "value": "summary", "description": "用重點文字整理分析結果"},
+    {"label": "圖表", "value": "chart", "description": "產生互動式圖表和簡短洞察"},
+    {"label": "表格", "value": "table", "description": "整理成乾淨的彙總表"},
 ]
 
 
@@ -137,6 +153,262 @@ def _is_interim_response(content) -> bool:
         return False
     normalized = content.lower()
     return any(marker.lower() in normalized for marker in _INTERIM_RESPONSE_MARKERS)
+
+
+def _extract_user_query_for_guardrail(content) -> str:
+    if not isinstance(content, str):
+        return str(content)
+    marker = "目前使用者問題："
+    if marker in content:
+        return content.rsplit(marker, 1)[-1].strip()
+    return content
+
+
+def _content_to_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict) and "text" in item:
+                parts.append(str(item["text"]))
+            elif isinstance(item, str):
+                parts.append(item)
+        return "".join(parts)
+    return str(content)
+
+
+def _parse_json_object(text: str) -> dict:
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if not match:
+        return {}
+    try:
+        return json.loads(match.group(0))
+    except Exception:
+        return {}
+
+
+def _fallback_clarification(user_query: str) -> dict:
+    """
+    Deterministic clarification for broad asks that the LLM may otherwise answer
+    with a chat bubble. This keeps the UI panel behavior stable for common vague
+    report requests.
+    """
+    normalized = user_query.strip().lower()
+    compact = re.sub(r"\s+", "", normalized)
+
+    broad_report_terms = [
+        "分析報告", "一份報告", "報告", "analysisreport", "分析一下", "做分析"
+    ]
+    concrete_scope_terms = [
+        "request", "ticket", "工單", "工作表", "worksheet", "trello", "卡片",
+        "專案", "confluence", "文件", "dashboard", "圖表", "chart", "狀態",
+        "status", "市場", "market", "資料來源", "data source", "負責人",
+        "assigned", "時間", "今年", "本月", "202", "hk", "tw", "ikna"
+    ]
+
+    is_broad_report = any(term in compact for term in broad_report_terms)
+    has_concrete_scope = any(term in normalized or term in compact for term in concrete_scope_terms)
+
+    if is_broad_report and not has_concrete_scope:
+        return {
+            "needs_clarification": True,
+            "reason": "分析報告的資料範圍還不明確",
+            "questions": [
+                {
+                    "id": "report_scope",
+                    "question": "你想分析哪一類資料？",
+                    "type": "single",
+                    "options": list(_REPORT_SCOPE_OPTIONS),
+                }
+            ],
+        }
+
+    if is_broad_report and has_concrete_scope and "圖表" not in compact and "chart" not in normalized:
+        return {
+            "needs_clarification": True,
+            "reason": "先確認報告呈現方式",
+            "questions": [
+                {
+                    "id": "report_format",
+                    "question": "你希望分析報告以什麼形式呈現？",
+                    "type": "single",
+                    "options": list(_REPORT_FORMAT_OPTIONS),
+                }
+            ],
+        }
+
+    return dict(_DEFAULT_CLARIFICATION)
+
+
+def _has_tool_result_after_latest_human(messages: list[BaseMessage]) -> bool:
+    latest_human_index = -1
+    for i in range(len(messages) - 1, -1, -1):
+        if isinstance(messages[i], HumanMessage) and not str(messages[i].content).startswith("⚠️ 系統強制攔截"):
+            latest_human_index = i
+            break
+
+    if latest_human_index == -1:
+        return False
+
+    for message in messages[latest_human_index + 1:]:
+        if getattr(message, "type", "") == "tool" or message.__class__.__name__ == "ToolMessage":
+            return True
+    return False
+
+
+async def _classify_user_intent(user_query: str) -> dict:
+    """
+    Semantic guardrail classifier. This is not the primary router; the tool-bound
+    LLM still decides tool calls first. We only use this when the LLM returns a
+    direct answer, to decide whether that direct answer should be allowed.
+    """
+    classifier_prompt = f"""
+你是 Data Machi 的意圖分類器，只輸出 JSON，不要回答使用者問題。
+
+請判斷使用者問題是否需要查詢 IKEA Data Team 內部工具。
+
+可用工具領域：
+- trello: IKEA Data Requests Trello 看板、卡片、專案進度、負責人、標籤、留言。
+- analyst: Google Sheet / worksheet / Request 工作表、工單/ticket/request 數量、統計、圖表、KPI、趨勢、資料表查詢。
+- confluence: 團隊文件、流程、名詞定義、dashboard/tool 內部說明、操作教學。
+- document: 已上傳 PDF/文件內容。
+- none: 一般閒聊、改寫、翻譯、或可以直接根據目前對話文字回答且不需要內部資料。
+
+判斷規則：
+- 如果問題需要最新、完整、全部、重新查詢、目前狀態、或使用者要求全量彙整，fresh_query=true。
+- 如果問題是在追問「上述、這些、剛剛」且目前上下文足以回答，可 needs_tool=false。
+- 如果問題涉及 IKEA 內部資料、專案、工單、文件、dashboard 定義或 worksheet 統計，needs_tool=true。
+- 如果問題要求圖表且資料來自 ticket/request/worksheet，domain=analyst。
+
+請只回傳以下 JSON schema：
+{{
+  "needs_tool": true/false,
+  "fresh_query": true/false,
+  "domain": "trello" | "analyst" | "confluence" | "document" | "none",
+  "reason": "一句很短的判斷理由"
+}}
+
+使用者問題：
+{user_query}
+"""
+    try:
+        response = await llm.ainvoke([HumanMessage(content=classifier_prompt)])
+        parsed = _parse_json_object(_content_to_text(response.content))
+        if not parsed:
+            return dict(_DEFAULT_INTENT)
+
+        domain = parsed.get("domain", "none")
+        if domain not in {"trello", "analyst", "confluence", "document", "none"}:
+            domain = "none"
+
+        return {
+            "needs_tool": bool(parsed.get("needs_tool", False)),
+            "fresh_query": bool(parsed.get("fresh_query", False)),
+            "domain": domain,
+            "reason": str(parsed.get("reason", ""))[:200],
+        }
+    except Exception as e:
+        print(f"\n⚠️ [Guardrail] Intent classifier failed: {e}")
+        return dict(_DEFAULT_INTENT)
+
+
+async def suggest_clarifications(user_query: str, history_text: str = "") -> dict:
+    """
+    Decide whether the UI should ask a short clarification before running tools.
+    This powers the floating option panel above the input box.
+    """
+    fallback = _fallback_clarification(user_query)
+    if fallback.get("needs_clarification"):
+        return fallback
+
+    clarification_prompt = f"""
+你是 Data Machi 的需求釐清設計器。請先理解使用者問題，再判斷是否需要在執行工具前向使用者釐清。
+
+只在「缺少的選擇會明顯影響工具、查詢條件或圖表呈現」時才 needs_clarification=true。
+如果問題已經足夠明確，請 needs_clarification=false。
+
+常見需要釐清的情境：
+- 使用者只說「分析報告」、「一份報告」、「幫我分析」但沒有指定資料來源或分析對象。
+- 使用者要求圖表，但沒有指定呈現維度，例如狀態、市場、資料來源、支援類型、負責人。
+- 使用者要求整理資料，但沒有說要摘要、表格、圖表或明細。
+- 使用者問 Trello 進度但沒有指定 list 或範圍，且上下文也無法判斷。
+- 搜尋文件/Confluence 可能命中多個主題，需要使用者選擇方向。
+
+請最多提出 2 個問題，每題 2-5 個選項。選項要短、具體、互斥。不要問已經可從問題或上下文推斷的事。
+
+回傳 JSON schema：
+{{
+  "needs_clarification": true/false,
+  "reason": "一句很短的理由",
+  "questions": [
+    {{
+      "id": "chart_dimension",
+      "question": "你想用哪個維度呈現圖表？",
+      "type": "single",
+      "options": [
+        {{"label": "依狀態", "value": "Status", "description": "看各狀態的工單數量"}},
+        {{"label": "依市場", "value": "Market", "description": "比較 TW、HK、IKNA 等市場"}},
+        {{"label": "依資料來源", "value": "Data Source", "description": "比較 CDP、GA4 等來源"}},
+        {{"label": "依月份", "value": "Month", "description": "看每月 ticket 數量趨勢"}}
+      ]
+    }}
+  ]
+}}
+
+近期對話摘要：
+{history_text[-3000:]}
+
+使用者問題：
+{user_query}
+"""
+    try:
+        response = await llm.ainvoke([HumanMessage(content=clarification_prompt)])
+        parsed = _parse_json_object(_content_to_text(response.content))
+        if not parsed or not parsed.get("needs_clarification"):
+            return dict(_DEFAULT_CLARIFICATION)
+
+        questions = []
+        for question in parsed.get("questions", [])[:2]:
+            options = []
+            for option in question.get("options", [])[:5]:
+                label = str(option.get("label", "")).strip()
+                value = str(option.get("value", label)).strip()
+                if label and value:
+                    options.append({
+                        "label": label,
+                        "value": value,
+                        "description": str(option.get("description", "")).strip(),
+                    })
+            if str(question.get("id", "")) == "chart_dimension":
+                allowed_values = {option["value"] for option in _CHART_DIMENSION_OPTIONS}
+                options = [option for option in options if option["value"] in allowed_values]
+                if len(options) < 2:
+                    options = list(_CHART_DIMENSION_OPTIONS)
+            if question.get("question") and options:
+                questions.append({
+                    "id": str(question.get("id", f"q{len(questions) + 1}")),
+                    "question": str(question.get("question")),
+                    "type": "single",
+                    "options": options,
+                })
+
+        if not questions:
+            return dict(_DEFAULT_CLARIFICATION)
+
+        return {
+            "needs_clarification": True,
+            "questions": questions,
+            "reason": str(parsed.get("reason", ""))[:200],
+        }
+    except Exception as e:
+        print(f"\n⚠️ [Clarification] failed: {e}")
+        return dict(_DEFAULT_CLARIFICATION)
 
 async def parallel_tool_node(state: AgentState):
     """
@@ -193,25 +465,33 @@ async def agent_node(state: AgentState):
     # 🕵️‍♂️ 【客製化攔截點：強制檢查工具使用與幻覺防護】
     # 1. 找出使用者最後一句話
     last_human_msg = next((m.content for m in reversed(messages) if isinstance(m, HumanMessage)), "")
+    guardrail_query = _extract_user_query_for_guardrail(last_human_msg)
 
-    # 2. 判斷是否需要呼叫工具 / 全量查詢（使用 module-level 常數）
-    needs_fresh_query = any(kw in last_human_msg.lower() for kw in _COMPREHENSIVE_KEYWORDS)
-    needs_tool = needs_fresh_query or any(kw in last_human_msg.lower() for kw in _INTERNAL_KEYWORDS)
+    # 2. 如果模型沒有呼叫工具，才用語意分類器判斷是否需要攔截重試。
+    #    這取代舊版不斷擴充 keyword list 的做法。
+    intent = dict(_DEFAULT_INTENT)
+    if not _has_tool_calls(response):
+        intent = await _classify_user_intent(guardrail_query)
+    needs_tool = bool(intent.get("needs_tool", False))
+    needs_fresh_query = bool(intent.get("fresh_query", False))
 
-    # 3. 檢查最近是否有 Tool 回傳結果（放寬到 10 句內有即可，即短期的記憶上下文）
+    # 3. 檢查是否已經針對最新 user turn 取得 tool 結果。
+    # fresh_query 只需要在「尚未查過」時強制，避免工具回來後又被同一個 user turn 反覆觸發。
+    has_tool_result_after_latest_human = _has_tool_result_after_latest_human(messages)
+
+    # 同時保留最近 tool result 的檢查，給後面的查無結果防幻覺使用。
     tool_messages = [m for m in messages[-10:] if getattr(m, "type", "") == "tool" or m.__class__.__name__ == "ToolMessage"]
     has_recent_tool_result = len(tool_messages) > 0
 
     # 🛑 防護 A：該查沒查 -> 強制重試 (內部自動 re-prompt)
-    # needs_fresh_query = True 時，即使有近期 tool 結果也要重查（避免只摘要 history 舊資料）
     if not _has_tool_calls(response):
-        if needs_tool and (not has_recent_tool_result or needs_fresh_query):
+        if needs_tool and not has_tool_result_after_latest_human:
             if needs_fresh_query:
-                print("\n⚠️ [Guardrail] 偵測到全量查詢請求，強制重新呼叫工具取得完整資料！")
-                retry_msg = "⚠️ 系統強制攔截：用戶要求取得『全部/所有』資料並整理成報告，你**不能只整理 chat history 中的舊資料**！必須立即呼叫對應工具（例如 query_worksheet_data 或 get_project_status）重新取得完整的最新資料，再進行彙整。請立即呼叫工具！"
+                print(f"\n⚠️ [Guardrail] Intent={intent.get('domain')} fresh query，強制重新呼叫工具。Reason: {intent.get('reason')}")
+                retry_msg = f"⚠️ 系統強制攔截：意圖分類判斷這題需要重新查詢內部工具，建議工具領域是 {intent.get('domain')}。你不能只整理 chat history 中的舊資料。原始使用者問題是：{guardrail_query}。請保留使用者要求的輸出形式（例如圖表/chart）並立即呼叫最合適的工具！"
             else:
-                print("\n⚠️ [Guardrail] 偵測到 LLM 試圖不呼叫工具就回答，強制重發 Prompt！")
-                retry_msg = "⚠️ 系統強制攔截：你的回答沒有呼叫任何工具！你是 Data Machi，沒有先驗知識，遇到專案/文件問題『必須』呼叫 Tool 查詢，絕對禁止憑空回答。請立即呼叫相關工具！"
+                print(f"\n⚠️ [Guardrail] Intent={intent.get('domain')} needs tool but no tool call，強制重發 Prompt。Reason: {intent.get('reason')}")
+                retry_msg = f"⚠️ 系統強制攔截：意圖分類判斷這題需要內部工具，建議工具領域是 {intent.get('domain')}，但你沒有呼叫任何工具。原始使用者問題是：{guardrail_query}。請保留使用者要求的輸出形式（例如圖表/chart）並立即呼叫最合適的工具！"
             retry_prompt = HumanMessage(content=retry_msg)
             response = await model_with_tools.ainvoke(messages + [retry_prompt])
             # 如果第二次還是不呼叫，就給強制安全回應

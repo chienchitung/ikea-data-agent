@@ -4,12 +4,12 @@ import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import clsx from 'clsx';
-import { Copy, Edit2, Check } from 'lucide-react';
+import { Copy, Edit2, Check, BarChart3, LineChart, PieChart } from 'lucide-react';
 import assistantAvatar from '../assets/img/ikea-assistant.png';
 
 // ── Preprocess message content ───────────────────────────
 // 處理 LLM 三種常見的錯誤 code block 格式，統一轉為合法的 Markdown fenced block
-const CODE_LANG_RE = /^(sql|python|javascript|js|typescript|ts|bash|sh|json|yaml|html|css)[ \t]*/i;
+const CODE_LANG_RE = /^(sql|python|javascript|js|typescript|ts|bash|sh|json|yaml|html|css|chart)[ \t]*/i;
 const sqlEditorTheme = {
     ...vscDarkPlus,
     'pre[class*="language-"]': {
@@ -193,6 +193,182 @@ function CodeBlock({ language, code }) {
     );
 }
 
+function parseChartSpec(code) {
+    try {
+        const spec = JSON.parse(code);
+        const data = Array.isArray(spec.data) ? spec.data : [];
+        return {
+            title: spec.title || 'Chart',
+            type: ['bar', 'line', 'pie'].includes(spec.type) ? spec.type : 'bar',
+            xKey: spec.xKey || 'label',
+            yKey: spec.yKey || 'value',
+            isSequential: spec.isSequential === true,
+            data: data
+                .map(item => ({
+                    label: String(item[spec.xKey || 'label'] ?? item.label ?? ''),
+                    value: Number(item[spec.yKey || 'value'] ?? item.value ?? 0),
+                }))
+                .filter(item => item.label && Number.isFinite(item.value)),
+        };
+    } catch {
+        return null;
+    }
+}
+
+function InteractiveChart({ code }) {
+    const spec = parseChartSpec(code);
+
+    if (!spec || spec.data.length === 0) {
+        return <CodeBlock language="json" code={code} />;
+    }
+
+    // Sequential (time-series) data: bar + line only, single color
+    // Categorical data: bar + pie (if ≤8 items), palette colors
+    const isSequential = spec.isSequential;
+    const allowedTypes = isSequential
+        ? ['bar', 'line']
+        : spec.data.length <= 8 ? ['bar', 'pie'] : ['bar'];
+
+    const defaultType = allowedTypes.includes(spec.type) ? spec.type : allowedTypes[0];
+    const [activeType, setActiveType] = useState(defaultType);
+    const [hovered, setHovered] = useState(null);
+
+    const width = 720;
+    const height = 300;
+    const padding = { top: 18, right: 24, bottom: 58, left: 54 };
+    const chartWidth = width - padding.left - padding.right;
+    const chartHeight = height - padding.top - padding.bottom;
+    const maxValue = Math.max(...spec.data.map(d => d.value), 1);
+    const total = spec.data.reduce((sum, d) => sum + d.value, 0);
+    const palette = ['#0058A3', '#FFDB00', '#0A8A73', '#E94D2A', '#6F5BD6', '#767676', '#CA5008', '#2E7D32'];
+    const seqColor = '#0058A3';
+
+    const renderBarChart = () => {
+        const gap = 10;
+        const barWidth = Math.max(18, (chartWidth - gap * (spec.data.length - 1)) / spec.data.length);
+        return (
+            <svg viewBox={`0 0 ${width} ${height}`} className="chart-svg" role="img" aria-label={spec.title}>
+                <line x1={padding.left} y1={padding.top + chartHeight} x2={width - padding.right} y2={padding.top + chartHeight} className="chart-axis" />
+                <line x1={padding.left} y1={padding.top} x2={padding.left} y2={padding.top + chartHeight} className="chart-axis" />
+                {spec.data.map((item, idx) => {
+                    const barHeight = (item.value / maxValue) * chartHeight;
+                    const x = padding.left + idx * (barWidth + gap);
+                    const y = padding.top + chartHeight - barHeight;
+                    const fill = isSequential ? seqColor : palette[idx % palette.length];
+                    return (
+                        <g key={item.label} onMouseEnter={() => setHovered(item)} onMouseLeave={() => setHovered(null)}>
+                            <rect x={x} y={y} width={barWidth} height={barHeight} rx="3" fill={fill} className="chart-bar" />
+                            <text x={x + barWidth / 2} y={y - 6} textAnchor="middle" className="chart-value">{item.value}</text>
+                            <text x={x + barWidth / 2} y={padding.top + chartHeight + 18} textAnchor="middle" className="chart-label">
+                                {item.label.length > 10 ? `${item.label.slice(0, 10)}…` : item.label}
+                            </text>
+                        </g>
+                    );
+                })}
+            </svg>
+        );
+    };
+
+    const renderLineChart = () => {
+        const points = spec.data.map((item, idx) => {
+            const x = padding.left + (spec.data.length === 1 ? chartWidth / 2 : (idx / (spec.data.length - 1)) * chartWidth);
+            const y = padding.top + chartHeight - (item.value / maxValue) * chartHeight;
+            return { ...item, x, y };
+        });
+        const path = points.map((p, idx) => `${idx === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
+        return (
+            <svg viewBox={`0 0 ${width} ${height}`} className="chart-svg" role="img" aria-label={spec.title}>
+                <line x1={padding.left} y1={padding.top + chartHeight} x2={width - padding.right} y2={padding.top + chartHeight} className="chart-axis" />
+                <line x1={padding.left} y1={padding.top} x2={padding.left} y2={padding.top + chartHeight} className="chart-axis" />
+                <path d={path} className="chart-line" />
+                {points.map((point) => (
+                    <g key={point.label} onMouseEnter={() => setHovered(point)} onMouseLeave={() => setHovered(null)}>
+                        <circle cx={point.x} cy={point.y} r="5" className="chart-dot" />
+                        <text x={point.x} y={padding.top + chartHeight + 18} textAnchor="middle" className="chart-label">
+                            {point.label.length > 10 ? `${point.label.slice(0, 10)}…` : point.label}
+                        </text>
+                    </g>
+                ))}
+            </svg>
+        );
+    };
+
+    const renderPieChart = () => {
+        let angle = -90;
+        const cx = width / 2;
+        const cy = 145;
+        const radius = 96;
+        const describeArc = (startAngle, endAngle, r) => {
+            const start = {
+                x: cx + r * Math.cos((Math.PI / 180) * startAngle),
+                y: cy + r * Math.sin((Math.PI / 180) * startAngle),
+            };
+            const end = {
+                x: cx + r * Math.cos((Math.PI / 180) * endAngle),
+                y: cy + r * Math.sin((Math.PI / 180) * endAngle),
+            };
+            const largeArcFlag = endAngle - startAngle <= 180 ? 0 : 1;
+            return `M ${cx} ${cy} L ${start.x} ${start.y} A ${r} ${r} 0 ${largeArcFlag} 1 ${end.x} ${end.y} Z`;
+        };
+
+        return (
+            <svg viewBox={`0 0 ${width} ${height}`} className="chart-svg chart-pie-svg" role="img" aria-label={spec.title}>
+                {spec.data.map((item, idx) => {
+                    const slice = total > 0 ? (item.value / total) * 360 : 0;
+                    const path = describeArc(angle, angle + slice, radius);
+                    angle += slice;
+                    return (
+                        <path
+                            key={item.label}
+                            d={path}
+                            fill={palette[idx % palette.length]}
+                            className="chart-slice"
+                            onMouseEnter={() => setHovered(item)}
+                            onMouseLeave={() => setHovered(null)}
+                        />
+                    );
+                })}
+                <text x={cx} y={cy} textAnchor="middle" className="chart-total">{total}</text>
+                <text x={cx} y={cy + 20} textAnchor="middle" className="chart-label">total</text>
+            </svg>
+        );
+    };
+
+    return (
+        <div className="chart-card">
+            <div className="chart-header">
+                <div>
+                    <p className="chart-title">{spec.title}</p>
+                    <p className="chart-subtitle">{spec.data.length} categories · total {total}</p>
+                </div>
+                <div className="chart-controls" aria-label="Chart type">
+                    {allowedTypes.includes('bar') && <button type="button" className={activeType === 'bar' ? 'active' : ''} onClick={() => setActiveType('bar')} title="Bar chart"><BarChart3 size={16} /></button>}
+                    {allowedTypes.includes('line') && <button type="button" className={activeType === 'line' ? 'active' : ''} onClick={() => setActiveType('line')} title="Line chart"><LineChart size={16} /></button>}
+                    {allowedTypes.includes('pie') && <button type="button" className={activeType === 'pie' ? 'active' : ''} onClick={() => setActiveType('pie')} title="Pie chart"><PieChart size={16} /></button>}
+                </div>
+            </div>
+            <div className="chart-body">
+                {activeType === 'bar' && renderBarChart()}
+                {activeType === 'line' && renderLineChart()}
+                {activeType === 'pie' && renderPieChart()}
+                {hovered && (
+                    <div className="chart-tooltip">
+                        <strong>{hovered.label}</strong>
+                        <span>{hovered.value}</span>
+                    </div>
+                )}
+            </div>
+            {!isSequential && (
+                <div className="chart-legend">
+                    {spec.data.map((item, idx) => (
+                        <span key={item.label}><i style={{ backgroundColor: palette[idx % palette.length] }} />{item.label}</span>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+}
+
 // ── Markdown components override ──────────────────────────
 const markdownComponents = {
     a: ({ node, ...props }) => (
@@ -221,6 +397,18 @@ const markdownComponents = {
             code = String(rawChildren ?? '');
         }
         code = code.replace(/\n$/, '');
+
+        if (language === 'chart') {
+            return <InteractiveChart code={code} />;
+        }
+
+        // LLM sometimes mislabels chart specs as json — auto-detect and render as chart
+        if (language === 'json') {
+            const chartSpec = parseChartSpec(code);
+            if (chartSpec && chartSpec.data.length > 0) {
+                return <InteractiveChart code={code} />;
+            }
+        }
 
         return <CodeBlock language={language} code={code} />;
     },

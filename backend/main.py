@@ -1,9 +1,10 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.messages import HumanMessage, AIMessage
 from agent_logic import process_chat
+from agents.coordinator import suggest_clarifications
 import uvicorn
 
 app = FastAPI()
@@ -21,12 +22,29 @@ class Message(BaseModel):
     role: str
     content: str
 
+class ClarificationSelection(BaseModel):
+    question: str
+    label: str
+    value: str
+
 class ChatRequest(BaseModel):
     message: str
     history: List[Message] = []
+    conversation_id: Optional[str] = None
+    clarifications: List[ClarificationSelection] = []
 
 class ChatResponse(BaseModel):
     response: str
+
+class ClarificationRequest(BaseModel):
+    message: str
+    history: List[Message] = []
+    conversation_id: Optional[str] = None
+
+class ClarificationResponse(BaseModel):
+    needs_clarification: bool = False
+    questions: list = []
+    reason: str = ""
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat_endpoint(request: ChatRequest):
@@ -42,11 +60,36 @@ async def chat_endpoint(request: ChatRequest):
     
     # Process
     try:
-        response_text = await process_chat(request.message, chat_history)
+        message_for_agent = request.message
+        if request.clarifications:
+            selected_lines = [
+                f"- {item.question}: {item.label} ({item.value})"
+                for item in request.clarifications
+            ]
+            message_for_agent = (
+                f"{request.message}\n\n"
+                "以下是使用者在送出前選擇的釐清選項，請將它視為使用者需求的一部分，"
+                "但不要在最終回答中重複描述這段 metadata：\n"
+                + "\n".join(selected_lines)
+            )
+        response_text = await process_chat(message_for_agent, chat_history, request.conversation_id)
         return ChatResponse(response=response_text)
     except Exception as e:
         print(f"❌ Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/clarifications", response_model=ClarificationResponse)
+async def clarification_endpoint(request: ClarificationRequest):
+    try:
+        history_text = "\n".join(
+            f"{msg.role}: {msg.content}"
+            for msg in request.history[-8:]
+        )
+        result = await suggest_clarifications(request.message, history_text)
+        return ClarificationResponse(**result)
+    except Exception as e:
+        print(f"❌ Clarification Error: {e}")
+        return ClarificationResponse()
 
 from fastapi import UploadFile, File
 from fastapi.responses import JSONResponse

@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import axios from 'axios';
 import { ChatMessage } from './components/ChatMessage';
-import { ArrowUp, Loader2, Sparkles, FileText, ChevronDown, ChevronLeft, ChevronRight, Plus, Check, Edit2, Trash2, User, MessageSquare, PenSquare, Search } from 'lucide-react';
+import { ArrowUp, Loader2, Sparkles, FileText, ChevronDown, ChevronLeft, ChevronRight, Plus, Check, Edit2, Trash2, User, MessageSquare, PenSquare, Search, Mic, Square } from 'lucide-react';
 import bearAvatar from './assets/img/ikea-bear.png';
 import dogAvatar from './assets/img/ikea-dog.png';
 import monkeyAvatar from './assets/img/ikea-monkey.png';
@@ -70,6 +70,12 @@ function App() {
     const [isUploading, setIsUploading] = useState(false);
     const [uploadProgress, setUploadProgress] = useState(0);
     const [uploadStage, setUploadStage] = useState("");
+    const [clarification, setClarification] = useState(null);
+    const [clarificationAnswers, setClarificationAnswers] = useState({});
+    const [clarificationCustomAnswers, setClarificationCustomAnswers] = useState({});
+    const [pendingMessage, setPendingMessage] = useState("");
+    const [pendingHistorySnapshot, setPendingHistorySnapshot] = useState([]);
+    const [isClarifying, setIsClarifying] = useState(false);
     const [isSourcesExpanded, setIsSourcesExpanded] = useState(true);
     const [isConvsExpanded, setIsConvsExpanded] = useState(true);
     const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(
@@ -81,6 +87,7 @@ function App() {
     const [showAvatarPicker, setShowAvatarPicker] = useState(false);
     const messagesEndRef = useRef(null);
     const fileInputRef = useRef(null);
+    const abortControllerRef = useRef(null);
 
     // ── 初始化：從 localStorage 載入 ─────────────────────
     useEffect(() => {
@@ -315,39 +322,146 @@ function App() {
         }
     };
 
-    // ── 聊天邏輯 ─────────────────────────────────────────
-    const handleSubmit = async (e) => {
-        if (e) e.preventDefault();
-        if (!input.trim() || isLoading) return;
-
-        const textarea = document.getElementById('chat-input');
-        if (textarea) textarea.style.height = 'auto';
-
-        // 若是全新對話（無 ID），建立一個新 ID
-        if (!currentConvId) {
-            setCurrentConvId(generateId());
+    const handleStop = () => {
+        if (abortControllerRef.current) {
+            abortControllerRef.current.abort();
+            abortControllerRef.current = null;
         }
+        setIsLoading(false);
+    };
 
-        const userMessage = { role: 'user', content: input };
-        setMessages(prev => [...prev, userMessage]);
+    const sendChatMessage = async (messageContent, activeConvId, historySnapshot, clarifications = [], appendUserMessage = true) => {
+        if (appendUserMessage) {
+            setMessages(prev => [...prev, { role: 'user', content: messageContent }]);
+        }
         setInput("");
         setIsLoading(true);
 
+        abortControllerRef.current = new AbortController();
+
         try {
             const response = await axios.post(`${API_URL}/chat`, {
-                message: userMessage.content,
-                history: messages
+                message: messageContent,
+                history: historySnapshot,
+                conversation_id: activeConvId,
+                clarifications
+            }, {
+                signal: abortControllerRef.current.signal
             });
             setMessages(prev => [...prev, { role: 'assistant', content: response.data.response }]);
         } catch (error) {
+            if (axios.isCancel(error) || error.code === 'ERR_CANCELED') return;
             console.error("Error:", error);
             setMessages(prev => [...prev, {
                 role: 'assistant',
                 content: "⚠️ **Error**: Could not connect to the Agent. Please check if the backend is running."
             }]);
         } finally {
+            abortControllerRef.current = null;
             setIsLoading(false);
         }
+    };
+
+    const buildClarificationSelections = () => {
+        return (clarification?.questions || []).map((question) => {
+            const selectedValue = clarificationAnswers[question.id];
+            if (selectedValue === '__custom__') {
+                const customValue = (clarificationCustomAnswers[question.id] || '').trim();
+                if (!customValue) return null;
+                return {
+                    question: question.question,
+                    label: '自行輸入',
+                    value: customValue,
+                };
+            }
+            const selectedOption = question.options.find(option => option.value === selectedValue);
+            if (!selectedOption) return null;
+            return {
+                question: question.question,
+                label: selectedOption.label,
+                value: selectedOption.value,
+            };
+        }).filter(Boolean);
+    };
+
+    const clearClarification = () => {
+        setClarification(null);
+        setClarificationAnswers({});
+        setClarificationCustomAnswers({});
+        setPendingMessage("");
+        setPendingHistorySnapshot([]);
+    };
+
+    const confirmClarification = async () => {
+        if (!pendingMessage || isLoading) return;
+        const activeConvId = currentConvId || generateId();
+        if (!currentConvId) setCurrentConvId(activeConvId);
+        const clarificationSelections = buildClarificationSelections();
+        const historySnapshot = pendingHistorySnapshot;
+        const messageToSend = pendingMessage;
+        clearClarification();
+        await sendChatMessage(messageToSend, activeConvId, historySnapshot, clarificationSelections, false);
+    };
+
+    const skipClarification = async () => {
+        if (!pendingMessage || isLoading) return;
+        const activeConvId = currentConvId || generateId();
+        if (!currentConvId) setCurrentConvId(activeConvId);
+        const messageToSend = pendingMessage;
+        const historySnapshot = pendingHistorySnapshot;
+        clearClarification();
+        await sendChatMessage(messageToSend, activeConvId, historySnapshot, [], false);
+    };
+
+    // ── 聊天邏輯 ─────────────────────────────────────────
+    const handleSubmit = async (e) => {
+        if (e) e.preventDefault();
+        if (!input.trim() || isLoading || isClarifying) return;
+
+        const textarea = document.getElementById('chat-input');
+
+        const activeConvId = currentConvId || generateId();
+        if (!currentConvId) setCurrentConvId(activeConvId);
+
+        const messageContent = input.trim();
+        const historySnapshot = messages;
+        const userMessage = { role: 'user', content: messageContent };
+
+        setMessages(prev => [...prev, userMessage]);
+        setInput("");
+        if (textarea) textarea.style.height = 'auto';
+        setIsLoading(true);
+        setIsClarifying(true);
+        try {
+            const clarificationResponse = await axios.post(`${API_URL}/clarifications`, {
+                message: messageContent,
+                history: historySnapshot,
+                conversation_id: activeConvId
+            });
+
+            if (clarificationResponse.data?.needs_clarification && clarificationResponse.data?.questions?.length > 0) {
+                const nextClarification = clarificationResponse.data;
+                const defaultAnswers = {};
+                nextClarification.questions.forEach((question) => {
+                    if (question.options?.[0]) defaultAnswers[question.id] = question.options[0].value;
+                });
+                setPendingMessage(messageContent);
+                setPendingHistorySnapshot(historySnapshot);
+                setClarification(nextClarification);
+                setClarificationAnswers(defaultAnswers);
+                setClarificationCustomAnswers({});
+                setInput("");
+                setIsLoading(false);
+                return;
+            }
+        } catch (error) {
+            console.error("Clarification check failed:", error);
+        } finally {
+            setIsClarifying(false);
+        }
+
+        setIsLoading(false);
+        await sendChatMessage(messageContent, activeConvId, historySnapshot, [], false);
     };
 
     const handleMessageUpdate = async (index, newContent) => {
@@ -359,7 +473,8 @@ function App() {
         try {
             const response = await axios.post(`${API_URL}/chat`, {
                 message: newContent,
-                history: historyContext
+                history: historyContext,
+                conversation_id: currentConvId
             });
             setMessages(prev => [...prev, { role: 'assistant', content: response.data.response }]);
         } catch (error) {
@@ -681,6 +796,63 @@ function App() {
 
                 {/* Input */}
                 <footer className="w-full max-w-4xl mx-auto px-2 sm:px-4 py-3 bg-white">
+                    {clarification && (
+                        <div className="clarification-panel">
+                            <div className="clarification-panel-header">
+                                <div>
+                                    <p className="clarification-eyebrow">Help me aim better</p>
+                                    <h2>{clarification.questions[0]?.question}</h2>
+                                </div>
+                                <button type="button" onClick={clearClarification} className="clarification-close" aria-label="Close clarification">
+                                    ×
+                                </button>
+                            </div>
+                            <div className="clarification-options">
+                                {[...(clarification.questions[0]?.options || []), {
+                                    label: '自行輸入',
+                                    value: '__custom__',
+                                    description: '用自己的文字補充需求'
+                                }].map((option) => {
+                                    const questionId = clarification.questions[0].id;
+                                    const isSelected = clarificationAnswers[questionId] === option.value;
+                                    return (
+                                        <div key={option.value} className={`clarification-option-wrap ${isSelected ? 'selected' : ''}`}>
+                                            <button
+                                                type="button"
+                                                className={`clarification-option ${isSelected ? 'selected' : ''}`}
+                                                onClick={() => setClarificationAnswers(prev => ({ ...prev, [questionId]: option.value }))}
+                                            >
+                                                <span className="clarification-check">{isSelected ? '✓' : ''}</span>
+                                                <span>
+                                                    <strong>{option.label}</strong>
+                                                    {option.description && <small>{option.description}</small>}
+                                                </span>
+                                            </button>
+                                            {option.value === '__custom__' && isSelected && (
+                                                <input
+                                                    type="text"
+                                                    className="clarification-custom-input"
+                                                    value={clarificationCustomAnswers[questionId] || ''}
+                                                    onChange={(e) => setClarificationCustomAnswers(prev => ({ ...prev, [questionId]: e.target.value }))}
+                                                    placeholder="請輸入你想補充的條件"
+                                                    autoFocus
+                                                />
+                                            )}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                            <div className="clarification-actions">
+                                <span>{clarification.reason || '選擇一個方向後，我會再查資料。'}</span>
+                                <div>
+                                    <button type="button" onClick={skipClarification} className="clarification-skip">Skip</button>
+                                    <button type="button" onClick={confirmClarification} className="clarification-submit" aria-label="Continue">
+                                        <ArrowUp />
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
                     <form onSubmit={handleSubmit} className="chatbot-input-container">
                         {!input.trim() && <Search className="input-leading-icon" aria-hidden="true" />}
                         <textarea
@@ -697,16 +869,29 @@ function App() {
                                     handleSubmit(e);
                                 }
                             }}
-                            placeholder="Type your question here"
-                            disabled={isLoading}
+                            placeholder={isLoading ? "Hold that thought!" : "Type your question here"}
+                            disabled={isLoading || isClarifying}
                             className="chatbot-input"
                             rows={1}
                         />
-                        {input.trim() && (
-                            <button type="submit" disabled={isLoading} className="send-button" aria-label="Send message">
-                                <ArrowUp />
-                            </button>
-                        )}
+                        <div className="input-actions">
+                            {isLoading ? (
+                                <button type="button" onClick={handleStop} className="stop-button" aria-label="Stop generation">
+                                    <Square fill="currentColor" />
+                                </button>
+                            ) : (
+                                <>
+                                    <button type="button" disabled={isClarifying} className="mic-button" aria-label="Voice input">
+                                        <Mic />
+                                    </button>
+                                    {input.trim() && (
+                                        <button type="submit" disabled={isClarifying} className="send-button" aria-label="Send message">
+                                            <ArrowUp />
+                                        </button>
+                                    )}
+                                </>
+                            )}
+                        </div>
                     </form>
                     <div className="text-center mt-2 pb-2">
                         <p className="text-[10px] text-[#767676] font-medium">AI can make mistakes. Please verify important information.</p>

@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import gspread
 import pandas as pd
 from typing import Optional
@@ -82,11 +83,25 @@ def _extract_column_filters(query: str) -> list[tuple[str, str]]:
     """
     filters = []
     # 格式 A：欄位 [是|為|=|：|:] 值
-    pattern_a = r'([^\s,，]+)\s*(?:是|為|=|：|:)\s*([^\s,，、]+)'
+    pattern_a = r'([^\s,，]+)\s*(?:是|為|=|：|:)\s*([^,，、\n]+)'
     for m in re.finditer(pattern_a, query):
-        col_term, value = m.group(1).strip(), m.group(2).strip()
-        filters.append((col_term, value))
+        col_term, value = m.group(1).strip(), _clean_filter_value(m.group(2))
+        if value:
+            filters.append((col_term, value))
     return filters
+
+
+def _clean_filter_value(value: str) -> str:
+    """Clean natural-language suffixes while preserving multi-word values."""
+    cleaned = str(value).strip().strip('"\'「」')
+    suffix_markers = [
+        ' 的每', ' 的各', ' 的月', ' 的ticket', ' 的 ticket', ' 每個月',
+        ' 各月', ' 每月', ' 月份', ' 圖表', ' chart', ' 統計', ' 數量'
+    ]
+    for marker in suffix_markers:
+        if marker in cleaned:
+            cleaned = cleaned.split(marker, 1)[0].strip()
+    return cleaned.strip().strip('"\'「」')
 
 def get_gspread_client():
     """
@@ -203,8 +218,8 @@ def _drop_empty_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 def _detect_date_columns(df: pd.DataFrame) -> list:
     """針對已知的 Google Sheet 欄位，強制將日期欄位轉換為 datetime"""
-    # 已知日期欄位：Start Date, Due Date
-    date_cols = ['Start Date', 'Due Date']
+    # 已知日期欄位
+    date_cols = ['Creation Date', 'Start Date', 'Due Date', 'Modified']
     existing_cols = [col for col in date_cols if col in df.columns]
     for col in existing_cols:
         df[col] = pd.to_datetime(df[col], errors='coerce', format='mixed')
@@ -276,6 +291,202 @@ def _to_markdown_table(df: pd.DataFrame) -> str:
     return '\n'.join([header, separator] + rows)
 
 
+def _wants_chart(query: str) -> bool:
+    chart_keywords = [
+        '圖表', '圖形', '視覺化', '可視化', '長條圖', '柱狀圖', '圓餅圖', '折線圖',
+        'bar chart', 'pie chart', 'line chart', 'chart', 'visualization', 'visualisation'
+    ]
+    query_lower = query.lower()
+    return any(keyword in query_lower for keyword in chart_keywords)
+
+
+def _wants_monthly_counts(query: str) -> bool:
+    query_lower = query.lower()
+    monthly_terms = [
+        '每個月', '各月', '月份', '月別', '按月', '每月', '月趨勢',
+        'monthly', 'by month', 'per month', 'month over month'
+    ]
+    count_terms = ['數量', '幾筆', '統計', 'count', 'counts', 'ticket', 'tickets', '工單']
+    return any(term in query_lower for term in monthly_terms) and any(term in query_lower for term in count_terms)
+
+
+def _choose_month_date_column(df: pd.DataFrame, query: str) -> Optional[str]:
+    query_lower = query.lower()
+    if any(term in query_lower for term in ['建立', '創建', 'creation', 'created']):
+        preferred = ['Creation Date', 'Start Date', 'Due Date', 'Modified']
+    elif any(term in query_lower for term in ['開始', 'start']):
+        preferred = ['Start Date', 'Creation Date', 'Due Date', 'Modified']
+    elif any(term in query_lower for term in ['到期', '截止', 'due']):
+        preferred = ['Due Date', 'Start Date', 'Creation Date', 'Modified']
+    else:
+        # Ticket volume by month usually means when tickets were created.
+        preferred = ['Creation Date', 'Start Date', 'Due Date', 'Modified']
+
+    for col in preferred:
+        actual_col = _resolve_column(df, col)
+        if actual_col and pd.api.types.is_datetime64_any_dtype(df[actual_col]):
+            return actual_col
+    return None
+
+
+def _monthly_counts(df: pd.DataFrame, date_col: str) -> pd.Series:
+    valid_dates = df.dropna(subset=[date_col]).copy()
+    if valid_dates.empty:
+        return pd.Series(dtype=int)
+    return valid_dates.groupby(valid_dates[date_col].dt.to_period('M')).size().sort_index()
+
+
+def _wants_detail_rows(query: str) -> bool:
+    detail_keywords = [
+        '明細', '詳細資料', '資料表', '表格', '列出每筆', '每一筆', 'raw data',
+        'detail rows', 'details', 'show table', 'data table'
+    ]
+    query_lower = query.lower()
+    return any(keyword in query_lower for keyword in detail_keywords)
+
+
+def _wants_all_distributions(query: str) -> bool:
+    keywords = [
+        '所有欄位', '全部欄位', '所有分布', '全部分布', '欄位分布',
+        'all fields', 'all distributions', 'profile'
+    ]
+    query_lower = query.lower()
+    return any(keyword in query_lower for keyword in keywords)
+
+
+def _parse_analysis_intent(query: str, df: pd.DataFrame) -> dict:
+    """
+    Convert a natural-language analysis request into a small, predictable shape.
+    This prevents secondary fields like "filter by assignee" from stealing the
+    main chart dimension from phrases like "by month".
+    """
+    query_lower = query.lower()
+    group_by = None
+
+    group_rules = [
+        ('month', ['每個月', '各月', '月份', '月別', '按月', '每月', '月趨勢', 'monthly', 'by month', 'per month']),
+        ('Status', ['狀態', '進度', 'status']),
+        ('Market', ['市場', 'market']),
+        ('Data Source', ['資料來源', '數據來源', 'data source']),
+        ('Data Support', ['資料支援', '數據支援', '支援類型', 'data support']),
+        ('Assigned To', ['依負責人', '按負責人', '各負責人', '負責人分布', 'assigned distribution', 'by assignee']),
+        ('Department', ['部門', 'department']),
+        ('Labels', ['標籤', '分類', 'label']),
+        ('Device', ['裝置', 'device']),
+    ]
+    for value, terms in group_rules:
+        if any(term in query_lower for term in terms):
+            group_by = value
+            break
+
+    metric = 'ticket_count'
+    if any(term in query_lower for term in ['平均', 'average', '天數', '處理時間', '花費', '工時']):
+        metric = 'duration_days'
+
+    output = 'chart' if _wants_chart(query) else 'summary'
+    if _wants_detail_rows(query):
+        output = 'table'
+    elif group_by == 'month':
+        output = 'chart'
+
+    chart_type = _chart_type(query)
+    if group_by == 'month':
+        chart_type = 'line'
+
+    date_column = _choose_month_date_column(df, query) if group_by == 'month' else None
+
+    filterable_fields = []
+    for col, terms in [
+        ('Assigned To', ['負責人', 'assigned', '篩選']),
+        ('Status', ['狀態', 'status', '篩選']),
+        ('Market', ['市場', 'market', '篩選']),
+        ('Department', ['部門', 'department', '篩選']),
+    ]:
+        if col in df.columns and any(term in query_lower for term in terms):
+            filterable_fields.append(col)
+
+    return {
+        'metric': metric,
+        'group_by': group_by,
+        'date_column': date_column,
+        'output': output,
+        'chart_type': chart_type,
+        'filterable_fields': filterable_fields,
+    }
+
+
+def _choose_chart_column(query: str, stat_cols: list[str]) -> Optional[str]:
+    if not stat_cols:
+        return None
+
+    query_lower = query.lower()
+    priority_terms = [
+        ('Status', ['狀態', '進度', 'status']),
+        ('Assigned To', ['負責人', '處理人', '承辦人', 'assigned']),
+        ('Market', ['市場', 'market']),
+        ('Labels', ['標籤', '分類', 'label']),
+        ('Data Source', ['資料來源', '數據來源', 'data source']),
+        ('Department', ['部門', 'department']),
+        ('Device', ['裝置', 'device']),
+    ]
+
+    for col, terms in priority_terms:
+        if col in stat_cols and any(term in query_lower for term in terms):
+            return col
+
+    for col, _ in priority_terms:
+        if col in stat_cols:
+            return col
+
+    return stat_cols[0]
+
+
+def _summary_columns(query: str, stat_cols: list[str], chart_col: Optional[str]) -> list[str]:
+    if _wants_all_distributions(query):
+        return stat_cols
+
+    preferred = [chart_col, 'Status', 'Market', 'Data Source', 'Data Support']
+    selected = []
+    for col in preferred:
+        if col and col in stat_cols and col not in selected:
+            selected.append(col)
+    return selected[:4]
+
+
+def _format_counts_line(col: str, counts: pd.Series, limit: int = 5) -> str:
+    top_items = list(counts.head(limit).items())
+    line = f"- **{col}**：" + "、".join(f"{v} {c}筆" for v, c in top_items)
+    remaining = len(counts) - len(top_items)
+    if remaining > 0:
+        line += f"（另有 {remaining} 類）"
+    return line + "\n"
+
+
+def _chart_type(query: str) -> str:
+    query_lower = query.lower()
+    if any(k in query_lower for k in ['圓餅', 'pie']):
+        return 'pie'
+    if any(k in query_lower for k in ['折線', 'line']):
+        return 'line'
+    return 'bar'
+
+
+def _build_chart_block(title: str, labels: list[str], values: list[int], chart_type: str = 'bar', is_sequential: bool = False) -> str:
+    data = [
+        {"label": str(label) if str(label).strip() else "(空白)", "value": int(value)}
+        for label, value in zip(labels, values)
+    ]
+    chart_spec = {
+        "title": title,
+        "type": chart_type,
+        "xKey": "label",
+        "yKey": "value",
+        "isSequential": is_sequential,
+        "data": data,
+    }
+    return "\n\n```chart\n" + json.dumps(chart_spec, ensure_ascii=False, indent=2) + "\n```\n"
+
+
 @tool
 def query_worksheet_data(worksheet_name: str, query_description: str) -> str:
     """
@@ -316,6 +527,7 @@ def query_worksheet_data(worksheet_name: str, query_description: str) -> str:
 
         # ── Step 1：偵測日期欄位 ──────────────────────────────
         date_cols = _detect_date_columns(df)
+        analysis_intent = _parse_analysis_intent(query_description, df)
 
         # ── Step 2：依日期區間篩選 ────────────────────────────
         date_start, date_end = _extract_date_range(query_description)
@@ -392,10 +604,65 @@ def query_worksheet_data(worksheet_name: str, query_description: str) -> str:
                     display_cols = [c for c in [ticket_col, start_col, due_col, '_處理天數'] if c]
                     df_display = df_valid[display_cols].rename(columns={'_處理天數': '處理天數(天)'})
                     result += _to_markdown_table(df_display)
+                    if _wants_chart(query_description) and ticket_col:
+                        chart_df = df_valid[[ticket_col, '_處理天數']].dropna().head(12)
+                        result += _build_chart_block(
+                            title="工單處理天數",
+                            labels=list(chart_df[ticket_col].astype(str)),
+                            values=list(chart_df['_處理天數'].astype(int)),
+                            chart_type=_chart_type(query_description),
+                        )
                     return result
 
         # ── Step 6：輸出資料內容（Markdown 表格）────────────
         df = _drop_empty_columns(df)
+
+        if analysis_intent.get('group_by') == 'month' or _wants_monthly_counts(query_description):
+            month_col = analysis_intent.get('date_column') or _choose_month_date_column(df, query_description)
+            if month_col:
+                counts = _monthly_counts(df, month_col)
+                if not counts.empty:
+                    labels = [str(period) for period in counts.index]
+                    values = [int(value) for value in counts.values]
+                    result += "### 每月 ticket 數量\n\n"
+                    result += f"- 日期欄位：{month_col}\n"
+                    result += f"- 統計筆數：{sum(values)} 筆\n"
+                    result += "- 月份分布：" + "、".join(
+                        f"{label} {value}筆" for label, value in zip(labels, values)
+                    ) + "\n"
+
+                    if analysis_intent.get('output') == 'chart':
+                        result += _build_chart_block(
+                            title="每月 ticket 數量",
+                            labels=labels,
+                            values=values,
+                            chart_type=analysis_intent.get('chart_type', 'line'),
+                            is_sequential=True,
+                        )
+
+                    # Only show assignee breakdown / hint when no person filter is active
+                    assigned_col = _resolve_column(df, 'Assigned To')
+                    active_filters = {_resolve_column(df, t) for t, _ in col_filters}
+                    already_filtered_by_assignee = assigned_col and assigned_col in active_filters
+                    if assigned_col and not already_filtered_by_assignee and assigned_col in analysis_intent.get('filterable_fields', []):
+                        assignee_counts = (
+                            df[assigned_col]
+                            .fillna("(空白)")
+                            .astype(str)
+                            .replace("", "(空白)")
+                            .value_counts()
+                            .head(8)
+                        )
+                        result += "\n可用的負責人篩選包含：" + "、".join(
+                            f"{name}({count}筆)" for name, count in assignee_counts.items()
+                        ) + "\n"
+
+                    if not _wants_detail_rows(query_description):
+                        if not already_filtered_by_assignee:
+                            result += "\n若要篩選特定負責人，可以追問例如：「負責人：Kelly Dong 的每月 ticket 數量」。\n"
+                        return result
+            else:
+                result += "找不到可用的日期欄位，因此無法依月份統計。\n\n"
 
         # 統計分布（類別欄位、unique <= 15）
         stat_cols = [col for col in df.columns
@@ -403,11 +670,36 @@ def query_worksheet_data(worksheet_name: str, query_description: str) -> str:
                      and (df[col].dtype == object)
                      and df[col].nunique() <= 15]
         if stat_cols:
-            result += "### 欄位分布統計\n\n"
-            for col in stat_cols:
-                counts = df[col].value_counts()
-                result += f"**{col}**：" + "　".join(f"{v}({c}筆)" for v, c in counts.items()) + "\n"
-            result += "\n"
+            intent_group = analysis_intent.get('group_by')
+            chart_col = intent_group if intent_group in stat_cols else None
+            if not chart_col and analysis_intent.get('output') == 'chart':
+                chart_col = _choose_chart_column(query_description, stat_cols)
+
+            if analysis_intent.get('output') == 'chart':
+                result += "### 重點摘要\n\n"
+                for col in _summary_columns(query_description, stat_cols, chart_col):
+                    counts = df[col].fillna("(空白)").astype(str).replace("", "(空白)").value_counts()
+                    result += _format_counts_line(col, counts)
+                result += "\n"
+
+                if chart_col:
+                    counts = df[chart_col].fillna("(空白)").astype(str).replace("", "(空白)").value_counts().head(12)
+                    result += _build_chart_block(
+                        title=f"{chart_col} 分布",
+                        labels=list(counts.index),
+                        values=list(counts.values),
+                        chart_type=analysis_intent.get('chart_type', _chart_type(query_description)),
+                    )
+            else:
+                result += "### 欄位分布統計\n\n"
+                for col in stat_cols:
+                    counts = df[col].value_counts()
+                    result += f"**{col}**：" + "　".join(f"{v}({c}筆)" for v, c in counts.items()) + "\n"
+                result += "\n"
+
+        if analysis_intent.get('output') == 'chart' and not _wants_detail_rows(query_description):
+            result += f"已依篩選條件統計 {len(df)} 筆資料並產生圖表；若需要，我可以再另外列出明細。\n"
+            return result
 
         # 資料表格
         result += f"### 資料明細（共 {len(df)} 筆）\n\n"

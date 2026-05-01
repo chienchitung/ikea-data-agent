@@ -27,4 +27,6 @@
 
 - 相對時間必須轉成明確西元年月區間。
 - 欄位篩選請使用「{欄位名} 是 {值}」格式。
+- 圖表需求請在 `query_description` 保留分析槽位：指標（例如 ticket 數量）、主維度（例如月份/Status/Market）、篩選器（例如 Assigned To）、日期欄位（例如 Creation Date）。
+- 「每個月 ticket 數量」的主維度是月份；「可以篩選不同負責人」只是 Assigned To 篩選器，不是主維度。
 - 回答工單主旨 `Subject` 時，必須完全依據工具結果，禁止改寫。

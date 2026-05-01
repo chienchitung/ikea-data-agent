@@ -4,3 +4,9 @@
 - **BQ**：指的是 BigQuery (Google Cloud 數據倉儲)。
 - **GCP**：指的是 Google Cloud Platform (Google Cloud 雲端平台)。
 - **CDP**：指的是 Centralized Data Platform (集中式資料平台)。
+- **HFB**：指的是 Home Furnishing Business。
+- **Showroom (SH)**：指的是 HFB 01-09。
+- **Market Hall (MH)**：指的是 HFB 11-18, 20, 70。
+- **IKEA Food (IF)**：指的是 HFBB 60, 61。
+- **IKEA Family**：指的是宜家卡友。
+- **yuu**：指的是由 DFI 零售集團（牛奶公司）於香港及澳門推出的綜合消費獎賞計劃。

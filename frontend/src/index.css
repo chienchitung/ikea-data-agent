@@ -206,9 +206,368 @@
     text-decoration: underline;
 }
 
+/* Interactive chart blocks */
+.chart-card {
+    background: #fff;
+    border: 1px solid var(--color-ikea-border-grey);
+    border-radius: 8px;
+    margin: 14px 0;
+    max-width: 100%;
+    overflow: hidden;
+}
+
+.chart-header {
+    align-items: center;
+    border-bottom: 1px solid var(--color-ikea-border-grey);
+    display: flex;
+    gap: 12px;
+    justify-content: space-between;
+    padding: 12px 14px;
+}
+
+.chart-title {
+    color: var(--color-ikea-text);
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 1.3;
+    margin: 0;
+}
+
+.chart-subtitle {
+    color: var(--color-ikea-dark-grey);
+    font-size: 12px;
+    line-height: 1.3;
+    margin: 3px 0 0;
+}
+
+.chart-controls {
+    align-items: center;
+    display: inline-flex;
+    gap: 4px;
+}
+
+.chart-controls button {
+    align-items: center;
+    background: #fff;
+    border: 1px solid var(--color-ikea-border-grey);
+    border-radius: 6px;
+    color: var(--color-ikea-secondary-text);
+    display: inline-flex;
+    height: 32px;
+    justify-content: center;
+    width: 32px;
+}
+
+.chart-controls button.active {
+    background: var(--color-ikea-blue);
+    border-color: var(--color-ikea-blue);
+    color: #fff;
+}
+
+.chart-body {
+    overflow-x: auto;
+    padding: 12px 12px 0;
+    position: relative;
+}
+
+.chart-svg {
+    display: block;
+    height: auto;
+    min-width: 620px;
+    width: 100%;
+}
+
+.chart-axis {
+    stroke: #CCCCCC;
+    stroke-width: 1;
+}
+
+.chart-bar,
+.chart-slice,
+.chart-dot {
+    cursor: pointer;
+    transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+.chart-bar:hover,
+.chart-slice:hover {
+    opacity: 0.78;
+}
+
+.chart-line {
+    fill: none;
+    stroke: var(--color-ikea-blue);
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 3;
+}
+
+.chart-dot {
+    fill: #fff;
+    stroke: var(--color-ikea-blue);
+    stroke-width: 3;
+}
+
+.chart-label,
+.chart-value {
+    fill: var(--color-ikea-secondary-text);
+    font-size: 12px;
+}
+
+.chart-value,
+.chart-total {
+    font-weight: 700;
+}
+
+.chart-total {
+    fill: var(--color-ikea-text);
+    font-size: 24px;
+}
+
+.chart-tooltip {
+    background: #111;
+    border-radius: 6px;
+    color: #fff;
+    display: flex;
+    gap: 10px;
+    left: 18px;
+    max-width: calc(100% - 36px);
+    padding: 7px 9px;
+    pointer-events: none;
+    position: absolute;
+    top: 18px;
+    z-index: 1;
+}
+
+.chart-tooltip strong,
+.chart-tooltip span {
+    font-size: 12px;
+    line-height: 1.3;
+}
+
+.chart-legend {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    padding: 0 14px 14px;
+}
+
+.chart-legend span {
+    align-items: center;
+    color: var(--color-ikea-secondary-text);
+    display: inline-flex;
+    font-size: 12px;
+    gap: 5px;
+}
+
+.chart-legend i {
+    border-radius: 2px;
+    display: inline-block;
+    height: 10px;
+    width: 10px;
+}
+
+/* Clarification panel */
+.clarification-panel {
+    background: #fff;
+    border: 1px solid var(--color-ikea-border-grey);
+    border-radius: 18px;
+    box-shadow: rgba(17, 17, 17, 0.16) 0 18px 52px, rgba(17, 17, 17, 0.08) 0 4px 16px;
+    margin: 0 auto 12px;
+    max-width: 896px;
+    overflow: hidden;
+    width: 100%;
+}
+
+.clarification-panel-header {
+    align-items: flex-start;
+    display: flex;
+    justify-content: space-between;
+    padding: 18px 20px 10px;
+}
+
+.clarification-eyebrow {
+    color: var(--color-ikea-dark-grey);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0;
+    line-height: 1.25;
+    margin: 0 0 6px;
+}
+
+.clarification-panel h2 {
+    color: var(--color-ikea-text);
+    font-size: 18px;
+    font-weight: 700;
+    line-height: 1.35;
+    margin: 0;
+}
+
+.clarification-close {
+    align-items: center;
+    background: #fff;
+    border: 0;
+    border-radius: 50%;
+    color: var(--color-ikea-secondary-text);
+    display: inline-flex;
+    font-size: 26px;
+    height: 34px;
+    justify-content: center;
+    line-height: 1;
+    width: 34px;
+}
+
+.clarification-close:hover {
+    background: var(--color-ikea-light-grey);
+}
+
+.clarification-options {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    padding: 4px 14px;
+}
+
+.clarification-option-wrap {
+    border-bottom: 1px solid var(--color-ikea-border-grey);
+}
+
+.clarification-option-wrap:last-child {
+    border-bottom: 0;
+}
+
+.clarification-option-wrap.selected {
+    background: var(--color-ikea-light-grey);
+}
+
+.clarification-option {
+    align-items: center;
+    background: #fff;
+    border: 0;
+    color: var(--color-ikea-text);
+    display: flex;
+    gap: 14px;
+    min-height: 58px;
+    padding: 10px 8px;
+    text-align: left;
+    width: 100%;
+}
+
+.clarification-option:hover,
+.clarification-option.selected {
+    background: var(--color-ikea-light-grey);
+}
+
+.clarification-check {
+    align-items: center;
+    border: 1.5px solid var(--color-ikea-medium-grey);
+    border-radius: 5px;
+    color: #fff;
+    display: inline-flex;
+    flex-shrink: 0;
+    font-size: 14px;
+    font-weight: 700;
+    height: 22px;
+    justify-content: center;
+    width: 22px;
+}
+
+.clarification-option.selected .clarification-check {
+    background: var(--color-ikea-blue);
+    border-color: var(--color-ikea-blue);
+}
+
+.clarification-option strong {
+    display: block;
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 1.25;
+}
+
+.clarification-option small {
+    color: var(--color-ikea-dark-grey);
+    display: block;
+    font-size: 12px;
+    line-height: 1.35;
+    margin-top: 3px;
+}
+
+.clarification-custom-input {
+    background: #fff;
+    border: 1px solid var(--color-ikea-border-grey);
+    border-radius: 8px;
+    color: var(--color-ikea-text);
+    font-family: inherit;
+    font-size: 14px;
+    line-height: 1.4;
+    margin: 0 8px 12px 44px;
+    outline: none;
+    padding: 10px 12px;
+    width: calc(100% - 52px);
+}
+
+.clarification-custom-input:focus {
+    border-color: var(--color-ikea-blue);
+    box-shadow: rgba(0, 88, 163, 0.16) 0 0 0 3px;
+}
+
+.clarification-actions {
+    align-items: center;
+    border-top: 1px solid var(--color-ikea-border-grey);
+    display: flex;
+    gap: 12px;
+    justify-content: space-between;
+    padding: 12px 18px;
+}
+
+.clarification-actions span {
+    color: var(--color-ikea-dark-grey);
+    font-size: 12px;
+    line-height: 1.35;
+}
+
+.clarification-actions div {
+    display: flex;
+    flex-shrink: 0;
+    gap: 8px;
+}
+
+.clarification-skip {
+    background: #fff;
+    border: 1px solid var(--color-ikea-border-grey);
+    border-radius: 8px;
+    color: var(--color-ikea-text);
+    font-size: 13px;
+    font-weight: 700;
+    height: 38px;
+    padding: 0 14px;
+}
+
+.clarification-skip:hover {
+    background: var(--color-ikea-light-grey);
+}
+
+.clarification-submit {
+    align-items: center;
+    background: var(--color-ikea-text);
+    border: 0;
+    border-radius: 8px;
+    color: #fff;
+    display: inline-flex;
+    height: 38px;
+    justify-content: center;
+    width: 42px;
+}
+
+.clarification-submit svg {
+    height: 18px;
+    width: 18px;
+}
+
 /* 輸入區域 */
 .chatbot-input-container {
-    align-items: flex-start;
+    align-items: center;
     background-color: #fff;
     border: 1px solid var(--color-ikea-border-grey);
     border-radius: 32px;
@@ -248,7 +607,7 @@
     height: 18px;
     color: var(--color-ikea-dark-grey);
     flex-shrink: 0;
-    margin-top: 10px;
+    margin-left: 2px;
 }
 
 .chatbot-input {
@@ -257,7 +616,7 @@
     background: none;
     font-size: 16px;
     line-height: 1.625;
-    padding: 9px 46px 9px 0;
+    padding: 9px 46px 9px 4px;
     min-height: 26px;
     max-height: 132px;
     resize: none;
@@ -276,6 +635,42 @@
 .chatbot-input::-webkit-scrollbar-thumb {
     background-color: #929292;
     border-radius: 9999px;
+}
+
+.input-actions {
+    align-items: center;
+    align-self: flex-end;
+    display: flex;
+    flex-shrink: 0;
+    gap: 8px;
+}
+
+.mic-button {
+    align-items: center;
+    background: transparent;
+    border: 0;
+    border-radius: 50%;
+    color: var(--color-ikea-text);
+    cursor: pointer;
+    display: flex;
+    height: 38px;
+    justify-content: center;
+    padding: 0;
+    width: 38px;
+}
+
+.mic-button:hover {
+    background: var(--color-ikea-light-grey);
+}
+
+.mic-button:disabled {
+    color: var(--color-ikea-disabled-grey);
+    cursor: not-allowed;
+}
+
+.mic-button svg {
+    height: 24px;
+    width: 24px;
 }
 
 .send-button {
@@ -313,6 +708,32 @@
     width: 22px;
     height: 22px;
     stroke-width: 2.75;
+}
+
+.stop-button {
+    align-items: center;
+    background: #111111;
+    border: none;
+    border-radius: 50%;
+    color: #fff;
+    cursor: pointer;
+    display: flex;
+    flex-shrink: 0;
+    height: 38px;
+    justify-content: center;
+    transition: background-color 0.15s ease, transform 0.1s ease;
+    width: 38px;
+    align-self: flex-end;
+}
+
+.stop-button:hover {
+    background: #333333;
+    transform: scale(1.05);
+}
+
+.stop-button svg {
+    height: 16px;
+    width: 16px;
 }
 
 /* 添加打字動畫樣式 */
