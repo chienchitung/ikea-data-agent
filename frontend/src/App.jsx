@@ -68,6 +68,8 @@ function App() {
     const [selectedDocuments, setSelectedDocuments] = useState(new Set());
     const [isLoading, setIsLoading] = useState(false);
     const [isUploading, setIsUploading] = useState(false);
+    const [isListening, setIsListening] = useState(false);
+    const [speechSupported, setSpeechSupported] = useState(true);
     const [uploadProgress, setUploadProgress] = useState(0);
     const [uploadStage, setUploadStage] = useState("");
     const [clarification, setClarification] = useState(null);
@@ -88,6 +90,11 @@ function App() {
     const messagesEndRef = useRef(null);
     const fileInputRef = useRef(null);
     const abortControllerRef = useRef(null);
+    const recognitionRef = useRef(null);
+    const speechBaseInputRef = useRef("");
+    const speechTranscriptRef = useRef("");
+    const speechInterimRef = useRef("");
+    const speechErrorRef = useRef(false);
 
     // ── 初始化：從 localStorage 載入 ─────────────────────
     useEffect(() => {
@@ -159,6 +166,70 @@ function App() {
 
     useEffect(() => {
         fetchDocuments();
+    }, []);
+
+    useEffect(() => {
+        const textarea = document.getElementById('chat-input');
+        if (!textarea) return;
+        textarea.style.height = "auto";
+        textarea.style.height = `${textarea.scrollHeight}px`;
+    }, [input]);
+
+    useEffect(() => {
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRecognition) {
+            setSpeechSupported(false);
+            return;
+        }
+
+        const recognition = new SpeechRecognition();
+        recognition.lang = 'zh-TW';
+        recognition.continuous = true;
+        recognition.interimResults = true;
+
+        recognition.onresult = (event) => {
+            let interimTranscript = "";
+            for (let i = event.resultIndex; i < event.results.length; i += 1) {
+                const transcript = event.results[i][0].transcript;
+                if (event.results[i].isFinal) {
+                    speechTranscriptRef.current += transcript;
+                } else {
+                    interimTranscript += transcript;
+                }
+            }
+            speechInterimRef.current = interimTranscript;
+        };
+
+        recognition.onerror = (event) => {
+            speechErrorRef.current = true;
+            setIsListening(false);
+            if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+                setMessages(prev => [...prev, {
+                    role: 'assistant',
+                    content: '⚠️ Microphone permission was blocked. Please allow microphone access in your browser settings.'
+                }]);
+            }
+        };
+
+        recognition.onend = () => {
+            if (!speechErrorRef.current) {
+                const baseText = speechBaseInputRef.current.trim();
+                const spokenText = `${speechTranscriptRef.current}${speechInterimRef.current}`.trim();
+                if (spokenText) {
+                    setInput([baseText, spokenText].filter(Boolean).join(baseText ? " " : ""));
+                }
+            }
+            speechInterimRef.current = "";
+            speechErrorRef.current = false;
+            setIsListening(false);
+        };
+
+        recognitionRef.current = recognition;
+
+        return () => {
+            recognition.stop();
+            recognitionRef.current = null;
+        };
     }, []);
 
     // ── 對話管理 ─────────────────────────────────────────
@@ -330,6 +401,28 @@ function App() {
         setIsLoading(false);
     };
 
+    const toggleVoiceInput = () => {
+        if (!speechSupported || !recognitionRef.current || isClarifying) return;
+
+        if (isListening) {
+            recognitionRef.current.stop();
+            setIsListening(false);
+            return;
+        }
+
+        speechBaseInputRef.current = input;
+        speechTranscriptRef.current = "";
+        speechInterimRef.current = "";
+        speechErrorRef.current = false;
+        try {
+            recognitionRef.current.start();
+            setIsListening(true);
+        } catch (error) {
+            console.error("Speech recognition failed:", error);
+            setIsListening(false);
+        }
+    };
+
     const sendChatMessage = async (messageContent, activeConvId, historySnapshot, clarifications = [], appendUserMessage = true) => {
         if (appendUserMessage) {
             setMessages(prev => [...prev, { role: 'user', content: messageContent }]);
@@ -419,6 +512,11 @@ function App() {
         if (!input.trim() || isLoading || isClarifying) return;
 
         const textarea = document.getElementById('chat-input');
+        if (isListening && recognitionRef.current) {
+            recognitionRef.current.stop();
+            setIsListening(false);
+            return;
+        }
 
         const activeConvId = currentConvId || generateId();
         if (!currentConvId) setCurrentConvId(activeConvId);
@@ -853,7 +951,10 @@ function App() {
                             </div>
                         </div>
                     )}
-                    <form onSubmit={handleSubmit} className="chatbot-input-container">
+                    <form
+                        onSubmit={handleSubmit}
+                        className={`chatbot-input-container ${isListening ? 'listening' : ''} ${input.trim() ? 'has-input' : ''}`}
+                    >
                         {!input.trim() && <Search className="input-leading-icon" aria-hidden="true" />}
                         <textarea
                             id="chat-input"
@@ -874,6 +975,15 @@ function App() {
                             className="chatbot-input"
                             rows={1}
                         />
+                        {isListening && (
+                            <div className="voice-waveform" aria-hidden="true">
+                                <span />
+                                <span />
+                                <span />
+                                <span />
+                                <span />
+                            </div>
+                        )}
                         <div className="input-actions">
                             {isLoading ? (
                                 <button type="button" onClick={handleStop} className="stop-button" aria-label="Stop generation">
@@ -881,7 +991,14 @@ function App() {
                                 </button>
                             ) : (
                                 <>
-                                    <button type="button" disabled={isClarifying} className="mic-button" aria-label="Voice input">
+                                    <button
+                                        type="button"
+                                        onClick={toggleVoiceInput}
+                                        disabled={isClarifying || !speechSupported}
+                                        className={`mic-button ${isListening ? 'listening' : ''}`}
+                                        aria-label={isListening ? "Stop voice input" : "Voice input"}
+                                        title={!speechSupported ? "Voice input is not supported in this browser" : isListening ? "Stop voice input" : "Voice input"}
+                                    >
                                         <Mic />
                                     </button>
                                     {input.trim() && (

@@ -7,7 +7,7 @@ from datetime import datetime
 # Import tools from other agents
 from .trello import trello_tools
 from .confluence import confluence_tools
-from .document import document_tools
+from .document import document_tools, get_loaded_files
 from .analyst import analyst_tools
 
 load_dotenv()
@@ -122,6 +122,11 @@ _DEFAULT_CLARIFICATION = {
     "reason": "",
 }
 
+_DOCUMENT_QUERY_TERMS = [
+    "pdf", "PDF", "文件", "文檔", "檔案", "資料來源", "source", "document",
+    "上傳", "剛上傳", "這份", "這個檔", "這份檔", "這份資料"
+]
+
 _CHART_DIMENSION_OPTIONS = [
     {"label": "依月份", "value": "Month", "description": "看每月 ticket 數量趨勢"},
     {"label": "依狀態", "value": "Status", "description": "看各狀態的工單數量"},
@@ -191,6 +196,23 @@ def _parse_json_object(text: str) -> dict:
         return json.loads(match.group(0))
     except Exception:
         return {}
+
+
+def _looks_like_document_query(user_query: str) -> bool:
+    if not get_loaded_files():
+        return False
+
+    normalized = str(user_query or "").strip()
+    if not normalized:
+        return False
+
+    loaded_file_names = [os.path.splitext(name)[0].lower() for name in get_loaded_files()]
+    lowered = normalized.lower()
+    if any(file_name and file_name in lowered for file_name in loaded_file_names):
+        return True
+
+    compact = re.sub(r"\s+", "", normalized)
+    return any(term.lower() in lowered or term in compact for term in _DOCUMENT_QUERY_TERMS)
 
 
 def _fallback_clarification(user_query: str) -> dict:
@@ -268,6 +290,14 @@ async def _classify_user_intent(user_query: str) -> dict:
     LLM still decides tool calls first. We only use this when the LLM returns a
     direct answer, to decide whether that direct answer should be allowed.
     """
+    if _looks_like_document_query(user_query):
+        return {
+            "needs_tool": True,
+            "fresh_query": False,
+            "domain": "document",
+            "reason": "問題看起來是在詢問已上傳 PDF/文件內容",
+        }
+
     classifier_prompt = f"""
 你是 Data Machi 的意圖分類器，只輸出 JSON，不要回答使用者問題。
 

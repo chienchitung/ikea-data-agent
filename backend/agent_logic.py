@@ -1,9 +1,21 @@
 import re
 from typing import Optional
 
-from langchain_core.messages import HumanMessage, AIMessage
-from agents.coordinator import coordinator_executor
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from agents.coordinator import coordinator_executor, llm
+from agents.document import get_document_corpus, get_loaded_files, search_document_base
 from conversation_store import load_conversation_messages, load_tool_context, save_conversation_messages
+
+
+_DOCUMENT_QUERY_TERMS = [
+    "pdf", "文件", "文檔", "檔案", "資料來源", "source", "document",
+    "上傳", "剛上傳", "這份", "這個檔", "這份檔", "這份資料"
+]
+
+_FULL_DOCUMENT_QUERY_TERMS = [
+    "整份", "整個", "完整", "全部", "全篇", "全文", "通篇",
+    "摘要", "總結", "整理", "解讀", "overview", "summary", "summarize"
+]
 
 
 def _message_text(content) -> str:
@@ -63,11 +75,73 @@ def _ensure_confluence_source_links(response: str, confluence_links: dict) -> st
         updated = f"{updated.rstrip()}\n\n來源： [{first_title}]({first_url})"
     return updated
 
+
+def _looks_like_document_query(message: str) -> bool:
+    loaded_files = get_loaded_files()
+    if not loaded_files:
+        return False
+
+    normalized = str(message or "").strip()
+    if not normalized:
+        return False
+
+    lowered = normalized.lower()
+    loaded_file_names = [name.lower() for name in loaded_files]
+    loaded_file_stems = [name.rsplit(".", 1)[0].lower() for name in loaded_files]
+    if any(name and name in lowered for name in loaded_file_names + loaded_file_stems):
+        return True
+
+    compact = re.sub(r"\s+", "", normalized)
+    return any(term.lower() in lowered or term in compact for term in _DOCUMENT_QUERY_TERMS)
+
+
+def _looks_like_full_document_query(message: str) -> bool:
+    normalized = str(message or "").strip()
+    if not normalized:
+        return False
+
+    lowered = normalized.lower()
+    compact = re.sub(r"\s+", "", normalized)
+    return any(term.lower() in lowered or term in compact for term in _FULL_DOCUMENT_QUERY_TERMS)
+
+
+async def _answer_from_document_base(message: str) -> Optional[str]:
+    if not _looks_like_document_query(message):
+        return None
+
+    is_full_document_query = _looks_like_full_document_query(message)
+    if is_full_document_query:
+        document_context = get_document_corpus()
+    else:
+        document_context = await search_document_base.ainvoke({"query": message})
+
+    if "知識庫尚未建立" in document_context or "系統警告" in document_context:
+        return document_context
+
+    response = await llm.ainvoke([
+        SystemMessage(content=(
+            "你是 IKEA Data Team 的 PDF 文件問答助理。"
+            "請只根據提供的 PDF 內容回答；若內容不足以回答，請明確說文件內容不足。"
+            "回答要使用繁體中文，先給直接答案，再整理重點。"
+            "如果使用者要求整份文件摘要或解讀，請從全文件角度整理主題、重點、流程與可行動事項。"
+            "最後必須列出來源，格式如：來源：Guidebook.pdf（第 1 頁）。"
+        )),
+        HumanMessage(content=(
+            f"使用者問題：{message}\n\n"
+            f"PDF 內容：\n{document_context}"
+        )),
+    ])
+    return _message_text(response.content).strip()
+
 async def process_chat(message: str, chat_history: list, conversation_id: Optional[str] = None) -> str:
     """
     Process the chat message using the LangGraph Coordinator Agent.
     """
     try:
+        document_answer = await _answer_from_document_base(message)
+        if document_answer:
+            return document_answer
+
         stored_messages = load_conversation_messages(conversation_id)
         stored_tool_context = load_tool_context(conversation_id)
 

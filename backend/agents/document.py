@@ -1,6 +1,7 @@
 import os
 import glob
 import shutil
+import json
 from langchain.tools import tool
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -20,15 +21,101 @@ load_dotenv()
 vector_db = None
 embeddings = None
 loaded_files = []
+document_chunks = []
 
 # FAISS 持久化路徑（與 document.py 同層的 backend/ 目錄下）
 FAISS_INDEX_PATH = os.path.join(os.path.dirname(__file__), "..", "faiss_index")
+DOCUMENT_CHUNKS_PATH = os.path.join(os.path.dirname(__file__), "..", "document_chunks.json")
 
 def get_loaded_files():
     return loaded_files
 
+
+def _chunk_sort_key(chunk: dict):
+    page = chunk.get("page", 0)
+    chunk_index = chunk.get("chunk_index", 0)
+    if not isinstance(page, int):
+        page = 0
+    if not isinstance(chunk_index, int):
+        chunk_index = 0
+    return (chunk.get("source", ""), page, chunk_index)
+
+
+def _save_document_chunks(chunks: list[dict]) -> None:
+    try:
+        with open(DOCUMENT_CHUNKS_PATH, "w", encoding="utf-8") as f:
+            json.dump(chunks, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"⚠️ 儲存 document chunk cache 失敗：{e}")
+
+
+def _load_document_chunks() -> list[dict]:
+    try:
+        with open(DOCUMENT_CHUNKS_PATH, "r", encoding="utf-8") as f:
+            chunks = json.load(f)
+        if isinstance(chunks, list):
+            return chunks
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        print(f"⚠️ 載入 document chunk cache 失敗：{e}")
+    return []
+
+
+def _chunks_from_vector_db() -> list[dict]:
+    if vector_db is None:
+        return []
+
+    chunks = []
+    docs = list(getattr(vector_db.docstore, "_dict", {}).values())
+    for index, doc in enumerate(docs):
+        chunks.append({
+            "chunk_id": f"{doc.metadata.get('source', 'unknown')}:{doc.metadata.get('page', 0)}:{index}",
+            "source": doc.metadata.get("source", "未知文件"),
+            "page": doc.metadata.get("page", 0),
+            "chunk_index": index,
+            "text": doc.page_content.strip(),
+        })
+    return sorted(chunks, key=_chunk_sort_key)
+
+
+def get_document_corpus(max_chars: int = 60000) -> str:
+    """
+    Return the loaded PDF content from the FAISS docstore for whole-document
+    summary questions. This uses the already processed chunks, so it also works
+    after loading the persisted FAISS cache.
+    """
+    chunks = document_chunks or _chunks_from_vector_db()
+    if not chunks:
+        return "錯誤：知識庫尚未建立，請先上傳 PDF 文件。"
+
+    output_parts = ["以下是已上傳 PDF 的完整文字內容摘要來源，請依照全文件脈絡回答。\n"]
+    current_chars = len(output_parts[0])
+    truncated = False
+
+    for chunk_record in sorted(chunks, key=_chunk_sort_key):
+        source = chunk_record.get("source", "未知文件")
+        page = chunk_record.get("page", "未知")
+        if isinstance(page, int):
+            page += 1
+        text = str(chunk_record.get("text", "")).strip()
+        if not text:
+            continue
+
+        chunk = f"\n--- Source: {source}, Page {page} ---\n{text}\n"
+        if current_chars + len(chunk) > max_chars:
+            truncated = True
+            break
+        output_parts.append(chunk)
+        current_chars += len(chunk)
+
+    if truncated:
+        output_parts.append("\n[注意：文件內容過長，已達本次可處理字數上限；以上為前段完整內容。]\n")
+
+    return "".join(output_parts)
+
 def initialize_knowledge_base():
-    global vector_db, embeddings, loaded_files
+    global vector_db, embeddings, loaded_files, document_chunks
     
     # 1. Setup Embeddings
     api_key = os.getenv("GOOGLE_API_KEY")
@@ -58,6 +145,12 @@ def initialize_knowledge_base():
     # 提早退出：沒有 PDF 就不需要做任何事
     if not pdf_files:
         loaded_files = []
+        document_chunks = []
+        if os.path.exists(DOCUMENT_CHUNKS_PATH):
+            try:
+                os.remove(DOCUMENT_CHUNKS_PATH)
+            except Exception as rm_e:
+                print(f"⚠️ 清除 document chunk cache 失敗：{rm_e}")
         print("Info: No PDF files found for Document Agent knowledge base.")
         return {
             "success": True,
@@ -88,12 +181,22 @@ def initialize_knowledge_base():
             current_basenames = {os.path.basename(f) for f in pdf_files}
             if cached_sources == current_basenames:
                 loaded_files = list(cached_sources)
-                print(f"\n⚡️ FAISS index 從磁碟快取載入，跳過 embedding（{len(loaded_files)} 個文件）")
+                document_chunks = _load_document_chunks()
+                chunk_sources = {
+                    chunk.get("source", "")
+                    for chunk in document_chunks
+                    if chunk.get("source")
+                }
+                if chunk_sources != cached_sources:
+                    document_chunks = _chunks_from_vector_db()
+                    _save_document_chunks(document_chunks)
+                print(f"\n⚡️ FAISS index 從磁碟快取載入，跳過 embedding（{len(loaded_files)} 個文件，{len(document_chunks)} chunks）")
                 return {
                     "success": True,
                     "loaded_files": loaded_files,
+                    "chunk_count": len(document_chunks),
                     "failed_files": [],
-                    "message": f"Loaded from cache: {len(loaded_files)} documents."
+                    "message": f"Loaded from cache: {len(loaded_files)} documents, {len(document_chunks)} chunks."
                 }
             else:
                 print(f"⚠️ 快取文件清單與磁碟不符，強制重建 index")
@@ -104,6 +207,7 @@ def initialize_knowledge_base():
 
     # Load ALL found PDFs
     all_splits = []
+    all_chunk_records = []
     _local_loaded_files = []
     failed_files = []
     
@@ -156,12 +260,21 @@ def initialize_knowledge_base():
             splits = text_splitter.split_documents(pages)
             
             # Add metadata for source file
-            for split in splits:
-                split.metadata['source'] = os.path.basename(filename)
+            source_name = os.path.basename(filename)
+            for split_index, split in enumerate(splits):
+                split.metadata['source'] = source_name
+                split.metadata['chunk_index'] = split_index
+                all_chunk_records.append({
+                    "chunk_id": f"{source_name}:{split.metadata.get('page', 0)}:{split_index}",
+                    "source": source_name,
+                    "page": split.metadata.get("page", 0),
+                    "chunk_index": split_index,
+                    "text": split.page_content.strip(),
+                })
                 
             all_splits.extend(splits)
-            _local_loaded_files.append(os.path.basename(filename))
-            print(f"✅ Loaded: {os.path.basename(filename)} ({len(pages)} pages, {len(splits)} chunks)")
+            _local_loaded_files.append(source_name)
+            print(f"✅ Loaded: {source_name} ({len(pages)} pages, {len(splits)} chunks)")
         except Exception as e:
             failed_files.append((filename, str(e)))
             print(f"❌ Error loading {filename}: {e}")
@@ -178,6 +291,12 @@ def initialize_knowledge_base():
             print(f"🗑️ 已清除舊的 FAISS 磁碟快取")
         except Exception as rm_e:
             print(f"⚠️ 清除快取失敗：{rm_e}")
+    if os.path.exists(DOCUMENT_CHUNKS_PATH):
+        try:
+            os.remove(DOCUMENT_CHUNKS_PATH)
+            print("🗑️ 已清除舊的 document chunk cache")
+        except Exception as rm_e:
+            print(f"⚠️ 清除 document chunk cache 失敗：{rm_e}")
 
     if not all_splits:
         print("\n❌ No content extracted from any PDFs.")
@@ -236,6 +355,7 @@ def initialize_knowledge_base():
     if vector_db:
         # Update global list
         loaded_files = _local_loaded_files
+        document_chunks = sorted(all_chunk_records, key=_chunk_sort_key)
 
         # 💾 儲存 FAISS index 到磁碟，下次重啟直接載入、跳過 embedding
         try:
@@ -244,19 +364,22 @@ def initialize_knowledge_base():
             print(f"💾 FAISS index 已儲存到磁碟：{faiss_index_dir}")
         except Exception as save_e:
             print(f"⚠️ FAISS index 儲存失敗（不影響運作）：{save_e}")
+        _save_document_chunks(document_chunks)
 
         print("\n✅ Document 憑證已從 Environment Variables 載入")
         print(f"   Loaded Knowledge Base from: {', '.join(loaded_files)}")
-        print("✅ Document Knowledge Base Initialized.")
+        print(f"✅ Document Knowledge Base Initialized. Parsed chunks: {len(document_chunks)}")
 
         return {
             "success": True,
             "loaded_files": loaded_files,
+            "chunk_count": len(document_chunks),
             "failed_files": failed_files,
-            "message": f"Successfully loaded {len(loaded_files)} documents."
+            "message": f"Successfully loaded {len(loaded_files)} documents and {len(document_chunks)} chunks."
         }
     else:
         loaded_files = []
+        document_chunks = []
         print("❌ Failed to initialize vector DB.")
         return {
             "success": False,
@@ -273,7 +396,7 @@ def rename_document_in_kb(old_name: str, new_name: str) -> bool:
     Optimized rename: Updates metadata in the existing vector_db in-place.
     Avoids full re-initialization (OCR/Embedding).
     """
-    global vector_db, loaded_files
+    global vector_db, loaded_files, document_chunks
     
     if vector_db is None:
         return False
@@ -297,6 +420,16 @@ def rename_document_in_kb(old_name: str, new_name: str) -> bool:
         if old_name in loaded_files:
             index = loaded_files.index(old_name)
             loaded_files[index] = new_name
+
+        chunk_updates = 0
+        for chunk in document_chunks:
+            if chunk.get("source") == old_name:
+                chunk["source"] = new_name
+                chunk["chunk_id"] = str(chunk.get("chunk_id", "")).replace(old_name, new_name, 1)
+                chunk_updates += 1
+        if chunk_updates:
+            _save_document_chunks(document_chunks)
+            print(f"✅ Fast Rename: Updated document chunk cache for {chunk_updates} chunks.")
             
         return count > 0
     except Exception as e:
@@ -316,20 +449,21 @@ def search_document_base(query: str) -> str:
     
     print(f"\n[Knowledge Search] 正在檢索: {query} ...")
     
-    # 進行相似度搜尋 (k 代表回傳前五名最相關的片段，但透過 score 進行過濾)
-    results_with_scores = vector_db.similarity_search_with_score(query, k=5)
-    
-    # Langchain FAISS 中，L2 distance 越小代表越相似。通常大於某個閾值(例如 1.0)就代表很不相關。
-    filtered_results = [(doc, score) for doc, score in results_with_scores if score < 1.2]
-    
-    if not filtered_results:
+    # 進行相似度搜尋。不同 embedding model / FAISS distance strategy 的分數範圍
+    # 不穩定，不能用固定門檻硬濾，否則相關片段可能全部被丟掉。
+    results_with_scores = vector_db.similarity_search_with_score(query, k=6)
+
+    if not results_with_scores:
         return "⚠️ 【系統警告】文件中完全未提及此內容！你必須直接告訴使用者「文件裡沒有寫」，絕對不能憑空編造或推測答案！"
 
-    output = ""
-    for i, (doc, score) in enumerate(filtered_results):
+    output = "以下是 PDF 知識庫中最相關的片段，請只根據這些內容回答，並在結尾列出來源。\n"
+    for i, (doc, score) in enumerate(results_with_scores):
         # 包含頁碼資訊，方便溯源
+        source = doc.metadata.get("source", "未知文件")
         page_num = doc.metadata.get("page", "未知")
-        output += f"\n--- 參考片段 {i+1} (Page {page_num}, Distance: {score:.2f}) ---\n"
+        if isinstance(page_num, int):
+            page_num += 1
+        output += f"\n--- 參考片段 {i+1} (Source: {source}, Page {page_num}, Distance: {score:.2f}) ---\n"
         output += doc.page_content
         output += "\n"
     
