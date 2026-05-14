@@ -9,12 +9,18 @@ from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 from dotenv import load_dotenv
+from pypdf import PdfReader
 try:
     import pytesseract
     from pdf2image import convert_from_path
     OCR_AVAILABLE = True
 except ImportError:
     OCR_AVAILABLE = False
+try:
+    from google import genai
+    VISUAL_CONTEXT_AVAILABLE = True
+except ImportError:
+    VISUAL_CONTEXT_AVAILABLE = False
 
 load_dotenv()
 
@@ -26,6 +32,15 @@ document_chunks = []
 # FAISS 持久化路徑（與 document.py 同層的 backend/ 目錄下）
 FAISS_INDEX_PATH = os.path.join(os.path.dirname(__file__), "..", "faiss_index")
 DOCUMENT_CHUNKS_PATH = os.path.join(os.path.dirname(__file__), "..", "document_chunks.json")
+DOCUMENT_PIPELINE_VERSION = "layout_visual_v1"
+PDF_VISUAL_CONTEXT_ENABLED = os.getenv("PDF_VISUAL_CONTEXT", "true").lower() not in {"0", "false", "no"}
+PDF_VISUAL_PAGE_LIMIT = int(os.getenv("PDF_VISUAL_PAGE_LIMIT", "80"))
+PDF_VISUAL_MODEL = os.getenv("PDF_VISUAL_MODEL", "gemini-2.5-flash")
+
+VISUAL_TRIGGER_TERMS = [
+    "附圖", "如圖", "圖片", "截圖", "圖表", "示意圖", "流程圖", "架構圖",
+    "mockup", "dashboard", "diagram", "screenshot", "chart", "image", "visual"
+]
 
 def get_loaded_files():
     return loaded_files
@@ -39,6 +54,14 @@ def _chunk_sort_key(chunk: dict):
     if not isinstance(chunk_index, int):
         chunk_index = 0
     return (chunk.get("source", ""), page, chunk_index)
+
+
+def _document_chunks_are_current(chunks: list[dict]) -> bool:
+    return bool(chunks) and all(
+        chunk.get("pipeline_version") == DOCUMENT_PIPELINE_VERSION
+        and chunk.get("content_type")
+        for chunk in chunks
+    )
 
 
 def _save_document_chunks(chunks: list[dict]) -> None:
@@ -74,6 +97,8 @@ def _chunks_from_vector_db() -> list[dict]:
             "source": doc.metadata.get("source", "未知文件"),
             "page": doc.metadata.get("page", 0),
             "chunk_index": index,
+            "content_type": doc.metadata.get("content_type", "text"),
+            "pipeline_version": doc.metadata.get("pipeline_version", DOCUMENT_PIPELINE_VERSION),
             "text": doc.page_content.strip(),
         })
     return sorted(chunks, key=_chunk_sort_key)
@@ -99,10 +124,11 @@ def get_document_corpus(max_chars: int = 60000) -> str:
         if isinstance(page, int):
             page += 1
         text = str(chunk_record.get("text", "")).strip()
+        content_type = chunk_record.get("content_type", "text")
         if not text:
             continue
 
-        chunk = f"\n--- Source: {source}, Page {page} ---\n{text}\n"
+        chunk = f"\n--- Source: {source}, Page {page}, Type: {content_type} ---\n{text}\n"
         if current_chars + len(chunk) > max_chars:
             truncated = True
             break
@@ -113,6 +139,154 @@ def get_document_corpus(max_chars: int = 60000) -> str:
         output_parts.append("\n[注意：文件內容過長，已達本次可處理字數上限；以上為前段完整內容。]\n")
 
     return "".join(output_parts)
+
+
+def _page_text_contains_visual_reference(text: str) -> bool:
+    lowered = str(text or "").lower()
+    compact = "".join(lowered.split())
+    return any(term.lower() in lowered or term.lower() in compact for term in VISUAL_TRIGGER_TERMS)
+
+
+def _xobject_has_image(xobject) -> bool:
+    try:
+        obj = xobject.get_object()
+    except Exception:
+        return False
+
+    subtype = obj.get("/Subtype")
+    if subtype == "/Image":
+        return True
+
+    if subtype == "/Form":
+        resources = obj.get("/Resources") or {}
+        nested = resources.get("/XObject")
+        if nested:
+            try:
+                nested = nested.get_object()
+                return any(_xobject_has_image(item) for item in nested.values())
+            except Exception:
+                return False
+    return False
+
+
+def _detect_pdf_image_pages(filename: str) -> set[int]:
+    image_pages = set()
+    try:
+        reader = PdfReader(filename)
+        for page_index, page in enumerate(reader.pages):
+            resources = page.get("/Resources") or {}
+            xobjects = resources.get("/XObject")
+            if not xobjects:
+                continue
+            xobjects = xobjects.get_object()
+            if any(_xobject_has_image(item) for item in xobjects.values()):
+                image_pages.add(page_index)
+    except Exception as e:
+        print(f"⚠️ 無法偵測 PDF 圖片頁：{os.path.basename(filename)}，原因：{e}")
+    return image_pages
+
+
+def _should_build_visual_context(page: Document, image_pages: set[int]) -> bool:
+    page_index = page.metadata.get("page", 0)
+    if page_index in image_pages:
+        return True
+    return _page_text_contains_visual_reference(page.page_content)
+
+
+def _visual_context_prompt(source_name: str, page_number: int) -> str:
+    return f"""
+你正在協助建立 PDF 的多模態知識庫。請分析這一頁 PDF 的畫面與版面。
+
+重要原則：
+- 不要因為文字和圖片在同一頁，就假設它們在講同一件事。
+- 請把圖片、截圖、圖表、diagram、mockup 與周圍文字的關係說清楚。
+- 如果某個圖片看起來只是範例、附圖、另一個流程或獨立主題，請明確標記為「關係不確定」或「可能不相關」。
+- 請保留可被搜尋的關鍵字、畫面文字、圖表標籤、流程節點名稱。
+
+請用繁體中文輸出，格式固定如下：
+
+頁面視覺摘要
+- 文件：{source_name}
+- 頁碼：{page_number}
+- 整體版面用途：
+- 視覺元素：
+  - Visual 1
+    - 位置：例如上方 / 下方 / 左側 / 右側 / 中央
+    - 類型：截圖 / 圖表 / 流程圖 / 架構圖 / mockup / 圖示 / 其他
+    - 圖中可見文字：
+    - 圖片實際表達：
+    - 與附近文字的關係：明確相關 / 可能相關 / 不確定 / 可能不相關
+    - 不應混淆的內容：
+- 圖文關係結論：
+"""
+
+
+def _generate_page_visual_summary(filename: str, page_index: int, source_name: str, client) -> str:
+    if not (PDF_VISUAL_CONTEXT_ENABLED and OCR_AVAILABLE and VISUAL_CONTEXT_AVAILABLE):
+        return ""
+
+    try:
+        images = convert_from_path(
+            filename,
+            dpi=120,
+            first_page=page_index + 1,
+            last_page=page_index + 1,
+        )
+        if not images:
+            return ""
+
+        response = client.models.generate_content(
+            model=PDF_VISUAL_MODEL,
+            contents=[
+                _visual_context_prompt(source_name, page_index + 1),
+                images[0],
+            ],
+        )
+        return str(getattr(response, "text", "") or "").strip()
+    except Exception as e:
+        print(f"⚠️ 視覺摘要失敗：{source_name} Page {page_index + 1}，原因：{e}")
+        return ""
+
+
+def _build_visual_documents(filename: str, pages: list[Document], source_name: str, api_key: str) -> list[Document]:
+    if not (PDF_VISUAL_CONTEXT_ENABLED and OCR_AVAILABLE and VISUAL_CONTEXT_AVAILABLE):
+        return []
+
+    image_pages = _detect_pdf_image_pages(filename)
+    target_pages = [
+        page for page in pages
+        if _should_build_visual_context(page, image_pages)
+    ][:PDF_VISUAL_PAGE_LIMIT]
+
+    if not target_pages:
+        return []
+
+        print(f"🖼️  建立頁面視覺摘要：{source_name}（{len(target_pages)} pages）")
+    visual_docs = []
+    try:
+        client = genai.Client(api_key=api_key)
+    except Exception as e:
+        print(f"⚠️ 視覺摘要 client 初始化失敗：{e}")
+        return []
+
+    for page in target_pages:
+        page_index = page.metadata.get("page", 0)
+        summary = _generate_page_visual_summary(filename, page_index, source_name, client)
+        if not summary:
+            if not visual_docs:
+                print("⚠️ 第一個視覺摘要失敗，略過本次 PDF 視覺摘要建立，避免重複 API/網路錯誤。")
+                break
+            continue
+        visual_docs.append(Document(
+            page_content=summary,
+            metadata={
+                "source": source_name,
+                "page": page_index,
+                "content_type": "visual_summary",
+                "pipeline_version": DOCUMENT_PIPELINE_VERSION,
+            }
+        ))
+    return visual_docs
 
 def initialize_knowledge_base():
     global vector_db, embeddings, loaded_files, document_chunks
@@ -190,14 +364,16 @@ def initialize_knowledge_base():
                 if chunk_sources != cached_sources:
                     document_chunks = _chunks_from_vector_db()
                     _save_document_chunks(document_chunks)
-                print(f"\n⚡️ FAISS index 從磁碟快取載入，跳過 embedding（{len(loaded_files)} 個文件，{len(document_chunks)} chunks）")
-                return {
-                    "success": True,
-                    "loaded_files": loaded_files,
-                    "chunk_count": len(document_chunks),
-                    "failed_files": [],
-                    "message": f"Loaded from cache: {len(loaded_files)} documents, {len(document_chunks)} chunks."
-                }
+                if _document_chunks_are_current(document_chunks):
+                    print(f"\n⚡️ FAISS index 從磁碟快取載入，跳過 embedding（{len(loaded_files)} 個文件，{len(document_chunks)} chunks）")
+                    return {
+                        "success": True,
+                        "loaded_files": loaded_files,
+                        "chunk_count": len(document_chunks),
+                        "failed_files": [],
+                        "message": f"Loaded from cache: {len(loaded_files)} documents, {len(document_chunks)} chunks."
+                    }
+                print("⚠️ PDF 解析 pipeline 已更新，強制重建 layout/visual-aware index")
             else:
                 print(f"⚠️ 快取文件清單與磁碟不符，強制重建 index")
                 print(f"   快取：{cached_sources}")
@@ -256,25 +432,37 @@ def initialize_knowledge_base():
                      failed_files.append((filename, "No text content found even after OCR"))
                 continue
                 
+            source_name = os.path.basename(filename)
+            for page in pages:
+                page.metadata["source"] = source_name
+                page.metadata["content_type"] = "text"
+                page.metadata["pipeline_version"] = DOCUMENT_PIPELINE_VERSION
+
+            visual_docs = _build_visual_documents(filename, pages, source_name, api_key)
+            documents_to_split = pages + visual_docs
+
             text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-            splits = text_splitter.split_documents(pages)
+            splits = text_splitter.split_documents(documents_to_split)
             
             # Add metadata for source file
-            source_name = os.path.basename(filename)
             for split_index, split in enumerate(splits):
                 split.metadata['source'] = source_name
                 split.metadata['chunk_index'] = split_index
+                split.metadata['content_type'] = split.metadata.get("content_type", "text")
+                split.metadata['pipeline_version'] = DOCUMENT_PIPELINE_VERSION
                 all_chunk_records.append({
                     "chunk_id": f"{source_name}:{split.metadata.get('page', 0)}:{split_index}",
                     "source": source_name,
                     "page": split.metadata.get("page", 0),
                     "chunk_index": split_index,
+                    "content_type": split.metadata.get("content_type", "text"),
+                    "pipeline_version": DOCUMENT_PIPELINE_VERSION,
                     "text": split.page_content.strip(),
                 })
                 
             all_splits.extend(splits)
             _local_loaded_files.append(source_name)
-            print(f"✅ Loaded: {source_name} ({len(pages)} pages, {len(splits)} chunks)")
+            print(f"✅ Loaded: {source_name} ({len(pages)} pages, {len(visual_docs)} visual summaries, {len(splits)} chunks)")
         except Exception as e:
             failed_files.append((filename, str(e)))
             print(f"❌ Error loading {filename}: {e}")
@@ -284,20 +472,6 @@ def initialize_knowledge_base():
         for fname, reason in failed_files:
             print(f"   - {os.path.basename(fname)}: {reason}")
     
-    # 重新建立前先清除舊的磁碟快取，避免下次重啟載入到過期資料
-    if os.path.exists(faiss_index_dir):
-        try:
-            shutil.rmtree(faiss_index_dir)
-            print(f"🗑️ 已清除舊的 FAISS 磁碟快取")
-        except Exception as rm_e:
-            print(f"⚠️ 清除快取失敗：{rm_e}")
-    if os.path.exists(DOCUMENT_CHUNKS_PATH):
-        try:
-            os.remove(DOCUMENT_CHUNKS_PATH)
-            print("🗑️ 已清除舊的 document chunk cache")
-        except Exception as rm_e:
-            print(f"⚠️ 清除 document chunk cache 失敗：{rm_e}")
-
     if not all_splits:
         print("\n❌ No content extracted from any PDFs.")
         print("   Possible reasons:")
@@ -359,6 +533,12 @@ def initialize_knowledge_base():
 
         # 💾 儲存 FAISS index 到磁碟，下次重啟直接載入、跳過 embedding
         try:
+            if os.path.exists(faiss_index_dir):
+                shutil.rmtree(faiss_index_dir)
+                print(f"🗑️ 已清除舊的 FAISS 磁碟快取")
+            if os.path.exists(DOCUMENT_CHUNKS_PATH):
+                os.remove(DOCUMENT_CHUNKS_PATH)
+                print("🗑️ 已清除舊的 document chunk cache")
             os.makedirs(faiss_index_dir, exist_ok=True)
             vector_db.save_local(faiss_index_dir)
             print(f"💾 FAISS index 已儲存到磁碟：{faiss_index_dir}")
@@ -441,7 +621,7 @@ def search_document_base(query: str) -> str:
     """
     檢索 PDF 知識庫中的相關內容。
     當用戶詢問關於「規範」、「流程」、「合約細節」或「文件內容」時，必須使用此工具。
-    回傳最相關的 5 個段落。
+    回傳最相關的文字片段與頁面視覺摘要。
     """
     global vector_db
     if vector_db is None:
@@ -456,14 +636,19 @@ def search_document_base(query: str) -> str:
     if not results_with_scores:
         return "⚠️ 【系統警告】文件中完全未提及此內容！你必須直接告訴使用者「文件裡沒有寫」，絕對不能憑空編造或推測答案！"
 
-    output = "以下是 PDF 知識庫中最相關的片段，請只根據這些內容回答，並在結尾列出來源。\n"
+    output = (
+        "以下是 PDF 知識庫中最相關的片段，請只根據這些內容回答，並在結尾列出來源。\n"
+        "注意：Type=text 代表 PDF 文字層；Type=visual_summary 代表頁面圖片/截圖/圖表的視覺摘要。"
+        "不要只因為兩個片段在同一頁，就假設它們描述同一件事；只有 visual_summary 明確指出圖文關係時，才可把圖片和文字連在一起。\n"
+    )
     for i, (doc, score) in enumerate(results_with_scores):
         # 包含頁碼資訊，方便溯源
         source = doc.metadata.get("source", "未知文件")
         page_num = doc.metadata.get("page", "未知")
+        content_type = doc.metadata.get("content_type", "text")
         if isinstance(page_num, int):
             page_num += 1
-        output += f"\n--- 參考片段 {i+1} (Source: {source}, Page {page_num}, Distance: {score:.2f}) ---\n"
+        output += f"\n--- 參考片段 {i+1} (Source: {source}, Page {page_num}, Type: {content_type}, Distance: {score:.2f}) ---\n"
         output += doc.page_content
         output += "\n"
     

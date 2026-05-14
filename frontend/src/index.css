@@ -161,6 +161,18 @@
     padding: 0;
 }
 
+.code-loading {
+    background: #282c34;
+    color: #C9D1D9;
+    font-family: SFMono-Regular, Consolas, Liberation Mono, Menlo, monospace;
+    font-size: 13.5px;
+    line-height: 1.62;
+    margin: 0;
+    max-height: 640px;
+    overflow: auto;
+    padding: 20px;
+}
+
 .message-bubble .markdown blockquote {
     border-left: 4px solid var(--color-ikea-border-grey);
     margin: 10px 0;
@@ -204,6 +216,43 @@
 
 .bot-bubble .markdown a:hover {
     text-decoration: underline;
+}
+
+.message-debug-panel {
+    background: #fff;
+    border: 1px solid var(--color-ikea-border-grey);
+    border-radius: 8px;
+    color: var(--color-ikea-secondary-text);
+    font-size: 11px;
+    line-height: 1.35;
+    margin: 4px 0 0;
+    max-width: 100%;
+    padding: 9px 10px;
+}
+
+.message-debug-grid {
+    display: grid;
+    gap: 5px 12px;
+    grid-template-columns: max-content minmax(0, 1fr);
+}
+
+.message-debug-grid span {
+    color: var(--color-ikea-dark-grey);
+    font-weight: 700;
+}
+
+.message-debug-grid strong {
+    color: var(--color-ikea-text);
+    font-weight: 700;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.message-debug-reason {
+    border-top: 1px solid var(--color-ikea-border-grey);
+    color: var(--color-ikea-dark-grey);
+    margin: 7px 0 0;
+    padding-top: 7px;
 }
 
 /* Interactive chart blocks */
@@ -422,11 +471,34 @@
     background: var(--color-ikea-light-grey);
 }
 
+.clarification-questions {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 4px 14px 14px;
+}
+
+.clarification-question {
+    min-width: 0;
+}
+
+.clarification-question + .clarification-question {
+    border-top: 1px solid var(--color-ikea-border-grey);
+    padding-top: 12px;
+}
+
+.clarification-question-title {
+    color: var(--color-ikea-text);
+    font-size: 14px;
+    font-weight: 700;
+    line-height: 1.35;
+    margin: 0 6px 8px;
+}
+
 .clarification-options {
     display: flex;
     flex-direction: column;
     gap: 0;
-    padding: 4px 14px;
 }
 
 .clarification-option-wrap {
@@ -597,9 +669,22 @@
     transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
+.chatbot-input-container.listening {
+    border-color: #d9d9d9;
+    border-radius: 999px;
+    box-shadow: none;
+    min-height: 72px;
+    padding: 8px 18px 8px 22px;
+}
+
 .chatbot-input-container:focus-within {
     border-color: var(--color-ikea-medium-grey);
     box-shadow: rgba(17, 17, 17, 0.12) 0 10px 32px, rgba(0, 88, 163, 0.16) 0 0 0 3px;
+}
+
+.chatbot-input-container.listening:focus-within {
+    border-color: #d9d9d9;
+    box-shadow: none;
 }
 
 .input-leading-icon {
@@ -631,6 +716,8 @@
 .chatbot-input-container.listening .chatbot-input {
     caret-color: transparent;
     color: transparent;
+    min-height: 40px;
+    padding-right: 132px;
 }
 
 .chatbot-input-container.listening .chatbot-input::placeholder {
@@ -639,55 +726,96 @@
 
 .voice-waveform {
     align-items: center;
-    bottom: 19px;
     display: inline-flex;
-    gap: 3px;
-    height: 22px;
+    gap: 5px;
+    height: 48px;
     justify-content: center;
     pointer-events: none;
     position: absolute;
-    right: 66px;
-    width: 44px;
-}
-
-.chatbot-input-container.has-input .voice-waveform {
-    right: 112px;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 188px;
 }
 
 .voice-waveform span {
-    animation: voiceWave 0.9s ease-in-out infinite;
+    animation: voiceWave 0.95s ease-in-out infinite;
     background: var(--color-ikea-blue);
     border-radius: 999px;
     display: block;
-    height: 8px;
-    width: 4px;
+    height: 18px;
+    width: 5px;
 }
 
 .voice-waveform span:nth-child(2) {
-    animation-delay: 0.1s;
+    animation-delay: 0.08s;
+    height: 36px;
 }
 
 .voice-waveform span:nth-child(3) {
-    animation-delay: 0.2s;
+    animation-delay: 0.16s;
+    height: 46px;
 }
 
 .voice-waveform span:nth-child(4) {
-    animation-delay: 0.3s;
+    animation-delay: 0.24s;
+    height: 28px;
 }
 
 .voice-waveform span:nth-child(5) {
+    animation-delay: 0.32s;
+    height: 16px;
+}
+
+.voice-waveform span:nth-child(6) {
     animation-delay: 0.4s;
+    height: 34px;
+}
+
+.voice-waveform span:nth-child(7) {
+    animation-delay: 0.48s;
+    height: 46px;
+}
+
+.voice-waveform span:nth-child(8) {
+    animation-delay: 0.56s;
+    height: 38px;
+}
+
+.voice-waveform span:nth-child(9) {
+    animation-delay: 0.64s;
+    height: 22px;
+}
+
+.voice-waveform span:nth-child(10) {
+    animation-delay: 0.72s;
+    height: 30px;
+}
+
+.voice-waveform span:nth-child(11) {
+    animation-delay: 0.8s;
+    height: 12px;
+}
+
+.voice-waveform span:nth-child(12) {
+    animation-delay: 0.88s;
+    height: 34px;
+}
+
+.voice-waveform span:nth-child(13) {
+    animation-delay: 0.96s;
+    height: 20px;
 }
 
 @keyframes voiceWave {
     0%,
     100% {
-        height: 7px;
-        opacity: 0.45;
+        transform: scaleY(0.55);
+        opacity: 0.7;
     }
 
     50% {
-        height: 22px;
+        transform: scaleY(1.12);
         opacity: 1;
     }
 }
@@ -748,6 +876,50 @@
 .mic-button svg {
     height: 24px;
     width: 24px;
+}
+
+.voice-action-button {
+    align-items: center;
+    border-radius: 50%;
+    cursor: pointer;
+    display: flex;
+    flex-shrink: 0;
+    height: 48px;
+    justify-content: center;
+    padding: 0;
+    transition: background-color 0.15s ease, color 0.15s ease, transform 0.15s ease;
+    width: 48px;
+}
+
+.voice-action-button:hover {
+    transform: scale(1.04);
+}
+
+.voice-cancel-button {
+    background: #fff;
+    border: 2px solid #111111;
+    color: #111111;
+}
+
+.voice-cancel-button:hover {
+    background: var(--color-ikea-light-grey);
+}
+
+.voice-confirm-button {
+    background: #111111;
+    border: 2px solid #111111;
+    color: #fff;
+}
+
+.voice-confirm-button:hover {
+    background: #333333;
+    border-color: #333333;
+}
+
+.voice-action-button svg {
+    height: 27px;
+    stroke-width: 3;
+    width: 27px;
 }
 
 .send-button {
@@ -815,13 +987,21 @@
 
 /* 添加打字動畫樣式 */
 .typing-indicator {
-    display: flex;
     align-items: center;
-    gap: 4px;
-    padding: 12px 16px;
     background-color: var(--color-ikea-light-grey);
     border-radius: 0 16px 16px 16px;
+    display: inline-flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px 16px 11px;
     width: fit-content;
+}
+
+.typing-dots {
+    align-items: center;
+    display: flex;
+    gap: 4px;
+    height: 8px;
 }
 
 .typing-dot {
@@ -833,16 +1013,32 @@
     opacity: 0.3;
 }
 
-.typing-dot:nth-child(1) {
+.typing-dots .typing-dot:nth-child(1) {
     animation-delay: 0s;
 }
 
-.typing-dot:nth-child(2) {
+.typing-dots .typing-dot:nth-child(2) {
     animation-delay: 0.2s;
 }
 
-.typing-dot:nth-child(3) {
+.typing-dots .typing-dot:nth-child(3) {
     animation-delay: 0.4s;
+}
+
+.typing-status {
+    align-items: center;
+    color: var(--color-ikea-dark-grey);
+    display: flex;
+    font-size: 12px;
+    font-weight: 700;
+    gap: 7px;
+    line-height: 1.2;
+    white-space: nowrap;
+}
+
+.typing-status span + span {
+    color: var(--color-ikea-secondary-text);
+    font-weight: 600;
 }
 
 @keyframes typingAnimation {

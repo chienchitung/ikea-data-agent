@@ -1,7 +1,7 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect } from 'react';
 import axios from 'axios';
 import { ChatMessage } from './components/ChatMessage';
-import { ArrowUp, Loader2, Sparkles, FileText, ChevronDown, ChevronLeft, ChevronRight, Plus, Check, Edit2, Trash2, User, MessageSquare, PenSquare, Search, Mic, Square } from 'lucide-react';
+import { ArrowUp, Loader2, Sparkles, FileText, ChevronDown, ChevronLeft, ChevronRight, Plus, Check, Edit2, Trash2, User, MessageSquare, PenSquare, Search, Mic, Square, X, Bug } from 'lucide-react';
 import bearAvatar from './assets/img/ikea-bear.png';
 import dogAvatar from './assets/img/ikea-dog.png';
 import monkeyAvatar from './assets/img/ikea-monkey.png';
@@ -57,6 +57,203 @@ function loadConversations() {
 function saveConversations(convs) {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(convs));
 }
+
+function getResponseStatusLabel(phase, elapsedSeconds) {
+    if (phase === 'understanding') {
+        if (elapsedSeconds < 3) return '正在理解問題';
+        return '正在判斷脈絡';
+    }
+
+    if (phase === 'thinking') {
+        if (elapsedSeconds < 6) return '正在選擇合適工具';
+        return '正在整合上下文';
+    }
+
+    if (phase === 'tool' || phase === 'searching') {
+        if (elapsedSeconds < 8) return '正在查詢資料';
+        return '正在等待工具回傳';
+    }
+
+    if (phase === 'composing') {
+        return '正在整理回覆';
+    }
+
+    if (phase === 'regenerating') {
+        if (elapsedSeconds < 6) return '正在重新整理回答';
+        return '正在組織新版回覆';
+    }
+
+    if (elapsedSeconds < 5) return '正在查詢資料';
+    if (elapsedSeconds < 14) return '正在整合上下文';
+    return '正在整理回覆';
+}
+
+function formatAssistantNotice(title, message, nextSteps = []) {
+    let content = `**${title}**\n\n${message}`;
+    if (nextSteps.length > 0) {
+        content += `\n\n你可以試試：\n${nextSteps.map(step => `- ${step}`).join('\n')}`;
+    }
+    return content;
+}
+
+function getStructuredError(error) {
+    const detail = error?.response?.data?.detail || error?.response?.data;
+    if (detail && typeof detail === 'object') {
+        return {
+            title: detail.title,
+            message: detail.message,
+            nextSteps: detail.next_steps || detail.nextSteps || [],
+            code: detail.code,
+        };
+    }
+    return null;
+}
+
+function buildRequestErrorMessage(error, context = 'chat') {
+    const structured = getStructuredError(error);
+    if (structured?.title && structured?.message) {
+        return formatAssistantNotice(structured.title, structured.message, structured.nextSteps);
+    }
+
+    if (!error?.response) {
+        return formatAssistantNotice(
+            '目前連不到後端服務',
+            '我沒有收到後端回應，所以這次請求沒有完成。',
+            ['確認 backend server 是否正在執行', '稍後再試一次']
+        );
+    }
+
+    if (error.response.status === 413) {
+        return formatAssistantNotice(
+            '檔案或請求太大',
+            '這次送出的內容超過後端可處理的大小。',
+            ['縮小檔案後重新上傳', '或把問題拆成較小範圍']
+        );
+    }
+
+    if (context === 'upload') {
+        return formatAssistantNotice(
+            'PDF 上傳沒有完成',
+            error.response?.data?.message || error.message || '上傳或解析 PDF 時發生錯誤。',
+            ['確認 PDF 可以正常開啟', '稍後重新上傳一次']
+        );
+    }
+
+    if (context === 'regenerate') {
+        return formatAssistantNotice(
+            '重新生成失敗',
+            '我無法重新整理這則回答。',
+            ['稍後再試一次', '或直接用新的訊息補充你想修改的方向']
+        );
+    }
+
+    return formatAssistantNotice(
+        '處理過程中斷了',
+        error.response?.data?.message || error.message || '後端處理請求時發生錯誤。',
+        ['稍後重試一次', '如果問題很長，先縮小範圍再問']
+    );
+}
+
+function parseSseEvent(rawEvent) {
+    const lines = rawEvent.split(/\r?\n/);
+    let event = 'message';
+    const dataLines = [];
+
+    lines.forEach((line) => {
+        if (line.startsWith('event:')) {
+            event = line.slice(6).trim() || 'message';
+        } else if (line.startsWith('data:')) {
+            dataLines.push(line.slice(5).trimStart());
+        }
+    });
+
+    if (dataLines.length === 0) return null;
+
+    try {
+        return {
+            event,
+            data: JSON.parse(dataLines.join('\n')),
+        };
+    } catch {
+        return {
+            event,
+            data: dataLines.join('\n'),
+        };
+    }
+}
+
+async function readSseStream(response, onEvent) {
+    const reader = response.body?.getReader();
+    if (!reader) {
+        throw new Error('Streaming response is not readable.');
+    }
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        let boundary = buffer.indexOf('\n\n');
+
+        while (boundary !== -1) {
+            const rawEvent = buffer.slice(0, boundary);
+            buffer = buffer.slice(boundary + 2);
+            const parsed = parseSseEvent(rawEvent);
+            if (parsed) onEvent(parsed.event, parsed.data);
+            boundary = buffer.indexOf('\n\n');
+        }
+    }
+
+    buffer += decoder.decode();
+    if (buffer.trim()) {
+        const parsed = parseSseEvent(buffer.trim());
+        if (parsed) onEvent(parsed.event, parsed.data);
+    }
+}
+
+async function streamChat(payload, signal, onProgress) {
+    const response = await fetch(`${API_URL}/chat/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal,
+    });
+
+    if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        const error = new Error(data?.detail?.message || data?.message || `Request failed with status ${response.status}`);
+        error.response = { status: response.status, data };
+        throw error;
+    }
+
+    let finalPayload = null;
+    let errorPayload = null;
+
+    await readSseStream(response, (event, data) => {
+        if (event === 'progress') {
+            onProgress(data || {});
+        } else if (event === 'final') {
+            finalPayload = data || {};
+        } else if (event === 'error') {
+            errorPayload = data || {};
+        }
+    });
+
+    if (errorPayload) {
+        const error = new Error(errorPayload.message || 'Stream ended with an error.');
+        error.response = { data: errorPayload };
+        throw error;
+    }
+
+    if (!finalPayload) {
+        throw new Error('Stream ended before a final response was returned.');
+    }
+
+    return finalPayload;
+}
 // ────────────────────────────────────────────────────────
 
 function App() {
@@ -70,6 +267,10 @@ function App() {
     const [isUploading, setIsUploading] = useState(false);
     const [isListening, setIsListening] = useState(false);
     const [speechSupported, setSpeechSupported] = useState(true);
+    const [responsePhase, setResponsePhase] = useState("idle");
+    const [responseStartedAt, setResponseStartedAt] = useState(null);
+    const [responseElapsedSeconds, setResponseElapsedSeconds] = useState(0);
+    const [responseStatusText, setResponseStatusText] = useState("");
     const [uploadProgress, setUploadProgress] = useState(0);
     const [uploadStage, setUploadStage] = useState("");
     const [clarification, setClarification] = useState(null);
@@ -77,6 +278,7 @@ function App() {
     const [clarificationCustomAnswers, setClarificationCustomAnswers] = useState({});
     const [pendingMessage, setPendingMessage] = useState("");
     const [pendingHistorySnapshot, setPendingHistorySnapshot] = useState([]);
+    const [pendingTurnContext, setPendingTurnContext] = useState({});
     const [isClarifying, setIsClarifying] = useState(false);
     const [isSourcesExpanded, setIsSourcesExpanded] = useState(true);
     const [isConvsExpanded, setIsConvsExpanded] = useState(true);
@@ -87,6 +289,7 @@ function App() {
     const [newDocName, setNewDocName] = useState("");
     const [userAvatar, setUserAvatar] = useState(bearAvatar);
     const [showAvatarPicker, setShowAvatarPicker] = useState(false);
+    const [debugMode, setDebugMode] = useState(false);
     const messagesEndRef = useRef(null);
     const fileInputRef = useRef(null);
     const abortControllerRef = useRef(null);
@@ -95,6 +298,10 @@ function App() {
     const speechTranscriptRef = useRef("");
     const speechInterimRef = useRef("");
     const speechErrorRef = useRef(false);
+    const speechDiscardRef = useRef(false);
+    const pendingScrollBehaviorRef = useRef("auto");
+    const responseStartedAtRef = useRef(null);
+    const responseStatusLabel = responseStatusText || getResponseStatusLabel(responsePhase, responseElapsedSeconds);
 
     // ── 初始化：從 localStorage 載入 ─────────────────────
     useEffect(() => {
@@ -140,15 +347,15 @@ function App() {
             saveConversations(updated);
             return updated;
         });
-    }, [messages]);
+    }, [messages, currentConvId]);
 
     // currentConvId 變動時同步到 localStorage
     useEffect(() => {
         if (currentConvId) localStorage.setItem(CURRENT_ID_KEY, currentConvId);
     }, [currentConvId]);
 
-    const scrollToBottom = () => {
-        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    const scrollToBottom = (behavior = "smooth") => {
+        messagesEndRef.current?.scrollIntoView({ behavior });
     };
 
     const fetchDocuments = async () => {
@@ -160,13 +367,30 @@ function App() {
         }
     };
 
-    useEffect(() => {
-        scrollToBottom();
+    useLayoutEffect(() => {
+        if (messages.length === 0 && !isLoading) return;
+
+        const behavior = pendingScrollBehaviorRef.current;
+        scrollToBottom(behavior);
+        pendingScrollBehaviorRef.current = "smooth";
     }, [messages, isLoading]);
 
     useEffect(() => {
         fetchDocuments();
     }, []);
+
+    useEffect(() => {
+        if (!isLoading || !responseStartedAtRef.current) return;
+
+        const updateElapsed = () => {
+            const elapsed = Math.floor((Date.now() - responseStartedAtRef.current) / 1000);
+            setResponseElapsedSeconds(Math.max(0, elapsed));
+        };
+
+        updateElapsed();
+        const intervalId = window.setInterval(updateElapsed, 1000);
+        return () => window.clearInterval(intervalId);
+    }, [isLoading, responseStartedAt]);
 
     useEffect(() => {
         const textarea = document.getElementById('chat-input');
@@ -212,7 +436,7 @@ function App() {
         };
 
         recognition.onend = () => {
-            if (!speechErrorRef.current) {
+            if (!speechErrorRef.current && !speechDiscardRef.current) {
                 const baseText = speechBaseInputRef.current.trim();
                 const spokenText = `${speechTranscriptRef.current}${speechInterimRef.current}`.trim();
                 if (spokenText) {
@@ -221,6 +445,7 @@ function App() {
             }
             speechInterimRef.current = "";
             speechErrorRef.current = false;
+            speechDiscardRef.current = false;
             setIsListening(false);
         };
 
@@ -235,11 +460,13 @@ function App() {
     // ── 對話管理 ─────────────────────────────────────────
     const startNewConversation = () => {
         const newId = generateId();
+        pendingScrollBehaviorRef.current = "auto";
         setCurrentConvId(newId);
         setMessages([]);
     };
 
     const switchConversation = (conv) => {
+        pendingScrollBehaviorRef.current = "auto";
         setCurrentConvId(conv.id);
         setMessages(conv.messages);
     };
@@ -252,6 +479,7 @@ function App() {
 
         if (convId === currentConvId) {
             if (updated.length > 0) {
+                pendingScrollBehaviorRef.current = "auto";
                 setCurrentConvId(updated[0].id);
                 setMessages(updated[0].messages);
             } else {
@@ -398,7 +626,44 @@ function App() {
             abortControllerRef.current.abort();
             abortControllerRef.current = null;
         }
+        endResponseStatus();
         setIsLoading(false);
+    };
+
+    const beginResponseStatus = (phase = "understanding", resetTimer = true, label = "") => {
+        if (resetTimer || !responseStartedAtRef.current) {
+            responseStartedAtRef.current = Date.now();
+            setResponseStartedAt(responseStartedAtRef.current);
+            setResponseElapsedSeconds(0);
+        }
+        setResponsePhase(phase);
+        setResponseStatusText(label);
+    };
+
+    const advanceResponseStatus = (phase, label = "") => {
+        if (!responseStartedAtRef.current) {
+            beginResponseStatus(phase, true, label);
+            return;
+        }
+        setResponsePhase(phase);
+        setResponseStatusText(label);
+    };
+
+    const endResponseStatus = () => {
+        responseStartedAtRef.current = null;
+        setResponseStartedAt(null);
+        setResponseElapsedSeconds(0);
+        setResponsePhase("idle");
+        setResponseStatusText("");
+    };
+
+    const handleResponseProgress = (payload = {}) => {
+        const phase = payload.phase || "thinking";
+        const normalizedPhase = phase === "tool" ? "searching" : phase;
+        setResponsePhase(normalizedPhase);
+        if (payload.label) {
+            setResponseStatusText(payload.label);
+        }
     };
 
     const toggleVoiceInput = () => {
@@ -414,6 +679,7 @@ function App() {
         speechTranscriptRef.current = "";
         speechInterimRef.current = "";
         speechErrorRef.current = false;
+        speechDiscardRef.current = false;
         try {
             recognitionRef.current.start();
             setIsListening(true);
@@ -423,34 +689,63 @@ function App() {
         }
     };
 
-    const sendChatMessage = async (messageContent, activeConvId, historySnapshot, clarifications = [], appendUserMessage = true) => {
+    const cancelVoiceInput = () => {
+        if (!recognitionRef.current) return;
+        speechDiscardRef.current = true;
+        recognitionRef.current.stop();
+        setIsListening(false);
+    };
+
+    const confirmVoiceInput = () => {
+        if (!recognitionRef.current) return;
+        speechDiscardRef.current = false;
+        recognitionRef.current.stop();
+        setIsListening(false);
+    };
+
+    const sendChatMessage = async (
+        messageContent,
+        activeConvId,
+        historySnapshot,
+        clarifications = [],
+        appendUserMessage = true,
+        statusPhase = "searching",
+        resetStatusTimer = true,
+        turnContext = {}
+    ) => {
         if (appendUserMessage) {
             setMessages(prev => [...prev, { role: 'user', content: messageContent }]);
         }
         setInput("");
+        beginResponseStatus(statusPhase, resetStatusTimer);
         setIsLoading(true);
 
         abortControllerRef.current = new AbortController();
 
         try {
-            const response = await axios.post(`${API_URL}/chat`, {
+            const response = await streamChat({
                 message: messageContent,
                 history: historySnapshot,
                 conversation_id: activeConvId,
-                clarifications
-            }, {
-                signal: abortControllerRef.current.signal
-            });
-            setMessages(prev => [...prev, { role: 'assistant', content: response.data.response }]);
+                clarifications,
+                turn_context: turnContext
+            }, abortControllerRef.current.signal, handleResponseProgress);
+            setMessages(prev => [...prev, {
+                role: 'assistant',
+                content: response.response,
+                metadata: response.metadata || {},
+                errorCode: response.error_code || null,
+            }]);
         } catch (error) {
-            if (axios.isCancel(error) || error.code === 'ERR_CANCELED') return;
+            if (axios.isCancel(error) || error.code === 'ERR_CANCELED' || error.name === 'AbortError') return;
             console.error("Error:", error);
             setMessages(prev => [...prev, {
                 role: 'assistant',
-                content: "⚠️ **Error**: Could not connect to the Agent. Please check if the backend is running."
+                content: buildRequestErrorMessage(error, statusPhase === "regenerating" ? 'regenerate' : 'chat')
             }]);
         } finally {
             abortControllerRef.current = null;
+            endResponseStatus();
             setIsLoading(false);
         }
     };
@@ -483,6 +778,7 @@ function App() {
         setClarificationCustomAnswers({});
         setPendingMessage("");
         setPendingHistorySnapshot([]);
+        setPendingTurnContext({});
     };
 
     const confirmClarification = async () => {
@@ -491,9 +787,10 @@ function App() {
         if (!currentConvId) setCurrentConvId(activeConvId);
         const clarificationSelections = buildClarificationSelections();
         const historySnapshot = pendingHistorySnapshot;
+        const turnContext = pendingTurnContext;
         const messageToSend = pendingMessage;
         clearClarification();
-        await sendChatMessage(messageToSend, activeConvId, historySnapshot, clarificationSelections, false);
+        await sendChatMessage(messageToSend, activeConvId, historySnapshot, clarificationSelections, false, "searching", true, turnContext);
     };
 
     const skipClarification = async () => {
@@ -502,8 +799,9 @@ function App() {
         if (!currentConvId) setCurrentConvId(activeConvId);
         const messageToSend = pendingMessage;
         const historySnapshot = pendingHistorySnapshot;
+        const turnContext = pendingTurnContext;
         clearClarification();
-        await sendChatMessage(messageToSend, activeConvId, historySnapshot, [], false);
+        await sendChatMessage(messageToSend, activeConvId, historySnapshot, [], false, "searching", true, turnContext);
     };
 
     // ── 聊天邏輯 ─────────────────────────────────────────
@@ -528,14 +826,17 @@ function App() {
         setMessages(prev => [...prev, userMessage]);
         setInput("");
         if (textarea) textarea.style.height = 'auto';
+        beginResponseStatus("understanding");
         setIsLoading(true);
         setIsClarifying(true);
+        let turnContext = {};
         try {
             const clarificationResponse = await axios.post(`${API_URL}/clarifications`, {
                 message: messageContent,
                 history: historySnapshot,
                 conversation_id: activeConvId
             });
+            turnContext = clarificationResponse.data?.turn_context || {};
 
             if (clarificationResponse.data?.needs_clarification && clarificationResponse.data?.questions?.length > 0) {
                 const nextClarification = clarificationResponse.data;
@@ -545,10 +846,12 @@ function App() {
                 });
                 setPendingMessage(messageContent);
                 setPendingHistorySnapshot(historySnapshot);
+                setPendingTurnContext(turnContext);
                 setClarification(nextClarification);
                 setClarificationAnswers(defaultAnswers);
                 setClarificationCustomAnswers({});
                 setInput("");
+                endResponseStatus();
                 setIsLoading(false);
                 return;
             }
@@ -558,8 +861,8 @@ function App() {
             setIsClarifying(false);
         }
 
-        setIsLoading(false);
-        await sendChatMessage(messageContent, activeConvId, historySnapshot, [], false);
+        advanceResponseStatus("searching");
+        await sendChatMessage(messageContent, activeConvId, historySnapshot, [], false, "searching", false, turnContext);
     };
 
     const handleMessageUpdate = async (index, newContent) => {
@@ -567,23 +870,7 @@ function App() {
         const historyContext = messages.slice(0, index);
         const updatedUserMessage = { ...messages[index], content: newContent };
         setMessages([...historyContext, updatedUserMessage]);
-        setIsLoading(true);
-        try {
-            const response = await axios.post(`${API_URL}/chat`, {
-                message: newContent,
-                history: historyContext,
-                conversation_id: currentConvId
-            });
-            setMessages(prev => [...prev, { role: 'assistant', content: response.data.response }]);
-        } catch (error) {
-            console.error("Error regenerating response:", error);
-            setMessages(prev => [...prev, {
-                role: 'assistant',
-                content: "⚠️ **Error**: Could not regenerate response."
-            }]);
-        } finally {
-            setIsLoading(false);
-        }
+        await sendChatMessage(newContent, currentConvId, historyContext, [], false, "regenerating", true);
     };
 
     // ── Render ────────────────────────────────────────────
@@ -832,6 +1119,14 @@ function App() {
                             </div>
                         </button>
                         <div className="flex items-center gap-1">
+                            <button
+                                onClick={() => setDebugMode(prev => !prev)}
+                                className={`p-2 rounded-full transition-colors ${debugMode ? 'bg-[#F5F5F5]' : 'hover:bg-[#F5F5F5]'}`}
+                                title={debugMode ? "Hide AI debug" : "Show AI debug"}
+                                aria-pressed={debugMode}
+                            >
+                                <Bug className="w-5 h-5 text-[#111111]" />
+                            </button>
                             {/* Clear / New chat button */}
                             {messages.length > 0 && (
                                 <button
@@ -874,16 +1169,23 @@ function App() {
                                     key={idx}
                                     message={msg}
                                     userAvatar={userAvatar}
+                                    debugMode={debugMode}
                                     onUpdate={(newContent) => handleMessageUpdate(idx, newContent)}
                                     onCopy={(content) => navigator.clipboard.writeText(content)}
                                 />
                             ))}
                             {isLoading && (
                                 <div className="flex justify-start">
-                                    <div className="typing-indicator">
-                                        <div className="typing-dot"></div>
-                                        <div className="typing-dot"></div>
-                                        <div className="typing-dot"></div>
+                                    <div className="typing-indicator" role="status" aria-live="polite">
+                                        <div className="typing-dots" aria-hidden="true">
+                                            <div className="typing-dot"></div>
+                                            <div className="typing-dot"></div>
+                                            <div className="typing-dot"></div>
+                                        </div>
+                                        <div className="typing-status">
+                                            <span>{responseStatusLabel}</span>
+                                            <span>{responseElapsedSeconds} 秒</span>
+                                        </div>
                                     </div>
                                 </div>
                             )}
@@ -899,44 +1201,61 @@ function App() {
                             <div className="clarification-panel-header">
                                 <div>
                                     <p className="clarification-eyebrow">Help me aim better</p>
-                                    <h2>{clarification.questions[0]?.question}</h2>
+                                    <h2>
+                                        {clarification.questions.length > 1
+                                            ? "幫我補一下方向"
+                                            : clarification.questions[0]?.question}
+                                    </h2>
                                 </div>
                                 <button type="button" onClick={clearClarification} className="clarification-close" aria-label="Close clarification">
                                     ×
                                 </button>
                             </div>
-                            <div className="clarification-options">
-                                {[...(clarification.questions[0]?.options || []), {
-                                    label: '自行輸入',
-                                    value: '__custom__',
-                                    description: '用自己的文字補充需求'
-                                }].map((option) => {
-                                    const questionId = clarification.questions[0].id;
-                                    const isSelected = clarificationAnswers[questionId] === option.value;
+                            <div className="clarification-questions">
+                                {clarification.questions.map((question, questionIndex) => {
+                                    const questionId = question.id || `q${questionIndex + 1}`;
+                                    const options = [...(question.options || []), {
+                                        label: '自行輸入',
+                                        value: '__custom__',
+                                        description: '用自己的文字補充需求'
+                                    }];
+
                                     return (
-                                        <div key={option.value} className={`clarification-option-wrap ${isSelected ? 'selected' : ''}`}>
-                                            <button
-                                                type="button"
-                                                className={`clarification-option ${isSelected ? 'selected' : ''}`}
-                                                onClick={() => setClarificationAnswers(prev => ({ ...prev, [questionId]: option.value }))}
-                                            >
-                                                <span className="clarification-check">{isSelected ? '✓' : ''}</span>
-                                                <span>
-                                                    <strong>{option.label}</strong>
-                                                    {option.description && <small>{option.description}</small>}
-                                                </span>
-                                            </button>
-                                            {option.value === '__custom__' && isSelected && (
-                                                <input
-                                                    type="text"
-                                                    className="clarification-custom-input"
-                                                    value={clarificationCustomAnswers[questionId] || ''}
-                                                    onChange={(e) => setClarificationCustomAnswers(prev => ({ ...prev, [questionId]: e.target.value }))}
-                                                    placeholder="請輸入你想補充的條件"
-                                                    autoFocus
-                                                />
+                                        <section key={questionId} className="clarification-question">
+                                            {clarification.questions.length > 1 && (
+                                                <h3 className="clarification-question-title">{question.question}</h3>
                                             )}
-                                        </div>
+                                            <div className="clarification-options">
+                                                {options.map((option) => {
+                                                    const isSelected = clarificationAnswers[questionId] === option.value;
+                                                    return (
+                                                        <div key={`${questionId}-${option.value}`} className={`clarification-option-wrap ${isSelected ? 'selected' : ''}`}>
+                                                            <button
+                                                                type="button"
+                                                                className={`clarification-option ${isSelected ? 'selected' : ''}`}
+                                                                onClick={() => setClarificationAnswers(prev => ({ ...prev, [questionId]: option.value }))}
+                                                            >
+                                                                <span className="clarification-check">{isSelected ? '✓' : ''}</span>
+                                                                <span>
+                                                                    <strong>{option.label}</strong>
+                                                                    {option.description && <small>{option.description}</small>}
+                                                                </span>
+                                                            </button>
+                                                            {option.value === '__custom__' && isSelected && (
+                                                                <input
+                                                                    type="text"
+                                                                    className="clarification-custom-input"
+                                                                    value={clarificationCustomAnswers[questionId] || ''}
+                                                                    onChange={(e) => setClarificationCustomAnswers(prev => ({ ...prev, [questionId]: e.target.value }))}
+                                                                    placeholder="請輸入你想補充的條件"
+                                                                    autoFocus
+                                                                />
+                                                            )}
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        </section>
                                     );
                                 })}
                             </div>
@@ -955,7 +1274,7 @@ function App() {
                         onSubmit={handleSubmit}
                         className={`chatbot-input-container ${isListening ? 'listening' : ''} ${input.trim() ? 'has-input' : ''}`}
                     >
-                        {!input.trim() && <Search className="input-leading-icon" aria-hidden="true" />}
+                        {!input.trim() && !isListening && <Search className="input-leading-icon" aria-hidden="true" />}
                         <textarea
                             id="chat-input"
                             value={input}
@@ -982,6 +1301,14 @@ function App() {
                                 <span />
                                 <span />
                                 <span />
+                                <span />
+                                <span />
+                                <span />
+                                <span />
+                                <span />
+                                <span />
+                                <span />
+                                <span />
                             </div>
                         )}
                         <div className="input-actions">
@@ -989,6 +1316,27 @@ function App() {
                                 <button type="button" onClick={handleStop} className="stop-button" aria-label="Stop generation">
                                     <Square fill="currentColor" />
                                 </button>
+                            ) : isListening ? (
+                                <>
+                                    <button
+                                        type="button"
+                                        onClick={cancelVoiceInput}
+                                        className="voice-action-button voice-cancel-button"
+                                        aria-label="Cancel voice input"
+                                        title="Cancel voice input"
+                                    >
+                                        <X />
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={confirmVoiceInput}
+                                        className="voice-action-button voice-confirm-button"
+                                        aria-label="Confirm voice input"
+                                        title="Confirm voice input"
+                                    >
+                                        <Check />
+                                    </button>
+                                </>
                             ) : (
                                 <>
                                     <button

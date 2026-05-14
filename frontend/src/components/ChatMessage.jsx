@@ -1,8 +1,6 @@
-import { useState } from 'react';
+import { lazy, Suspense, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import clsx from 'clsx';
 import { Copy, Edit2, Check, BarChart3, LineChart, PieChart } from 'lucide-react';
 import assistantAvatar from '../assets/img/ikea-assistant.png';
@@ -10,34 +8,7 @@ import assistantAvatar from '../assets/img/ikea-assistant.png';
 // ── Preprocess message content ───────────────────────────
 // 處理 LLM 三種常見的錯誤 code block 格式，統一轉為合法的 Markdown fenced block
 const CODE_LANG_RE = /^(sql|python|javascript|js|typescript|ts|bash|sh|json|yaml|html|css|chart)[ \t]*/i;
-const sqlEditorTheme = {
-    ...vscDarkPlus,
-    'pre[class*="language-"]': {
-        ...vscDarkPlus['pre[class*="language-"]'],
-        color: '#C9D1D9',
-        background: '#252A32',
-    },
-    'code[class*="language-"]': {
-        ...vscDarkPlus['code[class*="language-"]'],
-        color: '#C9D1D9',
-        background: '#252A32',
-    },
-    comment: { color: '#7D8590', fontStyle: 'italic' },
-    prolog: { color: '#7D8590', fontStyle: 'italic' },
-    keyword: { color: '#D783FF' },
-    'keyword.control-flow': { color: '#D783FF' },
-    function: { color: '#59B8FF' },
-    builtin: { color: '#59B8FF' },
-    string: { color: '#98C379' },
-    char: { color: '#98C379' },
-    number: { color: '#F6B26B' },
-    boolean: { color: '#F6B26B' },
-    operator: { color: '#66D9EF' },
-    punctuation: { color: '#C9D1D9' },
-    property: { color: '#C9D1D9' },
-    variable: { color: '#C9D1D9' },
-    constant: { color: '#F6B26B' },
-};
+const LazyCodeHighlighter = lazy(() => import('./CodeHighlighter').then(module => ({ default: module.CodeHighlighter })));
 
 // 在 result 末尾確保有換行（Markdown fenced block 必須在行首）
 function ensureNewline(s) {
@@ -166,29 +137,9 @@ function CodeBlock({ language, code }) {
                 </button>
             </div>
             {/* Code content */}
-            <SyntaxHighlighter
-                language={language || 'text'}
-                style={sqlEditorTheme}
-                customStyle={{
-                    margin: 0,
-                    borderRadius: 0,
-                    padding: '20px',
-                    fontSize: '13.5px',
-                    lineHeight: '1.62',
-                    background: '#282c34',
-                    maxHeight: '640px',
-                    overflow: 'auto',
-                    fontFamily: 'SFMono-Regular, Consolas, Liberation Mono, Menlo, monospace',
-                }}
-                codeTagProps={{
-                    style: {
-                        fontFamily: 'inherit',
-                    }
-                }}
-                wrapLongLines={false}
-            >
-                {code}
-            </SyntaxHighlighter>
+            <Suspense fallback={<pre className="code-loading"><code>{code}</code></pre>}>
+                <LazyCodeHighlighter language={language || 'text'} code={code} />
+            </Suspense>
         </div>
     );
 }
@@ -217,21 +168,23 @@ function parseChartSpec(code) {
 
 function InteractiveChart({ code }) {
     const spec = parseChartSpec(code);
+    // Sequential (time-series) data: bar + line only, single color
+    // Categorical data: bar + pie (if ≤8 items), palette colors
+    const isSequential = spec?.isSequential === true;
+    const allowedTypes = !spec || spec.data.length === 0
+        ? ['bar']
+        : isSequential
+        ? ['bar', 'line']
+        : spec.data.length <= 8 ? ['bar', 'pie'] : ['bar'];
+    const defaultType = spec && allowedTypes.includes(spec.type) ? spec.type : allowedTypes[0];
+    const [activeType, setActiveType] = useState(defaultType);
+    const [hovered, setHovered] = useState(null);
 
     if (!spec || spec.data.length === 0) {
         return <CodeBlock language="json" code={code} />;
     }
 
-    // Sequential (time-series) data: bar + line only, single color
-    // Categorical data: bar + pie (if ≤8 items), palette colors
-    const isSequential = spec.isSequential;
-    const allowedTypes = isSequential
-        ? ['bar', 'line']
-        : spec.data.length <= 8 ? ['bar', 'pie'] : ['bar'];
-
-    const defaultType = allowedTypes.includes(spec.type) ? spec.type : allowedTypes[0];
-    const [activeType, setActiveType] = useState(defaultType);
-    const [hovered, setHovered] = useState(null);
+    const selectedType = allowedTypes.includes(activeType) ? activeType : defaultType;
 
     const width = 720;
     const height = 300;
@@ -342,15 +295,15 @@ function InteractiveChart({ code }) {
                     <p className="chart-subtitle">{spec.data.length} categories · total {total}</p>
                 </div>
                 <div className="chart-controls" aria-label="Chart type">
-                    {allowedTypes.includes('bar') && <button type="button" className={activeType === 'bar' ? 'active' : ''} onClick={() => setActiveType('bar')} title="Bar chart"><BarChart3 size={16} /></button>}
-                    {allowedTypes.includes('line') && <button type="button" className={activeType === 'line' ? 'active' : ''} onClick={() => setActiveType('line')} title="Line chart"><LineChart size={16} /></button>}
-                    {allowedTypes.includes('pie') && <button type="button" className={activeType === 'pie' ? 'active' : ''} onClick={() => setActiveType('pie')} title="Pie chart"><PieChart size={16} /></button>}
+                    {allowedTypes.includes('bar') && <button type="button" className={selectedType === 'bar' ? 'active' : ''} onClick={() => setActiveType('bar')} title="Bar chart"><BarChart3 size={16} /></button>}
+                    {allowedTypes.includes('line') && <button type="button" className={selectedType === 'line' ? 'active' : ''} onClick={() => setActiveType('line')} title="Line chart"><LineChart size={16} /></button>}
+                    {allowedTypes.includes('pie') && <button type="button" className={selectedType === 'pie' ? 'active' : ''} onClick={() => setActiveType('pie')} title="Pie chart"><PieChart size={16} /></button>}
                 </div>
             </div>
             <div className="chart-body">
-                {activeType === 'bar' && renderBarChart()}
-                {activeType === 'line' && renderLineChart()}
-                {activeType === 'pie' && renderPieChart()}
+                {selectedType === 'bar' && renderBarChart()}
+                {selectedType === 'line' && renderLineChart()}
+                {selectedType === 'pie' && renderPieChart()}
                 {hovered && (
                     <div className="chart-tooltip">
                         <strong>{hovered.label}</strong>
@@ -371,14 +324,20 @@ function InteractiveChart({ code }) {
 
 // ── Markdown components override ──────────────────────────
 const markdownComponents = {
-    a: ({ node, ...props }) => (
-        <a {...props} target="_blank" rel="noopener noreferrer" />
-    ),
-    table: ({ node, ...props }) => (
-        <div className="markdown-table-scroll">
-            <table {...props} />
-        </div>
-    ),
+    a: (props) => {
+        const anchorProps = { ...props };
+        delete anchorProps.node;
+        return <a {...anchorProps} target="_blank" rel="noopener noreferrer" />;
+    },
+    table: (props) => {
+        const tableProps = { ...props };
+        delete tableProps.node;
+        return (
+            <div className="markdown-table-scroll">
+                <table {...tableProps} />
+            </div>
+        );
+    },
     // pre 攔截 block code（react-markdown v10 正確寫法）
     pre({ children }) {
         const child = Array.isArray(children) ? children[0] : children;
@@ -426,8 +385,55 @@ const markdownComponents = {
     },
 };
 
+function formatElapsed(ms) {
+    if (!Number.isFinite(Number(ms))) return 'n/a';
+    if (Number(ms) < 1000) return `${Math.round(Number(ms))} ms`;
+    return `${(Number(ms) / 1000).toFixed(1)} 秒`;
+}
+
+function formatTokenUsage(usage = {}) {
+    const total = usage.total_tokens;
+    if (!Number.isFinite(Number(total)) || Number(total) <= 0) return '模型未回傳';
+    const input = Number(usage.input_tokens || 0);
+    const output = Number(usage.output_tokens || 0);
+    return `${total} total (${input} in / ${output} out)`;
+}
+
+function AssistantDebugPanel({ metadata = {}, errorCode }) {
+    const turnContext = metadata.turn_context || {};
+    const toolResults = Array.isArray(metadata.tool_results) ? metadata.tool_results : [];
+    const hasMetadata = Object.keys(metadata || {}).length > 0 || errorCode;
+
+    if (!hasMetadata) return null;
+
+    return (
+        <div className="message-debug-panel">
+            <div className="message-debug-grid">
+                <span>mode</span>
+                <strong>{metadata.mode || (errorCode ? 'error' : 'unknown')}</strong>
+                <span>elapsed</span>
+                <strong>{formatElapsed(metadata.elapsed_ms)}</strong>
+                <span>tokens</span>
+                <strong>{formatTokenUsage(metadata.usage)}</strong>
+                <span>relation</span>
+                <strong>{turnContext.relation || 'standalone'}</strong>
+                <span>domain</span>
+                <strong>{turnContext.domain_hint || 'none'}</strong>
+                <span>tools</span>
+                <strong>{toolResults.length > 0 ? toolResults.map(item => item.name || 'tool').join(', ') : 'none'}</strong>
+            </div>
+            {turnContext.reason && (
+                <p className="message-debug-reason">{turnContext.reason}</p>
+            )}
+            {errorCode && (
+                <p className="message-debug-reason">error_code: {errorCode}</p>
+            )}
+        </div>
+    );
+}
+
 // ── ChatMessage ───────────────────────────────────────────
-export function ChatMessage({ message, userAvatar, onUpdate, onCopy }) {
+export function ChatMessage({ message, userAvatar, debugMode = false, onUpdate, onCopy }) {
     const isUser = message.role === 'user';
     const avatar = isUser ? userAvatar : assistantAvatar;
     const [copied, setCopied] = useState(false);
@@ -516,6 +522,10 @@ export function ChatMessage({ message, userAvatar, onUpdate, onCopy }) {
                             {copied ? <Check size={14} className="text-green-500" /> : <Copy size={14} />}
                         </button>
                     </div>
+                )}
+
+                {!isUser && debugMode && (
+                    <AssistantDebugPanel metadata={message.metadata} errorCode={message.errorCode} />
                 )}
             </div>
         </div>
