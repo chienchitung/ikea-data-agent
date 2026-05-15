@@ -9,6 +9,7 @@ import sharkAvatar from './assets/img/ikea-shark.png';
 import teddyAvatar from './assets/img/ikea-teddy.png';
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const SHOW_AI_DEBUG = import.meta.env.DEV && import.meta.env.VITE_DEBUG_AI === 'true';
 const STORAGE_KEY = 'ikea_agent_conversations';
 const CURRENT_ID_KEY = 'ikea_agent_current_id';
 
@@ -1119,14 +1120,16 @@ function App() {
                             </div>
                         </button>
                         <div className="flex items-center gap-1">
-                            <button
-                                onClick={() => setDebugMode(prev => !prev)}
-                                className={`p-2 rounded-full transition-colors ${debugMode ? 'bg-[#F5F5F5]' : 'hover:bg-[#F5F5F5]'}`}
-                                title={debugMode ? "Hide AI debug" : "Show AI debug"}
-                                aria-pressed={debugMode}
-                            >
-                                <Bug className="w-5 h-5 text-[#111111]" />
-                            </button>
+                            {SHOW_AI_DEBUG && (
+                                <button
+                                    onClick={() => setDebugMode(prev => !prev)}
+                                    className={`p-2 rounded-full transition-colors ${debugMode ? 'bg-[#F5F5F5]' : 'hover:bg-[#F5F5F5]'}`}
+                                    title={debugMode ? "Hide AI debug" : "Show AI debug"}
+                                    aria-pressed={debugMode}
+                                >
+                                    <Bug className="w-5 h-5 text-[#111111]" />
+                                </button>
+                            )}
                             {/* Clear / New chat button */}
                             {messages.length > 0 && (
                                 <button
@@ -1169,7 +1172,7 @@ function App() {
                                     key={idx}
                                     message={msg}
                                     userAvatar={userAvatar}
-                                    debugMode={debugMode}
+                                    debugMode={SHOW_AI_DEBUG && debugMode}
                                     onUpdate={(newContent) => handleMessageUpdate(idx, newContent)}
                                     onCopy={(content) => navigator.clipboard.writeText(content)}
                                 />

@@ -1,7 +1,7 @@
 # IKEA Data Agent (Data Machi) 專屬數據助手
 
 ## 📌 專案介紹 (Project Overview)
-本專案為開發給「IKEA Data Team」使用的內部專屬 AI 助理系統——**Data Machi**。這是一個基於大型語言模型（LLM, 如 Gemini 2.5 Pro）結合 LangChain 工具生態圈打造的多智能體（Multi-Agent System）架構。它被賦予了嚴格的系統身份與邊界，專注於解決團隊內部的數據處理、專案進度追蹤以及知識庫檢索問題。系統同時包含方便使用者互動的 Web 前端介面設計與穩定提供服務的 Python 後端。
+本專案為開發給「IKEA Data Team」使用的內部專屬 AI 助理系統——**Data Machi**。這是一個基於大型語言模型（LLM，目前預設使用 Gemini 2.5 Flash）結合 LangChain 工具生態圈打造的多智能體（Multi-Agent System）架構。它被賦予了嚴格的系統身份與邊界，專注於解決團隊內部的數據處理、專案進度追蹤以及知識庫檢索問題。系統同時包含方便使用者互動的 Web 前端介面設計與穩定提供服務的 Python 後端。
 
 ## 🎯 核心開發目的 (Core Purpose)
 1. **專注業務範圍**：確保 AI 助理只協助回答 IKEA 內部的數據、Trello 專案進度、Confluence 文件以及團隊知識庫的問題。針對無關的閒聊（如天氣、食譜、通用百科等），將會進行阻擋並回覆標準答案，避免模型提供非業務範圍的資訊。
@@ -23,8 +23,8 @@
 ## 🚀 如何啟動專案 (How to Run)
 
 請確保你的電腦已安裝以下環境：
-- **Node.js** (建議 v18 以上版本)
-- **Python** (建議 3.9 以上版本)
+- **Node.js**：前端使用 Vite 7，需 `^20.19.0` 或 `>=22.12.0`
+- **Python**：建議 3.10 以上版本（3.9 已接近/進入多數套件的支援尾端）
 
 ### 1️⃣ 後端啟動方式 (Backend Startup)
 
@@ -65,7 +65,21 @@
    ```
 5. **GCP 服務帳號憑證配置 (Service Account JSON)**
    由於 `Analyst` Agent 需要存取 Google Sheets 等服務，請向團隊取得 Google Cloud 服務帳號憑證（`.json` 檔，例如：`cedar-unison-XXXX.json`），並將該檔案放置於 `backend/` 目錄下。系統啟動時將自動讀取該檔案進行身份驗證。
-6. **啟動伺服器**
+6. **PDF OCR / 視覺解析依賴（選用，但建議安裝）**
+   如果要處理掃描型 PDF、圖片頁、截圖或圖表頁，除了 Python 套件外，系統環境也需要 OCR / PDF 圖片轉換工具。
+   macOS 可用：
+   ```bash
+   brew install tesseract poppler
+   ```
+   若暫時不需要 PDF 視覺摘要，可在 `backend/.env` 關閉：
+   ```env
+   PDF_VISUAL_CONTEXT=false
+   ```
+   也可以限制視覺解析頁數，避免大型 PDF 處理太久：
+   ```env
+   PDF_VISUAL_PAGE_LIMIT=30
+   ```
+7. **啟動伺服器**
    ```bash
    python main.py
    ```
@@ -89,6 +103,55 @@
    ```
    啟動後，終端機會顯示類似 `http://localhost:5173` 的本地網址，點擊即可開啟網頁。
 
+4. **指定後端 API 位址（選用）**
+   若後端不是跑在預設的 `http://localhost:8000`，請在啟動前指定 `VITE_API_URL`：
+   ```bash
+   VITE_API_URL=http://127.0.0.1:8001 npm run dev
+   ```
+   或在 `frontend/.env.local` 建立：
+   ```env
+   VITE_API_URL=http://127.0.0.1:8001
+   ```
+
+### 3️⃣ AI Debug 模式（僅開發用）
+
+前端內建一個 AI Debug 面板，用來檢查每一輪回覆的上下文判斷、工具調用、耗時與 token metadata。這個功能只供開發與除錯使用，正式版不會顯示。
+
+臨時開啟一次：
+```bash
+cd frontend
+VITE_DEBUG_AI=true npm run dev
+```
+
+若同時要指定後端 API：
+```bash
+cd frontend
+VITE_DEBUG_AI=true VITE_API_URL=http://127.0.0.1:8001 npm run dev
+```
+
+也可以在 `frontend/.env.local` 固定開啟：
+```env
+VITE_DEBUG_AI=true
+VITE_API_URL=http://127.0.0.1:8000
+```
+
+注意：Debug 按鈕的顯示條件是「Vite 開發模式」且 `VITE_DEBUG_AI=true`。production build 即使設定 `VITE_DEBUG_AI=true`，也不會顯示 Debug 按鈕。
+
+### 4️⃣ 驗證指令（建議在提交前執行）
+
+後端語法與上下文路由 smoke test：
+```bash
+python -m py_compile backend/agent_logic.py backend/agents/coordinator.py backend/main.py backend/conversation_store.py backend/tests/context_routing_smoke.py
+GOOGLE_API_KEY=dummy python backend/tests/context_routing_smoke.py
+```
+
+前端 lint 與 production build：
+```bash
+cd frontend
+npm run lint
+npm run build
+```
+
 ---
 
 ## ☁️ 雲端部署指南 (Cloud Deployment)
@@ -110,6 +173,7 @@
 3. 在 Environment Variables 區塊，增加一個變數：
    - Name: `VITE_API_URL`
    - Value: `你在 Render 拿到的後端網址`
+   - 不要在正式環境開啟或依賴 `VITE_DEBUG_AI`；Debug UI 只應用於本機開發。
 4. 點擊 **Deploy**，不用幾分鐘你的前端就會上線，任何人只需開啟該網址即可無縫使用完整的 AI 系統。
 
 ---
@@ -117,3 +181,7 @@
 ## 💡 注意事項
 * 每次要運行後端，都必須進入 `backend` 目錄並確認虛擬環境已經 `source .venv/bin/activate` 啟動。
 * 預設情況下，前端將向 `http://localhost:8000` 或後端配置之 API 埠號發送請求，若有更改埠號請檢查全域網址設定。
+* 前端聊天目前會優先使用 `/chat/stream` 接收後端進度事件；若後端服務沒有啟動，畫面會顯示連線失敗提示。
+* `frontend/.env.local` 只放本機開發設定，不要提交真實 API key 或正式環境敏感資訊。
+* 後端會在本機產生對話與 PDF 索引快取，例如 `backend/.conversation_store/`、`backend/faiss_index/`、`backend/document_chunks.json`；部署或清理環境時要留意這些資料是否需要保留。
+* `render.yaml` 目前仍指定 Render 使用 Python 3.9.6；正式部署前建議評估更新到 Python 3.10+，避免 Google / LangChain 相關套件之後停止支援。

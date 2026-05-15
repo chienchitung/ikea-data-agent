@@ -1,16 +1,67 @@
-# React + Vite
+# Data Machi Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React + Vite frontend for the IKEA Data Agent chat UI.
 
-Currently, two official plugins are available:
+## Local Development
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+Requirements:
 
-## React Compiler
+- Node.js `^20.19.0` or `>=22.12.0` because this project uses Vite 7.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Install dependencies:
 
-## Expanding the ESLint configuration
+```bash
+npm install
+```
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+Start the dev server:
+
+```bash
+npm run dev
+```
+
+By default, the frontend calls `http://localhost:8000`.
+
+To point the frontend at another backend:
+
+```bash
+VITE_API_URL=http://127.0.0.1:8001 npm run dev
+```
+
+You can also create `frontend/.env.local`:
+
+```env
+VITE_API_URL=http://127.0.0.1:8000
+```
+
+## AI Debug Mode
+
+The AI Debug button is for local development only. It shows metadata such as turn-context routing, tool usage, elapsed time, and token usage when available.
+
+Enable it for one dev session:
+
+```bash
+VITE_DEBUG_AI=true npm run dev
+```
+
+Enable it together with a custom backend:
+
+```bash
+VITE_DEBUG_AI=true VITE_API_URL=http://127.0.0.1:8001 npm run dev
+```
+
+Or add this to `frontend/.env.local`:
+
+```env
+VITE_DEBUG_AI=true
+VITE_API_URL=http://127.0.0.1:8000
+```
+
+Production builds never show the Debug button because the UI checks both `import.meta.env.DEV` and `VITE_DEBUG_AI=true`.
+
+## Verification
+
+```bash
+npm run lint
+npm run build
+```
