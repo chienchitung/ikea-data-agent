@@ -175,8 +175,8 @@ LangChain / LangGraph 官方多 Agent 指南也提醒：不是每個複雜任務
    * **出處**：[LangChain Multi-agent](https://docs.langchain.com/oss/python/langchain/multi-agent)
 
 10. **OpenAI Swarm GitHub**：
-   * **論點**：Swarm 是用於探索輕量 multi-agent orchestration 的教育型框架，適合理解 agents / handoffs 概念，但不應直接當成 production-ready 架構。
-   * **出處**：[OpenAI Swarm](https://github.com/openai/swarm)
+    * **論點**：Swarm 是用於探索輕量 multi-agent orchestration 的教育型框架，適合理解 agents / handoffs 概念，但不應直接當成 production-ready 架構。
+    * **出處**：[OpenAI Swarm](https://github.com/openai/swarm)
 
 ---
 
