@@ -54,6 +54,54 @@
 
 ---
 
+## 3.5 2026 官方文件補充：LangGraph 不只是「畫流程圖」
+
+對照 LangGraph 官方文件，目前（2026）它被定位為一個**低階的 Agent Orchestration Runtime**，重點不只是把流程畫成節點與邊，而是讓長時間、可恢復、可觀測的 Agent 工作流可以進入 production。
+
+### 1. LangGraph 與 LangChain 的分工更清楚了
+官方目前把幾個層次拆得更明確：
+* **LangChain**：偏高階 agent framework，提供模型、工具、agent loop 等抽象。
+* **LangGraph**：偏低階 orchestration runtime，專注於 durable execution、streaming、human-in-the-loop、persistence。
+* **LangSmith**：負責 tracing、evaluation、debugging、deployment/observability。
+
+因此，LangGraph 不一定只用於 Multi-Agent；它也適合任何「長時間、具狀態、需要可恢復」的單一 Agent 或 workflow。反過來說，如果只是少數工具與簡單問答，單一 agent 加上良好的 prompt / middleware 可能已經足夠，不必過早拆成多 Agent。
+
+### 2. Persistence / Checkpoint 是 production 關鍵
+LangGraph 的 persistence layer 會在每一步 graph execution 儲存 state checkpoint，並用 `thread_id` 管理同一條對話或工作流。這讓系統可以做到：
+* **多輪對話記憶**：同一個 `thread_id` 可以接續前文。
+* **Human-in-the-loop**：流程暫停後，人類可以檢查 state，再恢復。
+* **Time travel debugging**：回看或重播過去某個 graph step。
+* **Fault tolerance**：某個 node 失敗時，可從上一個成功 checkpoint 恢復，而不是整段重跑。
+
+本機 demo 可以用 in-memory checkpointer；正式環境建議使用 database-backed checkpointer，例如 Postgres。
+
+### 3. Human-in-the-loop 已從「按鈕」進化成 interrupt/resume
+新的文件更強調 `interrupt()` 與 `Command(resume=...)` 這種模式：  
+當 node 裡呼叫 `interrupt()`，LangGraph 會保存目前 state，將一段 JSON-serializable payload 回傳給外部 UI；等人類批准、修改或補資料後，再用 `Command(resume=...)` 恢復同一條 thread。
+
+這和單純在畫面最後放一個「Approve」按鈕不同。真正可靠的 human-in-the-loop 應該放在高風險工具之前，例如：
+* 寄信、刪除資料、修改 Trello/Confluence 前。
+* 查詢成本很高、會觸發大量 API call 前。
+* Agent 需要人類補充缺失條件時。
+
+### 4. Memory 要分成短期與長期
+官方文件把 memory 拆成兩種：
+* **Short-term memory**：存在 thread state / checkpoint 裡，用於同一段對話的上下文。
+* **Long-term memory**：存在跨 session 的 store，用於使用者偏好、專案背景、長期事實。
+
+Data Machi 目前已經有自己的 `conversation_store` 與 memory summary，這是正確方向；若未來要更靠近 LangGraph 原生能力，可以考慮把這層遷移到 LangGraph checkpointer / store，讓 resume、debug、HITL 更一致。
+
+### 5. Multi-Agent 的設計要避免「為拆而拆」
+LangChain / LangGraph 官方多 Agent 指南也提醒：不是每個複雜任務都需要 Multi-Agent。拆分的主要理由通常是：
+* 工具太多，單一 agent 容易選錯工具。
+* 上下文太大，需要隔離不同 domain 的資訊。
+* 任務需要明確的階段、交接、審核。
+* 不同子任務需要不同權限、模型或 prompt。
+
+如果只是同一個 domain 裡的幾個工具，單一 agent + 明確 router / middleware 可能更穩。這點對 Data Machi 很重要：Trello、Confluence、Document、Analyst 是合理分工；但在每個 domain 內部，不一定要再繼續細拆成更多 agents。
+
+---
+
 ## 4. 結語：為什麼 Data Machi 專案要擁抱 LangGraph？
 
 在你的 IKEA Data Agent 專案中，你設計了多個專業的工具（Trello, Confluence, Document, Analyst）以及非常嚴格的「轉派策略 (Cross-Check)」與「查無結果協議 (Empty Result Protocol)」。
@@ -106,6 +154,30 @@
    * **論點**：證明了「賦予模型思考自己錯在哪，並且改變下一次檢索關鍵字（這正是 LangGraph 在做的事情）」遠比「單次丟資料進去 (傳統 RAG)」的成功率高出非常多。
    * **出處**：Yao, S. et al. (2022). *"ReAct: Synergizing Reasoning and Acting in Language Models"*. arXiv:2210.03629.
 
+5. **LangGraph 官方文件: Overview**：
+   * **論點**：LangGraph 是低階 orchestration framework / runtime，核心能力包含 durable execution、streaming、human-in-the-loop、memory、debugging 與 production deployment；也可不依賴 LangChain 單獨使用。
+   * **出處**：[LangGraph Overview](https://docs.langchain.com/oss/python/langgraph/overview)
+
+6. **LangGraph 官方文件: Persistence / Checkpointing**：
+   * **論點**：LangGraph 透過 checkpointer 在每一步保存 graph state，支援 threads、conversation memory、time travel debugging、fault tolerance 與 human-in-the-loop。正式環境建議使用資料庫型 checkpointer。
+   * **出處**：[LangGraph Persistence](https://docs.langchain.com/oss/python/langgraph/persistence)
+
+7. **LangGraph 官方文件: Interrupts / Human-in-the-loop**：
+   * **論點**：`interrupt()` 可在 node 內動態暫停工作流，並透過 `Command(resume=...)` 恢復；這比單純在 UI 結尾放 Approve 按鈕更適合高風險工具與長時間流程。
+   * **出處**：[LangGraph Interrupts](https://docs.langchain.com/oss/python/langgraph/interrupts)
+
+8. **LangGraph 官方文件: Memory**：
+   * **論點**：LangGraph memory 分為 thread-level short-term memory 與跨 session 的 long-term memory/store，分別服務於多輪對話上下文與長期個人化。
+   * **出處**：[LangGraph Memory](https://docs.langchain.com/oss/python/langgraph/add-memory)
+
+9. **LangChain 官方文件: Multi-agent Patterns**：
+   * **論點**：Multi-agent 系統適合工具過多、上下文需要隔離、任務需分工或審核的情境；但官方也提醒不是每個複雜任務都需要 Multi-Agent，單一 agent 加上合適工具與狀態邏輯有時更簡單穩定。
+   * **出處**：[LangChain Multi-agent](https://docs.langchain.com/oss/python/langchain/multi-agent)
+
+10. **OpenAI Swarm GitHub**：
+   * **論點**：Swarm 是用於探索輕量 multi-agent orchestration 的教育型框架，適合理解 agents / handoffs 概念，但不應直接當成 production-ready 架構。
+   * **出處**：[OpenAI Swarm](https://github.com/openai/swarm)
+
 ---
 
 ## 7. 展望未來：Multi-Agent 的下一步發展趨勢
@@ -122,12 +194,12 @@
 
 ### 3. 液態與動態生成的團隊 (Swarm Architectures)
 * **現狀**：在 LangGraph 中，開發者必須在寫程式時預先定義好有幾個 Agent、誰負責什麼（靜態圖：Trello 節點 ➔ Document 節點）。
-* **未來**：如同 OpenAI 不久前開源的 `Swarm` 概念，未來的系統會變成「液態的」。遇到極度複雜的任務時，Coordinator 會**在運行中動態寫出並呼叫（Spawn）新的下屬 Agent** 來幫忙，任務結束後再將它們銷毀。這是一種無固定形狀（Graph-less）的動態協作網路。
+* **未來**：如同 OpenAI 曾開源的 `Swarm` 教學型概念，未來的系統會變成「液態的」。遇到極度複雜的任務時，Coordinator 可能會**在運行中動態建立並呼叫新的下屬 Agent** 來幫忙，任務結束後再將它們銷毀。需要注意的是，Swarm 本身定位偏教育與原型探索，不應直接視為 production 架構保證；正式企業系統仍需要權限控管、觀測性、審核點與持久化狀態。
 
 ### 4. 異構模型群 (Hybrid / Heterogeneous Model Swarms)
 * **現狀**：目前整個專案可能都依賴同一個模型（例如 Gemini 2.5 Pro）。
 * **未來**：針對不同的 Agent 節點，指派「最適合的」模型。
-  * `Coordinator` 使用最大最聰明的模型（如 GPT-4o 或 Claude-3.5-Sonnet）來做決策。
+  * `Coordinator` 使用能力較強、推理與工具選擇更穩定的模型來做決策。
   * `Analyst_Agent` 使用專精爬蟲或數理的小模型。
   * `Document_Agent` 甚至可以直接跑在本地的微型模型（如 Llama-3-8B），不僅可以大幅降低 API 成本，還能提高特定領域的反應速度。
 
@@ -156,7 +228,7 @@
 * **重點是**：它是為了**分工與降噪**而生的架構，專門對付那些「單一個 Agent 無法兼顧」的極度複雜任務。
 
 ### 兩者的關係：如何互相作用？
-用一張圖來理解：**Multi-Agent 是實現強大 Agentic AI 的其中一條必經之路。**
+用一張圖來理解：**Multi-Agent 是實現強大 Agentic AI 的重要路徑之一，但不是唯一道路。**
 
 根據著名 AI 領袖吳恩達 (Andrew Ng) 等人在 2024–2026 年所確立的共識，實現 Agentic Workflows 主要有四大設計模式 (Design Patterns)：
 1. **Tool Use**（讓 AI 使用網路或 API，如你的 Confluence 搜尋）。
@@ -171,11 +243,11 @@
 
 1. **從 API 操作進化到 Agentic RPA (具身電腦操作)**：
    早期的 Agent (如 2024 年) 只能依賴工程師寫好的 API 溝通；到了 2026 年，藉由像 Anthropic 的 Computer Use，Agentic AI 可以直接控制使用者的 Windows/macOS 畫面，像是人類一樣打開瀏覽器、填寫表單、點擊下載。
-   *(💡 業界實例：最知名的開源專案如 **OpenClaw**，標榜「真正能做事的 AI」，能直接串接 WhatsApp/Telegram，自動幫你處理信件、訂機票與管理行事曆，是個人級 Agentic AI 的代表作。)*
+   *(💡 業界案例：例如 OpenClaw 這類自架式個人 Agent 平台，主打把 Agent 接到 WhatsApp/Telegram/Discord 等日常入口。不過此類工具因為可能操作本機檔案、帳號、訊息與外部服務，企業使用前必須先評估安全邊界、權限隔離與審核機制。)*
 
 2. **終端機與程式碼級的自主數位員工 (CLI Agents)**：
    我們正在從「AI 給建議，人類打字」的 Copilot 時代，跨入「AI 自行承攬專案、直接改 Code」的 Autonomous Worker 時代。
-   *(💡 業界實例：Anthropic 官方推出的 **Claude Code**。它不只是一個聊天視窗，而是直接活在工程師的 Terminal (終端機) 裡面。它具備極強的 Agentic 能力：懂得自己看整個專案的 Codebase、自己下指令跑測試、自己修改檔案並 Commit。)*
+   *(💡 業界實例：Claude Code、Codex CLI 等 coding agents。它們不只是一個聊天視窗，而是直接活在工程師的 Terminal / IDE / repo 裡面，能讀 codebase、下指令跑測試、修改檔案，並在人工審核後交付 patch 或 commit。)*
 
 3. **企業級 Agent OS (智能體作業系統)**：
    未來的企業不再需要手動起 uvicorn 或設定 Docker 來養自己的 Agent，而是會出現類似「Agent OS」的平台，開發者只需宣告哪些職能的 Agent 存在，系統會自動處理它們的長期記憶、權限控管、甚至跨企業不同 Agent 的對接與通訊協議。
