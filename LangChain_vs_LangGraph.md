@@ -203,7 +203,7 @@ LangChain / LangGraph 官方多 Agent 指南也提醒：不是每個複雜任務
   * `Analyst_Agent` 使用專精爬蟲或數理的小模型。
   * `Document_Agent` 甚至可以直接跑在本地的微型模型（如 Llama-3-8B），不僅可以大幅降低 API 成本，還能提高特定領域的反應速度。
 
-> **總結**：從 AgentExecutor 走向 LangGraph，我們解決了**「控制力與穩定度」**的問題；而未來的發展，則是朝向**「無限延長記憶、打破 API 邊界操作實體軟體、以及動態無人團隊」**的方向邁進，AI 將真正成為數位世界中的數位員工 (Digital Co-workers)。
+> **總結**：從 AgentExecutor 走向 LangGraph，我們解決了 **「控制力與穩定度」** 的問題；而未來的發展，則是朝向 **「無限延長記憶、打破 API 邊界操作實體軟體、以及動態無人團隊」** 的方向邁進，AI 將真正成為數位世界中的數位員工 (Digital Co-workers)。
 
 ---
 
