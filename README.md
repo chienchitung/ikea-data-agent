@@ -22,98 +22,235 @@
 
 ## 🚀 如何啟動專案 (How to Run)
 
-請確保你的電腦已安裝以下環境：
+本專案需要同時啟動 **後端 FastAPI** 與 **前端 Vite**。建議開兩個終端機視窗：
+
+- 終端機 A：啟動後端，預設網址為 `http://localhost:8000`
+- 終端機 B：啟動前端，預設網址通常為 `http://localhost:5173`
+
+請先確認本機已安裝：
+
 - **Node.js**：前端使用 Vite 7，需 `^20.19.0` 或 `>=22.12.0`
-- **Python**：建議 3.10 以上版本（3.9 已接近/進入多數套件的支援尾端）
+- **Python**：建議使用 `3.10` 以上，推薦 `3.11` 或 `3.12`
+- **Homebrew**：macOS 若要安裝 OCR / PDF 工具會用到
 
-### 1️⃣ 後端啟動方式 (Backend Startup)
+> 不建議使用 macOS 內建的 Python 3.9.6。Google 套件已提醒 Python 3.9 逐步停止支援，而且安裝 `numpy` 等套件時比較容易遇到編譯錯誤。
 
-後端主要負責處理 AI 邏輯、資料檢索與提供 API。
+### 1️⃣ 後端啟動方式 (Backend)
 
-1. **進入後端資料夾**
-   ```bash
-   cd backend
-   ```
-2. **建立並啟動虛擬環境 (Virtual Environment)**
-   ```bash
-   python -m venv .venv
-   source .venv/bin/activate  # macOS / Linux
-   # Windows: .venv\Scripts\activate
-   ```
-3. **安裝依賴套件 (Install Requirements)**
-   ```bash
-   pip install -r requirements.txt
-   ```
-4. **環境變數設定 (.env)**
-   請確保在 `backend` 目錄下準備好 `.env` 檔案，需包含的主要金鑰如下：
-   ```env
-   # Google Gemini API
-   GOOGLE_API_KEY=your_google_api_key
+後端負責 AI 邏輯、資料檢索、文件處理，以及提供前端呼叫的 API。
 
-   # Trello API 設定
-   TRELLO_BOARD_ID=your_trello_board_id
-   TRELLO_API_KEY=your_trello_api_key
-   TRELLO_TOKEN=your_trello_token
+#### 第一次啟動
 
-   # Confluence API 設定
-   CONFLUENCE_URL=your_confluence_url
-   CONFLUENCE_USERNAME=your_confluence_username
-   CONFLUENCE_API_TOKEN=your_confluence_api_token
-   
-   # Google Sheet 設定
-   GOOGLE_SHEET_KEY=your_sheet_key_id
-   ```
-5. **GCP 服務帳號憑證配置 (Service Account JSON)**
-   由於 `Analyst` Agent 需要存取 Google Sheets 等服務，請向團隊取得 Google Cloud 服務帳號憑證（`.json` 檔，例如：`cedar-unison-XXXX.json`），並將該檔案放置於 `backend/` 目錄下。系統啟動時將自動讀取該檔案進行身份驗證。
-6. **PDF OCR / 視覺解析依賴（選用，但建議安裝）**
-   如果要處理掃描型 PDF、圖片頁、截圖或圖表頁，除了 Python 套件外，系統環境也需要 OCR / PDF 圖片轉換工具。
-   macOS 可用：
-   ```bash
-   brew install tesseract poppler
-   ```
-   若暫時不需要 PDF 視覺摘要，可在 `backend/.env` 關閉：
-   ```env
-   PDF_VISUAL_CONTEXT=false
-   ```
-   也可以限制視覺解析頁數，避免大型 PDF 處理太久：
-   ```env
-   PDF_VISUAL_PAGE_LIMIT=30
-   ```
-7. **啟動伺服器**
-   ```bash
-   python main.py
-   ```
-   伺服器預設會透過 Uvicorn 在 `http://0.0.0.0:8000` 運行。
+請在專案根目錄執行：
 
-### 2️⃣ 前端啟動方式 (Frontend Startup)
+```bash
+cd backend
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip setuptools wheel
+pip install -r requirements.txt
+```
 
-前端提供了與 Data Machi 互動的聊天者介面。
+如果你的電腦還沒有 `python3.11`，macOS 可先安裝：
 
-1. **進入前端資料夾**（請重新開一個新的終端機分頁/視窗）
-   ```bash
-   cd frontend
-   ```
-2. **安裝 Node 套件 (Install Node Modules)**
-   ```bash
-   npm install
-   ```
-3. **啟動開發伺服器 (Start Dev Server)**
-   ```bash
-   npm run dev
-   ```
-   啟動後，終端機會顯示類似 `http://localhost:5173` 的本地網址，點擊即可開啟網頁。
+```bash
+brew install python@3.11
+```
 
-4. **指定後端 API 位址（選用）**
-   若後端不是跑在預設的 `http://localhost:8000`，請在啟動前指定 `VITE_API_URL`：
-   ```bash
-   VITE_API_URL=http://127.0.0.1:8001 npm run dev
-   ```
-   或在 `frontend/.env.local` 建立：
-   ```env
-   VITE_API_URL=http://127.0.0.1:8001
-   ```
+安裝完成後，確認 `backend/.env` 已存在並填好必要設定，再啟動後端：
 
-### 3️⃣ AI Debug 模式（僅開發用）
+```bash
+python main.py
+```
+
+啟動成功時，終端機會看到 Uvicorn 服務啟動訊息。後端預設會跑在：
+
+```text
+http://localhost:8000
+```
+
+#### 之後再次啟動
+
+如果已經建立過 `.venv` 並安裝過套件，下次只需要：
+
+```bash
+cd backend
+source .venv/bin/activate
+python main.py
+```
+
+#### 後端環境變數
+
+請在 `backend/.env` 準備以下設定。實際值請向團隊或服務管理者取得：
+
+```env
+# Google Gemini API
+GOOGLE_API_KEY=your_google_api_key
+
+# Trello API 設定
+TRELLO_BOARD_ID=your_trello_board_id
+TRELLO_API_KEY=your_trello_api_key
+TRELLO_TOKEN=your_trello_token
+
+# Confluence API 設定
+CONFLUENCE_URL=your_confluence_url
+CONFLUENCE_USERNAME=your_confluence_username
+CONFLUENCE_API_TOKEN=your_confluence_api_token
+
+# Google Sheet 設定
+GOOGLE_SHEET_KEY=your_sheet_key_id
+```
+
+如果要使用 Google Sheets / Analyst Agent，還需要把 Google Cloud service account 的 `.json` 憑證放在 `backend/` 目錄下，例如：
+
+```text
+backend/cedar-unison-XXXX.json
+```
+
+#### PDF OCR / 視覺解析依賴
+
+如果要處理掃描型 PDF、圖片頁、截圖或圖表頁，除了 Python 套件外，macOS 還需要安裝：
+
+```bash
+brew install tesseract poppler
+```
+
+如果暫時不需要 PDF 視覺摘要，可在 `backend/.env` 關閉：
+
+```env
+PDF_VISUAL_CONTEXT=false
+```
+
+也可以限制視覺解析頁數，避免大型 PDF 處理太久：
+
+```env
+PDF_VISUAL_PAGE_LIMIT=30
+```
+
+### 2️⃣ 前端啟動方式 (Frontend)
+
+前端是 Data Machi 的聊天介面，會呼叫後端 API。請開啟另一個終端機視窗，保持後端繼續執行。
+
+#### 第一次啟動
+
+請在專案根目錄執行：
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+啟動後，Vite 會顯示本機網址，通常是：
+
+```text
+http://localhost:5173
+```
+
+打開這個網址即可使用前端畫面。
+
+#### 之後再次啟動
+
+如果已經安裝過 Node 套件，下次只需要：
+
+```bash
+cd frontend
+npm run dev
+```
+
+#### 指定後端 API 位址
+
+前端預設會呼叫：
+
+```text
+http://localhost:8000
+```
+
+如果後端不是跑在 `8000`，例如跑在 `8001`，可以用以下方式啟動前端：
+
+```bash
+VITE_API_URL=http://127.0.0.1:8001 npm run dev
+```
+
+或建立 `frontend/.env.local`：
+
+```env
+VITE_API_URL=http://127.0.0.1:8001
+```
+
+如果後端使用預設 `8000`，也可以寫成：
+
+```env
+VITE_API_URL=http://127.0.0.1:8000
+```
+
+### 3️⃣ 快速啟動指令總覽
+
+終端機 A：後端
+
+```bash
+cd backend
+source .venv/bin/activate
+python main.py
+```
+
+終端機 B：前端
+
+```bash
+cd frontend
+npm run dev
+```
+
+瀏覽器開啟：
+
+```text
+http://localhost:5173
+```
+
+### 4️⃣ 常見安裝問題
+
+#### `numpy` metadata-generation-failed
+
+如果安裝套件時看到類似：
+
+```text
+error: metadata-generation-failed
+Encountered error while generating package metadata.
+numpy
+```
+
+通常代表目前 Python 版本或編譯環境不適合，pip 嘗試從原始碼編譯 `numpy` 但失敗。建議改用 Python 3.11 重建虛擬環境：
+
+```bash
+cd backend
+deactivate 2>/dev/null
+rm -rf .venv
+brew install python@3.11
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip setuptools wheel
+pip install -r requirements.txt
+```
+
+#### pip 版本太舊
+
+如果看到：
+
+```text
+WARNING: You are using pip version ...
+```
+
+可在已啟動虛擬環境後升級：
+
+```bash
+python -m pip install --upgrade pip
+```
+
+#### Python 3.9 / urllib3 / OpenSSL 警告
+
+如果看到 Google 套件提示 Python 3.9 不再支援，或 `urllib3 NotOpenSSLWarning`，通常不是專案程式碼錯誤，但建議改用 Homebrew 或 pyenv 安裝的 Python 3.11，並重新建立 `.venv`。
+
+### 5️⃣ AI Debug 模式（僅開發用）
 
 前端內建一個 AI Debug 面板，用來檢查每一輪回覆的上下文判斷、工具調用、耗時與 token metadata。這個功能只供開發與除錯使用，正式版不會顯示。
 
@@ -137,7 +274,7 @@ VITE_API_URL=http://127.0.0.1:8000
 
 注意：Debug 按鈕的顯示條件是「Vite 開發模式」且 `VITE_DEBUG_AI=true`。production build 即使設定 `VITE_DEBUG_AI=true`，也不會顯示 Debug 按鈕。
 
-### 4️⃣ 驗證指令（建議在提交前執行）
+### 6️⃣ 驗證指令（建議在提交前執行）
 
 後端語法與上下文路由 smoke test：
 ```bash

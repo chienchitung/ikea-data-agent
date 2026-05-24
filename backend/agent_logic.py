@@ -296,7 +296,13 @@ async def _answer_from_document_base(message: str) -> Optional[str]:
     else:
         document_context = await search_document_base.ainvoke({"query": clean_message})
 
-    if "知識庫尚未建立" in document_context or "系統警告" in document_context:
+    lowered_document_context = str(document_context or "").lower()
+    if (
+        "知識庫尚未建立" in document_context
+        or "系統警告" in document_context
+        or "knowledge base is not ready" in lowered_document_context
+        or "system warning" in lowered_document_context
+    ):
         return document_context
 
     response = await llm.ainvoke([
@@ -330,7 +336,7 @@ async def process_chat_detailed(
     """
     try:
         started_at = time.perf_counter()
-        await _emit_progress(progress_callback, "understanding", "正在理解問題")
+        await _emit_progress(progress_callback, "understanding", "Understanding your question")
         document_answer = await _answer_from_document_base(message)
         if document_answer:
             elapsed_ms = round((time.perf_counter() - started_at) * 1000)
@@ -354,13 +360,13 @@ async def process_chat_detailed(
 
         if not turn_context:
             history_text = _format_history_for_router(conversation_history)
-            await _emit_progress(progress_callback, "understanding", "正在判斷脈絡")
+            await _emit_progress(progress_callback, "understanding", "Checking context")
             turn_context = await classify_turn_context(
                 clean_message,
                 history_text,
                 has_prior_tool_context=bool(stored_tool_context),
             )
-        await _emit_progress(progress_callback, "thinking", "正在整合上下文")
+        await _emit_progress(progress_callback, "thinking", "Combining context")
         memory_messages, recent_history = _build_conversation_memory(conversation_history, stored_memory_summary)
         turn_context_messages = _build_turn_context_message(turn_context)
         prior_tool_context_messages = _build_prior_tool_context(stored_tool_context, turn_context)
@@ -403,7 +409,7 @@ async def process_chat_detailed(
 
         confluence_links = _collect_confluence_links(response_state["messages"], stored_tool_context)
         agent_response = _ensure_confluence_source_links(agent_response, confluence_links)
-        await _emit_progress(progress_callback, "composing", "正在完成回覆")
+        await _emit_progress(progress_callback, "composing", "Finalizing the response")
 
         save_messages = (
             list(conversation_history)

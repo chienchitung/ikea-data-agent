@@ -166,9 +166,9 @@ def list_worksheets() -> str:
         gc = get_gspread_client()
         spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
         worksheet_titles = [ws.title for ws in spreadsheet.worksheets()]
-        return f"此 Google Sheet 中可用的工作表有：{', '.join(worksheet_titles)}"
+        return f"Available worksheets in this Google Sheet: {', '.join(worksheet_titles)}"
     except Exception as e:
-        return f"列出工作表時發生錯誤: {str(e)}"
+        return f"Failed to list worksheets: {str(e)}"
 
 @tool
 def get_worksheet_structure(worksheet_name: str) -> str:
@@ -188,28 +188,28 @@ def get_worksheet_structure(worksheet_name: str) -> str:
         _cached_data[worksheet_name] = all_records  # 緩存數據
         
         if not all_records:
-            return f"工作表 '{worksheet_name}' 是空的，沒有資料。"
+            return f"Worksheet '{worksheet_name}' is empty."
         
         # 獲取欄位名稱
         columns = list(all_records[0].keys())
         row_count = len(all_records)
         
         # 顯示每個欄位的一些統計信息
-        result = f"工作表 '{worksheet_name}' 的結構信息：\n"
-        result += f"- 總資料行數: {row_count}\n"
-        result += f"- 欄位列表 ({len(columns)} 個): {', '.join(columns)}\n"
-        result += f"\n前 3 筆資料範例：\n"
+        result = f"Worksheet '{worksheet_name}' structure:\n"
+        result += f"- Total rows: {row_count}\n"
+        result += f"- Columns ({len(columns)}): {', '.join(columns)}\n"
+        result += f"\nFirst 3 sample rows:\n"
         
         for i, record in enumerate(all_records[:3], 1):
-            result += f"\n第 {i} 筆:\n"
+            result += f"\nRow {i}:\n"
             for key, value in record.items():
                 result += f"  - {key}: {value}\n"
         
         return result
     except gspread.exceptions.WorksheetNotFound:
-        return f"找不到名為 '{worksheet_name}' 的工作表。請使用 list_worksheets 工具查看可用的工作表。"
+        return f"Worksheet '{worksheet_name}' was not found. Use list_worksheets to see available worksheets."
     except Exception as e:
-        return f"讀取工作表結構時發生錯誤: {str(e)}"
+        return f"Failed to read worksheet structure: {str(e)}"
 
 def _drop_empty_columns(df: pd.DataFrame) -> pd.DataFrame:
     """移除完全空白或全為空字串的欄位"""
@@ -455,10 +455,10 @@ def _summary_columns(query: str, stat_cols: list[str], chart_col: Optional[str])
 
 def _format_counts_line(col: str, counts: pd.Series, limit: int = 5) -> str:
     top_items = list(counts.head(limit).items())
-    line = f"- **{col}**：" + "、".join(f"{v} {c}筆" for v, c in top_items)
+    line = f"- **{col}**: " + ", ".join(f"{v} {c} rows" for v, c in top_items)
     remaining = len(counts) - len(top_items)
     if remaining > 0:
-        line += f"（另有 {remaining} 類）"
+        line += f" ({remaining} more categories)"
     return line + "\n"
 
 
@@ -473,7 +473,7 @@ def _chart_type(query: str) -> str:
 
 def _build_chart_block(title: str, labels: list[str], values: list[int], chart_type: str = 'bar', is_sequential: bool = False) -> str:
     data = [
-        {"label": str(label) if str(label).strip() else "(空白)", "value": int(value)}
+        {"label": str(label) if str(label).strip() else "(Blank)", "value": int(value)}
         for label, value in zip(labels, values)
     ]
     chart_spec = {
@@ -516,14 +516,14 @@ def query_worksheet_data(worksheet_name: str, query_description: str) -> str:
             all_records = _cached_data[worksheet_name]
 
         if not all_records:
-            return f"工作表 '{worksheet_name}' 中沒有資料。"
+            return f"Worksheet '{worksheet_name}' has no data."
 
         df = pd.DataFrame(all_records)
         df = _drop_empty_columns(df)
         total_rows = len(df)
         query_lower = query_description.lower()
 
-        result = f"工作表：{worksheet_name}　總筆數：{total_rows}\n\n"
+        result = f"Worksheet: {worksheet_name} | Total rows: {total_rows}\n\n"
 
         # ── Step 1：偵測日期欄位 ──────────────────────────────
         date_cols = _detect_date_columns(df)
@@ -537,9 +537,9 @@ def query_worksheet_data(worksheet_name: str, query_description: str) -> str:
             if ref_col:
                 mask = (df[ref_col] >= date_start) & (df[ref_col] <= date_end)
                 df = df[mask]
-                result += f"📅 日期篩選：{date_start.strftime('%Y-%m-%d')} ～ {date_end.strftime('%Y-%m-%d')}（{ref_col}），共 {len(df)} 筆\n\n"
+                result += f"📅 Date filter: {date_start.strftime('%Y-%m-%d')} to {date_end.strftime('%Y-%m-%d')} ({ref_col}), {len(df)} rows\n\n"
                 if df.empty:
-                    return result + "該日期區間內無資料。"
+                    return result + "No data in this date range."
 
         # ── Step 3：依狀態篩選 ────────────────────────────────
         status_col = _resolve_column(df, 'Status')
@@ -555,9 +555,9 @@ def query_worksheet_data(worksheet_name: str, query_description: str) -> str:
 
         if status_filter and status_col:
             df = df[df[status_col].str.contains(status_filter, case=False, na=False)]
-            result += f"🔍 狀態篩選：{status_filter}，共 {len(df)} 筆\n\n"
+            result += f"🔍 Status filter: {status_filter}, {len(df)} rows\n\n"
             if df.empty:
-                return result + f"沒有狀態為「{status_filter}」的資料。"
+                return result + f"No rows have status \"{status_filter}\"."
 
         # ── Step 4：依 Ticket ID 搜尋 ────────────────────────
         ticket_pattern = r'(REQ\d+)'
@@ -570,9 +570,9 @@ def query_worksheet_data(worksheet_name: str, query_description: str) -> str:
                 for m in masks[1:]:
                     combined_mask = combined_mask | m
                 df = df[combined_mask]
-                result += f"🔎 ID 搜尋：{', '.join(potential_ids)}，共 {len(df)} 筆\n\n"
+                result += f"🔎 ID search: {', '.join(potential_ids)}, {len(df)} rows\n\n"
                 if df.empty:
-                    return result + "找不到符合的工單 ID。"
+                    return result + "No matching ticket ID was found."
 
         # ── Step 4.5：依欄位值篩選（中文別名對映）────────────
         # 例：「部門 是 Marketing」→ Department == Marketing
@@ -582,9 +582,9 @@ def query_worksheet_data(worksheet_name: str, query_description: str) -> str:
             actual_col = _resolve_column(df, col_term)
             if actual_col:
                 df = df[df[actual_col].astype(str).str.contains(value, case=False, na=False)]
-                result += f"🏷️ 欄位篩選：{actual_col}（{col_term}）含「{value}」，共 {len(df)} 筆\n\n"
+                result += f"🏷️ Field filter: {actual_col} ({col_term}) contains \"{value}\", {len(df)} rows\n\n"
                 if df.empty:
-                    return result + f"沒有符合「{actual_col} = {value}」的資料。"
+                    return result + f"No rows match \"{actual_col} = {value}\"."
 
         # ── Step 5：統計類查詢（平均天數）────────────────────
         if any(k in query_lower for k in ['平均', 'average', '天數', '處理時間', '花費', '工時']):
@@ -596,18 +596,18 @@ def query_worksheet_data(worksheet_name: str, query_description: str) -> str:
                 df['_處理天數'] = (df[due_col] - df[start_col]).dt.days + 1
                 df_valid = df.dropna(subset=['_處理天數'])
                 if not df_valid.empty:
-                    result += "### 處理時間統計\n\n"
-                    result += f"- 有效筆數：{len(df_valid)}\n"
-                    result += f"- 平均天數：{df_valid['_處理天數'].mean():.1f} 天\n"
-                    result += f"- 最短：{int(df_valid['_處理天數'].min())} 天　最長：{int(df_valid['_處理天數'].max())} 天\n\n"
+                    result += "### Processing Time Statistics\n\n"
+                    result += f"- Valid rows: {len(df_valid)}\n"
+                    result += f"- Average days: {df_valid['_處理天數'].mean():.1f}\n"
+                    result += f"- Minimum: {int(df_valid['_處理天數'].min())} days | Maximum: {int(df_valid['_處理天數'].max())} days\n\n"
 
                     display_cols = [c for c in [ticket_col, start_col, due_col, '_處理天數'] if c]
-                    df_display = df_valid[display_cols].rename(columns={'_處理天數': '處理天數(天)'})
+                    df_display = df_valid[display_cols].rename(columns={'_處理天數': 'Processing Days'})
                     result += _to_markdown_table(df_display)
                     if _wants_chart(query_description) and ticket_col:
                         chart_df = df_valid[[ticket_col, '_處理天數']].dropna().head(12)
                         result += _build_chart_block(
-                            title="工單處理天數",
+                            title="Ticket processing days",
                             labels=list(chart_df[ticket_col].astype(str)),
                             values=list(chart_df['_處理天數'].astype(int)),
                             chart_type=_chart_type(query_description),
@@ -624,16 +624,16 @@ def query_worksheet_data(worksheet_name: str, query_description: str) -> str:
                 if not counts.empty:
                     labels = [str(period) for period in counts.index]
                     values = [int(value) for value in counts.values]
-                    result += "### 每月 ticket 數量\n\n"
-                    result += f"- 日期欄位：{month_col}\n"
-                    result += f"- 統計筆數：{sum(values)} 筆\n"
-                    result += "- 月份分布：" + "、".join(
-                        f"{label} {value}筆" for label, value in zip(labels, values)
+                    result += "### Monthly Ticket Count\n\n"
+                    result += f"- Date column: {month_col}\n"
+                    result += f"- Counted rows: {sum(values)}\n"
+                    result += "- Monthly distribution: " + ", ".join(
+                        f"{label} {value} rows" for label, value in zip(labels, values)
                     ) + "\n"
 
                     if analysis_intent.get('output') == 'chart':
                         result += _build_chart_block(
-                            title="每月 ticket 數量",
+                            title="Monthly ticket count",
                             labels=labels,
                             values=values,
                             chart_type=analysis_intent.get('chart_type', 'line'),
@@ -647,22 +647,22 @@ def query_worksheet_data(worksheet_name: str, query_description: str) -> str:
                     if assigned_col and not already_filtered_by_assignee and assigned_col in analysis_intent.get('filterable_fields', []):
                         assignee_counts = (
                             df[assigned_col]
-                            .fillna("(空白)")
+                            .fillna("(Blank)")
                             .astype(str)
-                            .replace("", "(空白)")
+                            .replace("", "(Blank)")
                             .value_counts()
                             .head(8)
                         )
-                        result += "\n可用的負責人篩選包含：" + "、".join(
-                            f"{name}({count}筆)" for name, count in assignee_counts.items()
+                        result += "\nAvailable assignee filters: " + ", ".join(
+                            f"{name} ({count} rows)" for name, count in assignee_counts.items()
                         ) + "\n"
 
                     if not _wants_detail_rows(query_description):
                         if not already_filtered_by_assignee:
-                            result += "\n若要篩選特定負責人，可以追問例如：「負責人：Kelly Dong 的每月 ticket 數量」。\n"
+                            result += "\nTo filter by a specific assignee, ask for example: \"Monthly ticket count for assignee Kelly Dong\".\n"
                         return result
             else:
-                result += "找不到可用的日期欄位，因此無法依月份統計。\n\n"
+                result += "No usable date column was found, so monthly statistics cannot be calculated.\n\n"
 
         # 統計分布（類別欄位、unique <= 15）
         stat_cols = [col for col in df.columns
@@ -676,41 +676,41 @@ def query_worksheet_data(worksheet_name: str, query_description: str) -> str:
                 chart_col = _choose_chart_column(query_description, stat_cols)
 
             if analysis_intent.get('output') == 'chart':
-                result += "### 重點摘要\n\n"
+                result += "### Key Summary\n\n"
                 for col in _summary_columns(query_description, stat_cols, chart_col):
-                    counts = df[col].fillna("(空白)").astype(str).replace("", "(空白)").value_counts()
+                    counts = df[col].fillna("(Blank)").astype(str).replace("", "(Blank)").value_counts()
                     result += _format_counts_line(col, counts)
                 result += "\n"
 
                 if chart_col:
-                    counts = df[chart_col].fillna("(空白)").astype(str).replace("", "(空白)").value_counts().head(12)
+                    counts = df[chart_col].fillna("(Blank)").astype(str).replace("", "(Blank)").value_counts().head(12)
                     result += _build_chart_block(
-                        title=f"{chart_col} 分布",
+                        title=f"{chart_col} distribution",
                         labels=list(counts.index),
                         values=list(counts.values),
                         chart_type=analysis_intent.get('chart_type', _chart_type(query_description)),
                     )
             else:
-                result += "### 欄位分布統計\n\n"
+                result += "### Field Distribution Statistics\n\n"
                 for col in stat_cols:
                     counts = df[col].value_counts()
-                    result += f"**{col}**：" + "　".join(f"{v}({c}筆)" for v, c in counts.items()) + "\n"
+                    result += f"**{col}**: " + ", ".join(f"{v} ({c} rows)" for v, c in counts.items()) + "\n"
                 result += "\n"
 
         if analysis_intent.get('output') == 'chart' and not _wants_detail_rows(query_description):
-            result += f"已依篩選條件統計 {len(df)} 筆資料並產生圖表；若需要，我可以再另外列出明細。\n"
+            result += f"{len(df)} rows were summarized and a chart was generated from the filters. Ask for details if you need row-level data.\n"
             return result
 
         # 資料表格
-        result += f"### 資料明細（共 {len(df)} 筆）\n\n"
+        result += f"### Data Details ({len(df)} rows)\n\n"
         result += _to_markdown_table(df)
 
         return result
 
     except gspread.exceptions.WorksheetNotFound:
-        return f"找不到名為 '{worksheet_name}' 的工作表。"
+        return f"Worksheet '{worksheet_name}' was not found."
     except Exception as e:
-        return f"查詢資料時發生錯誤: {str(e)}"
+        return f"Failed to query worksheet data: {str(e)}"
 
 # Data Analyst Agent 的工具列表
 analyst_tools = [list_worksheets, get_worksheet_structure, query_worksheet_data]

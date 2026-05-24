@@ -132,24 +132,24 @@ _DOCUMENT_QUERY_TERMS = [
 ]
 
 _CHART_DIMENSION_OPTIONS = [
-    {"label": "依月份", "value": "Month", "description": "看每月 ticket 數量趨勢"},
-    {"label": "依狀態", "value": "Status", "description": "看各狀態的工單數量"},
-    {"label": "依市場", "value": "Market", "description": "比較 TW、HK、IKNA 等市場"},
-    {"label": "依資料來源", "value": "Data Source", "description": "比較 CDP、GA4 等來源"},
-    {"label": "依支援類型", "value": "Data Support", "description": "比較 dashboard、report、support 等類型"},
-    {"label": "依負責人", "value": "Assigned To", "description": "比較各負責人的工單量"},
+    {"label": "By month", "value": "Month", "description": "Show monthly ticket volume trends"},
+    {"label": "By status", "value": "Status", "description": "Compare ticket counts by status"},
+    {"label": "By market", "value": "Market", "description": "Compare TW, HK, IKNA, and other markets"},
+    {"label": "By data source", "value": "Data Source", "description": "Compare sources such as CDP and GA4"},
+    {"label": "By support type", "value": "Data Support", "description": "Compare dashboard, report, support, and other types"},
+    {"label": "By owner", "value": "Assigned To", "description": "Compare ticket volume by assignee"},
 ]
 
 _REPORT_SCOPE_OPTIONS = [
-    {"label": "Request 工單", "value": "Request worksheet", "description": "分析工單數量、狀態、市場與資料來源"},
-    {"label": "Trello 專案", "value": "Trello board", "description": "整理看板清單、卡片進度與負責狀態"},
-    {"label": "Confluence 文件", "value": "Confluence pages", "description": "彙整文件定義、流程或 dashboard 說明"},
+    {"label": "Request tickets", "value": "Request worksheet", "description": "Analyze ticket volume, status, market, and data source"},
+    {"label": "Trello projects", "value": "Trello board", "description": "Summarize board lists, card progress, and ownership"},
+    {"label": "Confluence docs", "value": "Confluence pages", "description": "Summarize definitions, workflows, or dashboard documentation"},
 ]
 
 _REPORT_FORMAT_OPTIONS = [
-    {"label": "摘要說明", "value": "summary", "description": "用重點文字整理分析結果"},
-    {"label": "圖表", "value": "chart", "description": "產生互動式圖表和簡短洞察"},
-    {"label": "表格", "value": "table", "description": "整理成乾淨的彙總表"},
+    {"label": "Summary", "value": "summary", "description": "Organize the analysis into concise written takeaways"},
+    {"label": "Chart", "value": "chart", "description": "Create an interactive chart with short insights"},
+    {"label": "Table", "value": "table", "description": "Format the result as a clean summary table"},
 ]
 
 _DEFAULT_TURN_CONTEXT = {
@@ -164,16 +164,16 @@ _DEFAULT_TURN_CONTEXT = {
 }
 
 _TOOL_PROGRESS_LABELS = {
-    "list_worksheets": "正在讀取工作表清單",
-    "get_worksheet_structure": "正在檢查工作表欄位",
-    "query_worksheet_data": "正在查詢工作表資料",
-    "search_confluence_pages": "正在搜尋 Confluence",
-    "get_confluence_page_content": "正在讀取 Confluence 內容",
-    "get_all_pages": "正在整理 Confluence 頁面",
-    "search_document_base": "正在搜尋 PDF 知識庫",
-    "get_project_status": "正在查詢 Trello 進度",
-    "get_card_details": "正在讀取 Trello 卡片",
-    "get_card_details_by_name": "正在搜尋 Trello 卡片",
+    "list_worksheets": "Reading worksheet list",
+    "get_worksheet_structure": "Checking worksheet fields",
+    "query_worksheet_data": "Querying worksheet data",
+    "search_confluence_pages": "Searching Confluence",
+    "get_confluence_page_content": "Reading Confluence content",
+    "get_all_pages": "Organizing Confluence pages",
+    "search_document_base": "Searching PDF knowledge base",
+    "get_project_status": "Checking Trello progress",
+    "get_card_details": "Reading Trello card",
+    "get_card_details_by_name": "Searching Trello card",
 }
 
 
@@ -361,7 +361,7 @@ has_prior_tool_context: {str(bool(has_prior_tool_context)).lower()}
 {user_query}
 """
     try:
-        await emit_progress("understanding", "正在判斷脈絡")
+        await emit_progress("understanding", "Checking context")
         response = await llm.ainvoke([HumanMessage(content=router_prompt)])
         parsed = _parse_json_object(_content_to_text(response.content))
         if not parsed:
@@ -483,11 +483,11 @@ def _fallback_clarification(user_query: str) -> dict:
     if is_broad_report and not has_concrete_scope:
         return {
             "needs_clarification": True,
-            "reason": "分析報告的資料範圍還不明確",
+            "reason": "The data scope for the analysis report is not clear yet.",
             "questions": [
                 {
                     "id": "report_scope",
-                    "question": "你想分析哪一類資料？",
+                    "question": "Which data source should I analyze?",
                     "type": "single",
                     "options": list(_REPORT_SCOPE_OPTIONS),
                 }
@@ -497,11 +497,11 @@ def _fallback_clarification(user_query: str) -> dict:
     if is_broad_report and has_concrete_scope and "圖表" not in compact and "chart" not in normalized:
         return {
             "needs_clarification": True,
-            "reason": "先確認報告呈現方式",
+            "reason": "Please choose the report format first.",
             "questions": [
                 {
                     "id": "report_format",
-                    "question": "你希望分析報告以什麼形式呈現？",
+                    "question": "How would you like the analysis report presented?",
                     "type": "single",
                     "options": list(_REPORT_FORMAT_OPTIONS),
                 }
@@ -618,6 +618,11 @@ async def suggest_clarifications(user_query: str, history_text: str = "") -> dic
 只在「缺少的選擇會明顯影響工具、查詢條件或圖表呈現」時才 needs_clarification=true。
 如果問題已經足夠明確，請 needs_clarification=false。
 
+重要語言規則：
+- 所有會顯示在前端 UI 的欄位都必須使用英文：reason、question、label、description。
+- 即使使用者用中文提問，clarification panel 仍需輸出英文，避免 UI 中英混雜。
+- value 可以保留系統查詢需要的英文欄位值，例如 Status、Market、Data Source。
+
 常見需要釐清的情境：
 - 使用者只說「分析報告」、「一份報告」、「幫我分析」但沒有指定資料來源或分析對象。
 - 使用者要求圖表，但沒有指定呈現維度，例如狀態、市場、資料來源、支援類型、負責人。
@@ -632,17 +637,17 @@ async def suggest_clarifications(user_query: str, history_text: str = "") -> dic
 回傳 JSON schema：
 {{
   "needs_clarification": true/false,
-  "reason": "一句很短的理由",
+  "reason": "A short reason in English",
   "questions": [
     {{
       "id": "chart_dimension",
-      "question": "你想用哪個維度呈現圖表？",
+      "question": "Which dimension should the chart use?",
       "type": "single",
       "options": [
-        {{"label": "依狀態", "value": "Status", "description": "看各狀態的工單數量"}},
-        {{"label": "依市場", "value": "Market", "description": "比較 TW、HK、IKNA 等市場"}},
-        {{"label": "依資料來源", "value": "Data Source", "description": "比較 CDP、GA4 等來源"}},
-        {{"label": "依月份", "value": "Month", "description": "看每月 ticket 數量趨勢"}}
+        {{"label": "By status", "value": "Status", "description": "Compare ticket counts by status"}},
+        {{"label": "By market", "value": "Market", "description": "Compare TW, HK, IKNA, and other markets"}},
+        {{"label": "By data source", "value": "Data Source", "description": "Compare sources such as CDP and GA4"}},
+        {{"label": "By month", "value": "Month", "description": "Show monthly ticket volume trends"}}
       ]
     }}
   ]
@@ -716,20 +721,20 @@ async def parallel_tool_node(state: AgentState):
         started_at = time.perf_counter()
         await emit_progress(
             "tool",
-            _TOOL_PROGRESS_LABELS.get(tool_name, f"正在查詢 {tool_name}"),
+            _TOOL_PROGRESS_LABELS.get(tool_name, f"Querying {tool_name}"),
             tool=tool_name,
             status="started",
         )
         if not t:
             await emit_progress(
                 "tool",
-                f"找不到工具 {tool_name}",
+                f"Tool not found: {tool_name}",
                 tool=tool_name,
                 status="failed",
                 elapsed_ms=round((time.perf_counter() - started_at) * 1000),
             )
             return ToolMessage(
-                content=f"找不到工具: {tool_name}",
+                content=f"Tool not found: {tool_name}",
                 tool_call_id=tc["id"],
                 name=tool_name
             )
@@ -738,7 +743,7 @@ async def parallel_tool_node(state: AgentState):
             result = await asyncio.to_thread(t.invoke, tc["args"])
             await emit_progress(
                 "tool",
-                f"{_TOOL_PROGRESS_LABELS.get(tool_name, tool_name)}完成",
+                f"{_TOOL_PROGRESS_LABELS.get(tool_name, tool_name)} completed",
                 tool=tool_name,
                 status="completed",
                 elapsed_ms=round((time.perf_counter() - started_at) * 1000),
@@ -751,13 +756,13 @@ async def parallel_tool_node(state: AgentState):
         except Exception as e:
             await emit_progress(
                 "tool",
-                f"{_TOOL_PROGRESS_LABELS.get(tool_name, tool_name)}失敗",
+                f"{_TOOL_PROGRESS_LABELS.get(tool_name, tool_name)} failed",
                 tool=tool_name,
                 status="failed",
                 elapsed_ms=round((time.perf_counter() - started_at) * 1000),
             )
             return ToolMessage(
-                content=f"工具執行錯誤: {str(e)}",
+                content=f"Tool execution error: {str(e)}",
                 tool_call_id=tc["id"],
                 name=tool_name
             )
@@ -782,16 +787,16 @@ async def agent_node(state: AgentState):
 
     if _should_answer_from_context(turn_context, messages):
         print(f"\n✅ [Context] Answering from prior context. Decision: {turn_context}")
-        await emit_progress("composing", "正在根據上下文整理回覆")
+        await emit_progress("composing", "Drafting from context")
         response = await _answer_from_context(messages, guardrail_query)
         return {"messages": [response]}
 
-    await emit_progress("thinking", "正在選擇合適工具")
+    await emit_progress("thinking", "Choosing the right tool")
     response = await model_with_tools.ainvoke(messages)
     if _has_tool_calls(response):
-        await emit_progress("tool", "正在準備查詢資料", status="queued")
+        await emit_progress("tool", "Preparing data lookup", status="queued")
     else:
-        await emit_progress("composing", "正在整理回覆")
+        await emit_progress("composing", "Drafting the response")
 
     # 🕵️‍♂️ 【客製化攔截點：強制檢查工具使用與幻覺防護】
     # 2. 如果模型沒有呼叫工具，才用語意分類器判斷是否需要攔截重試。
@@ -804,7 +809,7 @@ async def agent_node(state: AgentState):
                 "needs_tool": True,
                 "fresh_query": True,
                 "domain": domain_hint,
-                "reason": turn_context.get("reason", "語意判斷為需要重新查詢資料"),
+                "reason": turn_context.get("reason", "Semantic routing requires a fresh tool lookup"),
             }
         else:
             intent = await _classify_user_intent(guardrail_query)
@@ -827,29 +832,29 @@ async def agent_node(state: AgentState):
         if needs_tool and not has_tool_result_after_latest_human:
             if needs_fresh_query:
                 print(f"\n⚠️ [Guardrail] Intent={intent.get('domain')} fresh query，強制重新呼叫工具。Reason: {intent.get('reason')}")
-                retry_msg = f"⚠️ 系統強制攔截：意圖分類判斷這題需要重新查詢內部工具，建議工具領域是 {intent.get('domain')}。你不能只整理 chat history 中的舊資料。原始使用者問題是：{guardrail_query}。請保留使用者要求的輸出形式（例如圖表/chart）並立即呼叫最合適的工具！"
+                retry_msg = f"System guardrail: intent classification says this question needs a fresh internal tool query. Suggested tool domain: {intent.get('domain')}. Do not only summarize old chat history. Original user question: {guardrail_query}. Preserve the requested output format, such as chart, and call the best tool now."
             else:
                 print(f"\n⚠️ [Guardrail] Intent={intent.get('domain')} needs tool but no tool call，強制重發 Prompt。Reason: {intent.get('reason')}")
-                retry_msg = f"⚠️ 系統強制攔截：意圖分類判斷這題需要內部工具，建議工具領域是 {intent.get('domain')}，但你沒有呼叫任何工具。原始使用者問題是：{guardrail_query}。請保留使用者要求的輸出形式（例如圖表/chart）並立即呼叫最合適的工具！"
+                retry_msg = f"System guardrail: intent classification says this question needs an internal tool. Suggested tool domain: {intent.get('domain')}, but no tool was called. Original user question: {guardrail_query}. Preserve the requested output format, such as chart, and call the best tool now."
             retry_prompt = HumanMessage(content=retry_msg)
-            await emit_progress("tool", "正在重新選擇資料工具", status="retry")
+            await emit_progress("tool", "Choosing a different data tool", status="retry")
             response = await model_with_tools.ainvoke(messages + [retry_prompt])
             # 如果第二次還是不呼叫，就給強制安全回應
             if not _has_tool_calls(response):
-                forced_msg = AIMessage(content="我翻遍了手邊的工具，但目前真的找不到這方面的相關資訊喔！為確保資訊正確，我不敢亂猜，可以請您提供更多關鍵字嗎？😊")
+                forced_msg = AIMessage(content="I searched the available tools but could not find relevant information. To keep the answer accurate, please provide more specific keywords or context.")
                 return {"messages": [forced_msg]}
 
     # 🛑 防護 A2：禁止把「請稍等 / 我正在處理」當作最終答案
     if not _has_tool_calls(response) and needs_tool and _is_interim_response(response.content):
         print("\n⚠️ [Guardrail] 偵測到 LLM 只回覆處理中訊息，強制改為立即呼叫工具！")
         retry_msg = (
-            "⚠️ 系統強制攔截：你的上一則回答只是『請稍等/正在處理』，"
-            "但系統不支援把這種中途狀態當作最終答案。請不要說你將要查詢，"
-            "請立刻呼叫最相關的工具取得資料；如果問題資訊不足，請直接提出明確的澄清問題。"
+            "System guardrail: your previous response was only an interim waiting message. "
+            "The system cannot treat that as the final answer. Do not say you will query later. "
+            "Call the most relevant tool now, or ask a specific clarification question if the request is underspecified."
         )
         response = await model_with_tools.ainvoke(messages + [HumanMessage(content=retry_msg)])
         if not _has_tool_calls(response) and _is_interim_response(response.content):
-            forced_msg = AIMessage(content="我需要再確認一下查詢條件，才不會整理錯資料。可以請你補充要查的工作表、時間範圍或負責人嗎？")
+            forced_msg = AIMessage(content="I need one more detail to avoid using the wrong data. Please provide the worksheet, time range, assignee, or other filter you want to query.")
             return {"messages": [forced_msg]}
 
     # 🛑 防護 B：工具查無資料，但大腦開始亂掰 (幻覺生成) -> 直接覆寫
@@ -857,12 +862,19 @@ async def agent_node(state: AgentState):
         if has_recent_tool_result:
             last_tool_content = tool_messages[-1].content
             # 如果末次工具回傳了警告或找不到
-            if "系統警告" in last_tool_content or "找不到" in last_tool_content or "無結果" in last_tool_content:
+            if (
+                "系統警告" in last_tool_content
+                or "找不到" in last_tool_content
+                or "無結果" in last_tool_content
+                or "system warning" in last_tool_content.lower()
+                or "not found" in last_tool_content.lower()
+                or "no relevant" in last_tool_content.lower()
+            ):
                 # 檢查 LLM 的回答是否有乖乖承認找不到
                 admit_keywords = ["找不到", "沒有找到", "無法找到", "沒有相關", "查無", "未提及", "沒有提及"]
                 if not any(ak in response.content for ak in admit_keywords):
                     print("\n⚠️ [Guardrail] 偵測到 LLM 在 Tool 查無結果後試圖捏造答案 (幻覺)！已被強制阻擋。")
-                    safe_msg = AIMessage(content="我剛才幫你翻遍了手邊的系統，但目前真的找不到相關的資訊喔！為確保正確避免給錯資訊，這部分可能要請你再確認一下關鍵字，或是問問相關負責的同事喔！😊")
+                    safe_msg = AIMessage(content="I checked the available systems, but I could not find relevant information. To avoid giving incorrect details, please confirm the keyword or provide more context.")
                     return {"messages": [safe_msg]}
 
     return {"messages": [response]}

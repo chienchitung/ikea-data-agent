@@ -388,12 +388,12 @@ const markdownComponents = {
 function formatElapsed(ms) {
     if (!Number.isFinite(Number(ms))) return 'n/a';
     if (Number(ms) < 1000) return `${Math.round(Number(ms))} ms`;
-    return `${(Number(ms) / 1000).toFixed(1)} 秒`;
+    return `${(Number(ms) / 1000).toFixed(1)}s`;
 }
 
 function formatTokenUsage(usage = {}) {
     const total = usage.total_tokens;
-    if (!Number.isFinite(Number(total)) || Number(total) <= 0) return '模型未回傳';
+    if (!Number.isFinite(Number(total)) || Number(total) <= 0) return 'Not returned by model';
     const input = Number(usage.input_tokens || 0);
     const output = Number(usage.output_tokens || 0);
     return `${total} total (${input} in / ${output} out)`;

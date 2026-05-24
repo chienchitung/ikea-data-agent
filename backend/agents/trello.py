@@ -31,7 +31,7 @@ if client:
 
 # 3. 輔助函式：格式化日期
 def format_date(date_obj):
-    if not date_obj: return "無"
+    if not date_obj: return "None"
     try:
         if hasattr(date_obj, 'strftime'): return date_obj.strftime("%Y-%m-%d %H:%M")
         dt = dateutil.parser.parse(str(date_obj))
@@ -54,14 +54,14 @@ def format_card_details(card, member_lookup=None) -> str:
     if raw_start is None and hasattr(card, '_json_obj'):
         raw_start = card._json_obj.get('start')
     raw_due = getattr(card, 'due', None)
-    desc = getattr(card, 'description', '') or getattr(card, 'desc', '(無描述)')
+    desc = getattr(card, 'description', '') or getattr(card, 'desc', '(No description)')
     labels = [f"{l.name}" for l in card.labels if l.name]
     members = get_card_member_names(card, member_lookup)
 
-    details = f"=== 卡片詳情: {card.name} ===\n"
+    details = f"=== Card details: {card.name} ===\n"
     details += f"📁 List: {client.get_list(card.list_id).name}\n"
-    details += f"👤 負責人: {', '.join(members) if members else '無'}\n"
-    details += f"🏷️ Labels: {', '.join(labels) if labels else '無'}\n"
+    details += f"👤 Assignees: {', '.join(members) if members else 'None'}\n"
+    details += f"🏷️ Labels: {', '.join(labels) if labels else 'None'}\n"
     details += f"📅 Start: {format_date(raw_start)} | Due: {format_date(raw_due)}\n"
     details += f"📝 Description:\n{desc}\n"
 
@@ -74,7 +74,7 @@ def format_card_details(card, member_lookup=None) -> str:
             date = format_date(comment.get('date', ''))
             details += f"[{date}] {author}: {text}\n"
     else:
-        details += "(無留言)\n"
+        details += "(No comments)\n"
     return details
 
 # --- 4. 定義專用工具 ---
@@ -92,19 +92,19 @@ def get_project_status() -> str:
     try:
         # 直接使用鎖定的 ID
         board = client.get_board(TARGET_BOARD_ID)
-        result = f"--- 專案看板: {board.name} ---\n"
+        result = f"--- Project board: {board.name} ---\n"
         
         for lst in board.list_lists():
             result += f"\n[List: {lst.name}]\n"
             cards = lst.list_cards()
             if not cards: 
-                result += "  (目前此清單為空，無任何卡片)\n"
+                result += "  (This list is empty.)\n"
             else:
                 for card in cards:
                     result += f"  - {card.name}\n"
         return result
     except Exception as e:
-        return f"讀取看板失敗: {e}"
+        return f"Failed to read the board: {e}"
 
 @tool
 def get_card_details(card_id: str) -> str:
@@ -120,7 +120,7 @@ def get_card_details(card_id: str) -> str:
         board = client.get_board(card.board_id)
         return format_card_details(card, get_board_member_lookup(board))
     except Exception as e:
-        return f"讀取卡片詳情失敗: {e}"
+        return f"Failed to read card details: {e}"
 
 @tool
 def get_card_details_by_name(card_name: str) -> str:
@@ -144,14 +144,14 @@ def get_card_details_by_name(card_name: str) -> str:
         matches = exact_matches or partial_matches
 
         if not matches:
-            return f"找不到名稱包含「{card_name}」的 Trello 卡片。"
+            return f"No Trello card name contains \"{card_name}\"."
         if len(matches) > 1:
             match_names = "\n".join(f"  - {card.name}" for card in matches[:10])
-            return f"找到多張可能的卡片，請讓用戶指定其中一張：\n{match_names}"
+            return f"Multiple matching cards were found. Ask the user to choose one:\n{match_names}"
 
         return format_card_details(matches[0], member_lookup)
     except Exception as e:
-        return f"讀取卡片詳情失敗: {e}"
+        return f"Failed to read card details: {e}"
 
 trello_tools = [get_project_status, get_card_details, get_card_details_by_name]
 

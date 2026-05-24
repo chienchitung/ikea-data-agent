@@ -64,9 +64,9 @@ def product_error(code: str, title: str, message: str, next_steps: Optional[List
 
 def error_markdown(error: dict) -> str:
     next_steps = error.get("next_steps") or []
-    output = f"**{error.get('title', '我遇到一點問題')}**\n\n{error.get('message', '')}".strip()
+    output = f"**{error.get('title', 'Something went wrong')}**\n\n{error.get('message', '')}".strip()
     if next_steps:
-        output += "\n\n你可以試試：\n" + "\n".join(f"- {step}" for step in next_steps)
+        output += "\n\nYou can try:\n" + "\n".join(f"- {step}" for step in next_steps)
     return output
 
 def classify_chat_error_text(text: str) -> Optional[dict]:
@@ -77,33 +77,45 @@ def classify_chat_error_text(text: str) -> Optional[dict]:
     if "google_api_key" in lowered or "api key" in lowered or "gemini" in lowered:
         return product_error(
             "ai_provider_unavailable",
-            "AI 服務目前無法使用",
-            "後端目前無法連到模型服務或缺少 API 設定，所以這次沒有辦法完成回答。",
-            ["確認後端的 GOOGLE_API_KEY / GEMINI_API_KEY 是否已設定", "稍後再試一次"],
+            "AI service is unavailable",
+            "The backend cannot reach the model service or is missing API configuration, so this request could not be completed.",
+            ["Check that GOOGLE_API_KEY / GEMINI_API_KEY is configured", "Try again later"],
         )
 
-    if "知識庫尚未建立" in text or "請先上傳 PDF" in text:
+    if (
+        "知識庫尚未建立" in text
+        or "請先上傳 PDF" in text
+        or "knowledge base is not ready" in lowered
+        or "upload a pdf first" in lowered
+    ):
         return product_error(
             "pdf_not_ready",
-            "PDF 知識庫還沒準備好",
-            "我目前還沒有可查詢的 PDF 內容。可能是尚未上傳 PDF，或 PDF 解析/embedding 尚未成功完成。",
-            ["先上傳 PDF 並等待處理完成", "如果剛上傳，請確認上傳結果是否顯示成功"],
+            "PDF knowledge base is not ready",
+            "There is no searchable PDF content yet. The PDF may not have been uploaded, or parsing / embedding may not have completed successfully.",
+            ["Upload a PDF and wait for processing to finish", "If you just uploaded one, confirm the upload result shows success"],
         )
 
-    if "文件中完全未提及" in text or "找不到相關" in text or "無結果" in text or "找不到" in text:
+    if (
+        "文件中完全未提及" in text
+        or "找不到相關" in text
+        or "無結果" in text
+        or "找不到" in text
+        or "no relevant content" in lowered
+        or "does not contain enough information" in lowered
+    ):
         return product_error(
             "no_relevant_result",
-            "目前沒有找到可支持的資料",
-            "我查到的資料不足以可靠回答這個問題。為避免把不同內容硬湊在一起，我不會直接推測。",
-            ["換一個更接近文件原文的關鍵字", "補充文件頁碼、章節名稱或截圖中的標題", "如果是圖片內容，請確認 PDF 已完成視覺摘要解析"],
+            "No supporting data was found",
+            "The available data is not enough to answer this reliably. To avoid mixing unrelated content, I will not guess.",
+            ["Try a keyword closer to the source document", "Add a page number, section title, or screenshot heading", "If the content is image-based, ask for the scanned/image page details"],
         )
 
     if "error processing request" in lowered or "工具執行錯誤" in text or "發生錯誤" in text:
         return product_error(
             "agent_runtime_error",
-            "處理過程中斷了",
-            "我在判斷問題或呼叫工具時遇到錯誤，這次回答可能沒有完成。",
-            ["稍後重試一次", "如果問題很長，先縮小範圍再問", "若持續發生，請查看後端 log"],
+            "Processing was interrupted",
+            "An error occurred while interpreting the question or calling tools, so this answer may not have completed.",
+            ["Try again later", "If the question is long, narrow the scope first", "If it keeps happening, check the backend log"],
         )
 
     return None
@@ -169,9 +181,9 @@ async def chat_endpoint(request: ChatRequest):
             status_code=500,
             detail=product_error(
                 "chat_server_error",
-                "後端處理訊息時發生錯誤",
-                "訊息已送到後端，但處理過程中斷了。",
-                ["稍後重試一次", "如果問題很長，先縮小範圍再問", "若持續發生，請查看後端 log"],
+                "Backend failed to process the message",
+                "The message reached the backend, but processing was interrupted.",
+                ["Try again later", "If the question is long, narrow the scope first", "If it keeps happening, check the backend log"],
                 str(e),
             )
         )
@@ -216,14 +228,14 @@ async def chat_stream_endpoint(request: ChatRequest):
                 print(f"❌ Stream Error: {e}")
                 await queue.put(("error", product_error(
                     "chat_server_error",
-                    "後端處理訊息時發生錯誤",
-                    "訊息已送到後端，但處理過程中斷了。",
-                    ["稍後重試一次", "如果問題很長，先縮小範圍再問", "若持續發生，請查看後端 log"],
+                    "Backend failed to process the message",
+                    "The message reached the backend, but processing was interrupted.",
+                    ["Try again later", "If the question is long, narrow the scope first", "If it keeps happening, check the backend log"],
                     str(e),
                 )))
 
         task = asyncio.create_task(run_chat())
-        yield sse_event("progress", {"phase": "understanding", "label": "正在理解問題"})
+        yield sse_event("progress", {"phase": "understanding", "label": "Understanding your question"})
 
         while True:
             event, payload = await queue.get()
@@ -253,12 +265,32 @@ from fastapi import UploadFile, File
 from fastapi.responses import JSONResponse
 import shutil
 import os
+from urllib.parse import unquote
 from agents.document import (
     initialize_knowledge_base, 
     search_document_base, 
     get_loaded_files,
     rename_document_in_kb
 )
+
+BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _pdf_storage_paths(filename: str) -> list[str]:
+    decoded = os.path.basename(unquote(filename))
+    return [
+        os.path.join(BACKEND_DIR, decoded),
+        os.path.abspath(decoded),
+    ]
+
+
+def _list_pdf_files() -> list[str]:
+    disk_files = {
+        name
+        for name in os.listdir(BACKEND_DIR)
+        if name.lower().endswith(".pdf") and os.path.isfile(os.path.join(BACKEND_DIR, name))
+    }
+    return sorted(disk_files | set(get_loaded_files()))
 
 @app.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
@@ -268,25 +300,26 @@ async def upload_file(file: UploadFile = File(...)):
                 status_code=400,
                 detail=product_error(
                     "unsupported_file_type",
-                    "只支援 PDF 檔案",
-                    "這個上傳入口目前只能處理 PDF。",
-                    ["請改上傳 .pdf 檔", "如果是圖片或簡報，請先轉成 PDF 再上傳"],
+                    "Only PDF files are supported",
+                    "This upload endpoint can currently process PDF files only.",
+                    ["Upload a .pdf file", "If you have an image or presentation, convert it to PDF first"],
                 )
             )
             
-        # Save file to current directory (which is 'backend' folder)
-        file_location = file.filename
+        safe_filename = os.path.basename(unquote(file.filename))
+        # Always store uploaded PDFs in the backend directory, regardless of cwd.
+        file_location = os.path.join(BACKEND_DIR, safe_filename)
             
         with open(file_location, "wb+") as buffer:
             shutil.copyfileobj(file.file, buffer)
             
-        print(f"✅ File uploaded: {file.filename}")
+        print(f"✅ File uploaded: {safe_filename}")
         
         # Trigger reload of knowledge base and get result
         result = initialize_knowledge_base()
         
         # Check if the uploaded file is in the failed list
-        uploaded_filename = file.filename
+        uploaded_filename = safe_filename
         failed_reason = None
         
         if result and "failed_files" in result:
@@ -301,15 +334,15 @@ async def upload_file(file: UploadFile = File(...)):
             print(f"❌ Processing failed for {uploaded_filename}: {failed_reason}")
             error = product_error(
                 "pdf_processing_failed",
-                "PDF 已上傳，但解析失敗",
-                "檔案已收到，但系統無法把它轉成可查詢的知識庫內容。",
-                ["確認 PDF 是否可開啟且未加密", "如果是掃描圖檔，確認 OCR/視覺解析依賴是否可用", "稍後重新上傳一次"],
+                "PDF uploaded, but parsing failed",
+                "The file was received, but the system could not turn it into searchable knowledge-base content.",
+                ["Confirm the PDF opens and is not encrypted", "If it is scanned, confirm OCR dependencies are available", "Upload it again later"],
                 {"reason": failed_reason, "result": result},
             )
             return JSONResponse(
                 status_code=422,
                 content={
-                    "filename": file.filename,
+                    "filename": safe_filename,
                     **error,
                 }
             )
@@ -318,21 +351,21 @@ async def upload_file(file: UploadFile = File(...)):
         if result and not result.get("success", False):
              error = product_error(
                 "knowledge_base_unavailable",
-                "PDF 知識庫沒有建立成功",
-                "檔案已收到，但建立 embeddings 或索引時失敗，所以目前還不能問這份 PDF。",
-                ["確認 GOOGLE_API_KEY / GEMINI_API_KEY 是否可用", "確認後端可連到模型服務", "稍後重新處理或重新上傳"],
+                "PDF knowledge base was not created",
+                "The file was received, but embedding or index creation failed, so this PDF is not queryable yet.",
+                ["Confirm GOOGLE_API_KEY / GEMINI_API_KEY is available", "Confirm the backend can reach the model service", "Retry processing or upload again later"],
                 result,
              )
              return JSONResponse(
                 status_code=422,
                 content={
-                    "filename": file.filename,
+                    "filename": safe_filename,
                     **error,
                 }
             )
         
         return {
-            "filename": file.filename, 
+            "filename": safe_filename, 
             "message": "File uploaded and processed successfully", 
             "details": result
         }
@@ -344,9 +377,9 @@ async def upload_file(file: UploadFile = File(...)):
             status_code=500,
             detail=product_error(
                 "upload_server_error",
-                "上傳時發生錯誤",
-                "後端在儲存或處理 PDF 時中斷了。",
-                ["稍後重試一次", "確認檔名不要包含特殊字元", "若持續發生，請查看後端 log"],
+                "Upload failed",
+                "The backend was interrupted while saving or processing the PDF.",
+                ["Try again later", "Confirm the filename does not contain unusual characters", "If it keeps happening, check the backend log"],
                 str(e),
             )
         )
@@ -355,68 +388,52 @@ from agents.document import get_loaded_files
 
 @app.get("/documents")
 async def list_documents():
-    files = get_loaded_files()
-    return {"documents": files}
+    return {"documents": _list_pdf_files()}
 
 @app.delete("/documents/{filename}")
 async def delete_document(filename: str):
     try:
-        print(f"\n🗑️ Delete Request for: {filename}")
-        
-        # Try to find and delete the file
-        # We explicitly check for decoded name, and maybe encoded name just in case
-        file_paths = [
-            f"backend/{filename}", 
-            filename, 
-            f"../{filename}",
-            os.path.join("backend", filename)
-        ]
+        decoded_filename = os.path.basename(unquote(filename))
+        print(f"\n🗑️ Delete Request for: {decoded_filename}")
         
         deleted = False
-        attempted_paths = []
+        attempted_paths = _pdf_storage_paths(decoded_filename)
         
-        for path in file_paths:
-            full_path = os.path.abspath(path)
-            attempted_paths.append(full_path)
-            
-            if os.path.exists(path):
+        for path in attempted_paths:
+            if os.path.exists(path) and os.path.isfile(path):
                 os.remove(path)
                 deleted = True
-                print(f"✅ Deleted file: {path} (Absolute: {full_path})")
+                print(f"✅ Deleted file: {path}")
                 break
         
         if not deleted:
-            # Try searching directly in backend directory using listdir to avoid encoding mismatches
-            if os.path.exists("backend"):
-                for existing_file in os.listdir("backend"):
-                    if existing_file == filename:
-                        path = os.path.join("backend", existing_file)
-                        os.remove(path)
-                        deleted = True
-                        print(f"✅ Deleted file via listdir match: {path}")
-                        break
+            for existing_file in os.listdir(BACKEND_DIR):
+                if existing_file == decoded_filename:
+                    path = os.path.join(BACKEND_DIR, existing_file)
+                    os.remove(path)
+                    deleted = True
+                    print(f"✅ Deleted file via listdir match: {path}")
+                    break
 
         if not deleted:
             print(f"❌ File not found. Checked: {attempted_paths}")
-            # List available files for debugging
-            if os.path.exists("backend"):
-                print(f"   Available files in backend/: {os.listdir('backend')}")
+            print(f"   Available PDF files in backend/: {_list_pdf_files()}")
                 
             raise HTTPException(
                 status_code=404,
                 detail=product_error(
                     "document_not_found",
-                    "找不到這份 PDF",
-                    "系統目前找不到要刪除的檔案，可能已經被刪除或檔名不同。",
-                    ["重新整理文件清單", "確認檔名是否正確"],
-                    {"checked_locations": file_paths},
+                    "PDF not found",
+                    "The system could not find the file to delete. It may already be deleted or the filename may differ.",
+                    ["Refresh the document list", "Confirm the filename is correct"],
+                    {"checked_locations": attempted_paths},
                 )
             )
         
         # Reinitialize knowledge base
         initialize_knowledge_base()
         
-        return {"message": f"File {filename} deleted successfully"}
+        return {"message": f"File {decoded_filename} deleted successfully"}
     except HTTPException:
         raise
     except Exception as e:
@@ -425,9 +442,9 @@ async def delete_document(filename: str):
             status_code=500,
             detail=product_error(
                 "delete_server_error",
-                "刪除 PDF 時發生錯誤",
-                "後端在刪除檔案或重建知識庫時中斷了。",
-                ["稍後重試一次", "若檔案已消失，請重新整理文件清單"],
+                "Delete failed",
+                "The backend was interrupted while deleting the file or rebuilding the knowledge base.",
+                ["Try again later", "If the file is already gone, refresh the document list"],
                 str(e),
             )
         )
@@ -435,24 +452,26 @@ async def delete_document(filename: str):
 @app.put("/documents/{old_filename}")
 async def rename_document(old_filename: str, new_name: dict):
     try:
+        decoded_old_filename = os.path.basename(unquote(old_filename))
         new_filename = new_name.get("new_name")
         if not new_filename:
             raise HTTPException(
                 status_code=400,
                 detail=product_error(
                     "missing_document_name",
-                    "缺少新的檔案名稱",
-                    "重新命名時需要提供新名稱。",
-                    ["請輸入新的 PDF 名稱"],
+                    "New filename is missing",
+                    "A new name is required to rename the document.",
+                    ["Enter a new PDF name"],
                 )
             )
         
         # Ensure new filename ends with .pdf
+        new_filename = os.path.basename(unquote(new_filename))
         if not new_filename.endswith('.pdf'):
             new_filename += '.pdf'
         
         # Find the old file
-        old_paths = [f"backend/{old_filename}", old_filename, f"../{old_filename}"]
+        old_paths = _pdf_storage_paths(decoded_old_filename)
         old_path = None
         
         for path in old_paths:
@@ -465,23 +484,23 @@ async def rename_document(old_filename: str, new_name: dict):
                 status_code=404,
                 detail=product_error(
                     "document_not_found",
-                    "找不到這份 PDF",
-                    "系統目前找不到要重新命名的檔案，可能已經被刪除或檔名不同。",
-                    ["重新整理文件清單", "確認檔名是否正確"],
+                    "PDF not found",
+                    "The system could not find the file to rename. It may already be deleted or the filename may differ.",
+                    ["Refresh the document list", "Confirm the filename is correct"],
                 )
             )
         
         # Construct new path in same directory
         directory = os.path.dirname(old_path)
-        new_path = os.path.join(directory, new_filename) if directory else new_filename
+        new_path = os.path.join(directory, new_filename)
         
         # Rename the file
         os.rename(old_path, new_path)
-        print(f"✅ Renamed: {old_filename} -> {new_filename}")
+        print(f"✅ Renamed: {decoded_old_filename} -> {new_filename}")
         
         # Optimized: Update metadata in-place instead of reloading everything
         # initialize_knowledge_base()
-        rename_success = rename_document_in_kb(old_filename, new_filename)
+        rename_success = rename_document_in_kb(decoded_old_filename, new_filename)
         
         if not rename_success:
              print(f"⚠️ Fast rename failed (vector_db might be empty), falling back to full reload.")
@@ -496,9 +515,9 @@ async def rename_document(old_filename: str, new_name: dict):
             status_code=500,
             detail=product_error(
                 "rename_server_error",
-                "重新命名 PDF 時發生錯誤",
-                "後端在重新命名檔案或更新知識庫 metadata 時中斷了。",
-                ["稍後重試一次", "確認新檔名不要包含特殊字元"],
+                "Rename failed",
+                "The backend was interrupted while renaming the file or updating knowledge-base metadata.",
+                ["Try again later", "Confirm the new filename does not contain unusual characters"],
                 str(e),
             )
         )

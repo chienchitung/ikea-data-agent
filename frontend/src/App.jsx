@@ -21,9 +21,76 @@ const AVATARS = [
     { id: 'teddy', name: 'Teddy', src: teddyAvatar },
 ];
 
+const UI_TRANSLATIONS = {
+    '正在理解問題': 'Understanding your question',
+    '正在判斷脈絡': 'Checking context',
+    '正在選擇合適工具': 'Choosing the right tool',
+    '正在整合上下文': 'Combining context',
+    '正在查詢資料': 'Searching data',
+    '正在等待工具回傳': 'Waiting for tool results',
+    '正在整理回覆': 'Drafting the response',
+    '正在根據上下文整理回覆': 'Drafting from context',
+    '正在準備查詢資料': 'Preparing data lookup',
+    '正在重新選擇資料工具': 'Choosing a different data tool',
+    '正在讀取工作表清單': 'Reading worksheet list',
+    '正在檢查工作表欄位': 'Checking worksheet fields',
+    '正在查詢工作表資料': 'Querying worksheet data',
+    '正在搜尋 Confluence': 'Searching Confluence',
+    '正在讀取 Confluence 內容': 'Reading Confluence content',
+    '正在整理 Confluence 頁面': 'Organizing Confluence pages',
+    '正在查詢 Trello 進度': 'Checking Trello progress',
+    '正在讀取 Trello 卡片': 'Reading Trello card',
+    '正在搜尋 Trello 卡片': 'Searching Trello card',
+    '正在查詢 get_project_status': 'Checking Trello progress',
+    '正在查詢 search_document_base': 'Searching PDF knowledge base',
+    '正在重新整理回答': 'Regenerating the response',
+    '正在組織新版回覆': 'Preparing the new response',
+    '正在搜尋 PDF 知識庫': 'Searching PDF knowledge base',
+    '正在搜尋 Trello 專案': 'Searching Trello projects',
+    '正在搜尋 Confluence 文件': 'Searching Confluence documents',
+    '正在分析資料': 'Analyzing data',
+    '正在轉交給專家 Agent': 'Routing to the right agent',
+    '自行輸入': 'Custom',
+    '用自己的文字補充需求': 'Add details in your own words',
+    '選擇一個方向後，我會再查資料。': 'Choose a direction and I will continue searching.',
+    '幫我補一下方向': 'Help me narrow this down',
+    '目前連不到後端服務': 'Backend service is unreachable',
+    '我沒有收到後端回應，所以這次請求沒有完成。': 'I did not receive a backend response, so this request was not completed.',
+    '確認 backend server 是否正在執行': 'Check that the backend server is running',
+    '稍後再試一次': 'Try again later',
+    '檔案或請求太大': 'File or request is too large',
+    '這次送出的內容超過後端可處理的大小。': 'The submitted content is larger than the backend can process.',
+    '縮小檔案後重新上傳': 'Reduce the file size and upload again',
+    '或把問題拆成較小範圍': 'Or split the question into a smaller scope',
+    'PDF 上傳沒有完成': 'PDF upload did not finish',
+    '上傳或解析 PDF 時發生錯誤。': 'An error occurred while uploading or parsing the PDF.',
+    '確認 PDF 可以正常開啟': 'Confirm that the PDF opens correctly',
+    '稍後重新上傳一次': 'Upload it again later',
+    '重新生成失敗': 'Regeneration failed',
+    '我無法重新整理這則回答。': 'I could not regenerate this answer.',
+    '或直接用新的訊息補充你想修改的方向': 'Or send a new message with the changes you want',
+    '處理過程中斷了': 'Processing was interrupted',
+    '後端處理請求時發生錯誤。': 'The backend encountered an error while processing the request.',
+    '稍後重試一次': 'Try again later',
+    '如果問題很長，先縮小範圍再問': 'If the question is long, narrow the scope first',
+};
+
 // ── 工具函式 ────────────────────────────────────────────
 function generateId() {
     return `conv_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function toEnglishUiText(value) {
+    if (typeof value !== 'string') return value;
+    return UI_TRANSLATIONS[value] || value;
+}
+
+function hasCjkText(value) {
+    return typeof value === 'string' && /[\u3400-\u9fff]/.test(value);
+}
+
+function toEnglishUiList(values = []) {
+    return values.map(item => toEnglishUiText(item));
 }
 
 function makeTitle(messages) {
@@ -61,38 +128,38 @@ function saveConversations(convs) {
 
 function getResponseStatusLabel(phase, elapsedSeconds) {
     if (phase === 'understanding') {
-        if (elapsedSeconds < 3) return '正在理解問題';
-        return '正在判斷脈絡';
+        if (elapsedSeconds < 3) return 'Understanding your question';
+        return 'Checking context';
     }
 
     if (phase === 'thinking') {
-        if (elapsedSeconds < 6) return '正在選擇合適工具';
-        return '正在整合上下文';
+        if (elapsedSeconds < 6) return 'Choosing the right tool';
+        return 'Combining context';
     }
 
     if (phase === 'tool' || phase === 'searching') {
-        if (elapsedSeconds < 8) return '正在查詢資料';
-        return '正在等待工具回傳';
+        if (elapsedSeconds < 8) return 'Searching data';
+        return 'Waiting for tool results';
     }
 
     if (phase === 'composing') {
-        return '正在整理回覆';
+        return 'Drafting the response';
     }
 
     if (phase === 'regenerating') {
-        if (elapsedSeconds < 6) return '正在重新整理回答';
-        return '正在組織新版回覆';
+        if (elapsedSeconds < 6) return 'Regenerating the response';
+        return 'Preparing the new response';
     }
 
-    if (elapsedSeconds < 5) return '正在查詢資料';
-    if (elapsedSeconds < 14) return '正在整合上下文';
-    return '正在整理回覆';
+    if (elapsedSeconds < 5) return 'Searching data';
+    if (elapsedSeconds < 14) return 'Combining context';
+    return 'Drafting the response';
 }
 
 function formatAssistantNotice(title, message, nextSteps = []) {
-    let content = `**${title}**\n\n${message}`;
+    let content = `**${toEnglishUiText(title)}**\n\n${toEnglishUiText(message)}`;
     if (nextSteps.length > 0) {
-        content += `\n\n你可以試試：\n${nextSteps.map(step => `- ${step}`).join('\n')}`;
+        content += `\n\nYou can try:\n${toEnglishUiList(nextSteps).map(step => `- ${step}`).join('\n')}`;
     }
     return content;
 }
@@ -118,40 +185,40 @@ function buildRequestErrorMessage(error, context = 'chat') {
 
     if (!error?.response) {
         return formatAssistantNotice(
-            '目前連不到後端服務',
-            '我沒有收到後端回應，所以這次請求沒有完成。',
-            ['確認 backend server 是否正在執行', '稍後再試一次']
+            'Backend service is unreachable',
+            'I did not receive a backend response, so this request was not completed.',
+            ['Check that the backend server is running', 'Try again later']
         );
     }
 
     if (error.response.status === 413) {
         return formatAssistantNotice(
-            '檔案或請求太大',
-            '這次送出的內容超過後端可處理的大小。',
-            ['縮小檔案後重新上傳', '或把問題拆成較小範圍']
+            'File or request is too large',
+            'The submitted content is larger than the backend can process.',
+            ['Reduce the file size and upload again', 'Or split the question into a smaller scope']
         );
     }
 
     if (context === 'upload') {
         return formatAssistantNotice(
-            'PDF 上傳沒有完成',
-            error.response?.data?.message || error.message || '上傳或解析 PDF 時發生錯誤。',
-            ['確認 PDF 可以正常開啟', '稍後重新上傳一次']
+            'PDF upload did not finish',
+            error.response?.data?.message || error.message || 'An error occurred while uploading or parsing the PDF.',
+            ['Confirm that the PDF opens correctly', 'Upload it again later']
         );
     }
 
     if (context === 'regenerate') {
         return formatAssistantNotice(
-            '重新生成失敗',
-            '我無法重新整理這則回答。',
-            ['稍後再試一次', '或直接用新的訊息補充你想修改的方向']
+            'Regeneration failed',
+            'I could not regenerate this answer.',
+            ['Try again later', 'Or send a new message with the changes you want']
         );
     }
 
     return formatAssistantNotice(
-        '處理過程中斷了',
-        error.response?.data?.message || error.message || '後端處理請求時發生錯誤。',
-        ['稍後重試一次', '如果問題很長，先縮小範圍再問']
+        'Processing was interrupted',
+        error.response?.data?.message || error.message || 'The backend encountered an error while processing the request.',
+        ['Try again later', 'If the question is long, narrow the scope first']
     );
 }
 
@@ -521,7 +588,7 @@ function App() {
 
         for (const filename of toDelete) {
             try {
-                await axios.delete(`${API_URL}/documents/${filename}`);
+                await axios.delete(`${API_URL}/documents/${encodeURIComponent(filename)}`);
             } catch {
                 failed.push(filename);
             }
@@ -551,7 +618,7 @@ function App() {
         newSelected.delete(filename);
         setSelectedDocuments(newSelected);
         try {
-            await axios.delete(`${API_URL}/documents/${filename}`);
+            await axios.delete(`${API_URL}/documents/${encodeURIComponent(filename)}`);
             await fetchDocuments();
             setMessages(prev => [...prev, { role: 'assistant', content: `✅ File deleted: \`${filename}\`` }]);
         } catch (error) {
@@ -570,7 +637,7 @@ function App() {
     const confirmRename = async () => {
         if (!newDocName.trim()) return;
         try {
-            await axios.put(`${API_URL}/documents/${renamingDoc}`, { new_name: newDocName });
+            await axios.put(`${API_URL}/documents/${encodeURIComponent(renamingDoc)}`, { new_name: newDocName });
             await fetchDocuments();
             setRenamingDoc(null);
             setNewDocName("");
@@ -587,7 +654,7 @@ function App() {
 
         setIsUploading(true);
         setUploadProgress(0);
-        setUploadStage("上傳檔案中...");
+        setUploadStage("Uploading file...");
         const formData = new FormData();
         formData.append("file", file);
 
@@ -663,7 +730,12 @@ function App() {
         const normalizedPhase = phase === "tool" ? "searching" : phase;
         setResponsePhase(normalizedPhase);
         if (payload.label) {
-            setResponseStatusText(payload.label);
+            const translatedLabel = toEnglishUiText(payload.label);
+            setResponseStatusText(
+                hasCjkText(translatedLabel)
+                    ? getResponseStatusLabel(normalizedPhase, responseElapsedSeconds)
+                    : translatedLabel
+            );
         }
     };
 
@@ -759,7 +831,7 @@ function App() {
                 if (!customValue) return null;
                 return {
                     question: question.question,
-                    label: '自行輸入',
+                    label: 'Custom',
                     value: customValue,
                 };
             }
@@ -1187,7 +1259,7 @@ function App() {
                                         </div>
                                         <div className="typing-status">
                                             <span>{responseStatusLabel}</span>
-                                            <span>{responseElapsedSeconds} 秒</span>
+                                            <span>{responseElapsedSeconds}s</span>
                                         </div>
                                     </div>
                                 </div>
@@ -1206,8 +1278,8 @@ function App() {
                                     <p className="clarification-eyebrow">Help me aim better</p>
                                     <h2>
                                         {clarification.questions.length > 1
-                                            ? "幫我補一下方向"
-                                            : clarification.questions[0]?.question}
+                                            ? "Help me narrow this down"
+                                            : toEnglishUiText(clarification.questions[0]?.question)}
                                     </h2>
                                 </div>
                                 <button type="button" onClick={clearClarification} className="clarification-close" aria-label="Close clarification">
@@ -1218,15 +1290,15 @@ function App() {
                                 {clarification.questions.map((question, questionIndex) => {
                                     const questionId = question.id || `q${questionIndex + 1}`;
                                     const options = [...(question.options || []), {
-                                        label: '自行輸入',
+                                        label: 'Custom',
                                         value: '__custom__',
-                                        description: '用自己的文字補充需求'
+                                        description: 'Add details in your own words'
                                     }];
 
                                     return (
                                         <section key={questionId} className="clarification-question">
                                             {clarification.questions.length > 1 && (
-                                                <h3 className="clarification-question-title">{question.question}</h3>
+                                                <h3 className="clarification-question-title">{toEnglishUiText(question.question)}</h3>
                                             )}
                                             <div className="clarification-options">
                                                 {options.map((option) => {
@@ -1240,8 +1312,8 @@ function App() {
                                                             >
                                                                 <span className="clarification-check">{isSelected ? '✓' : ''}</span>
                                                                 <span>
-                                                                    <strong>{option.label}</strong>
-                                                                    {option.description && <small>{option.description}</small>}
+                                                                    <strong>{toEnglishUiText(option.label)}</strong>
+                                                                    {option.description && <small>{toEnglishUiText(option.description)}</small>}
                                                                 </span>
                                                             </button>
                                                             {option.value === '__custom__' && isSelected && (
@@ -1250,7 +1322,7 @@ function App() {
                                                                     className="clarification-custom-input"
                                                                     value={clarificationCustomAnswers[questionId] || ''}
                                                                     onChange={(e) => setClarificationCustomAnswers(prev => ({ ...prev, [questionId]: e.target.value }))}
-                                                                    placeholder="請輸入你想補充的條件"
+                                                                    placeholder="Enter any extra details"
                                                                     autoFocus
                                                                 />
                                                             )}
@@ -1263,7 +1335,7 @@ function App() {
                                 })}
                             </div>
                             <div className="clarification-actions">
-                                <span>{clarification.reason || '選擇一個方向後，我會再查資料。'}</span>
+                                <span>{toEnglishUiText(clarification.reason || 'Choose a direction and I will continue searching.')}</span>
                                 <div>
                                     <button type="button" onClick={skipClarification} className="clarification-skip">Skip</button>
                                     <button type="button" onClick={confirmClarification} className="clarification-submit" aria-label="Continue">
