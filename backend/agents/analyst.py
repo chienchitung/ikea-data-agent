@@ -8,6 +8,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 from langchain.tools import tool
 from dotenv import load_dotenv
 import glob
+from datetime import datetime, timezone
 
 load_dotenv()
 
@@ -329,6 +330,47 @@ def _choose_month_date_column(df: pd.DataFrame, query: str) -> Optional[str]:
     return None
 
 
+def _choose_filter_date_column(df: pd.DataFrame, query: str) -> Optional[str]:
+    """Choose the date column used for date-range filtering."""
+    query_lower = query.lower()
+    if any(term in query_lower for term in ['開始', 'start']):
+        preferred = ['Start Date', 'Creation Date', 'Due Date', 'Modified']
+    elif any(term in query_lower for term in ['到期', '截止', 'due']):
+        preferred = ['Due Date', 'Start Date', 'Creation Date', 'Modified']
+    elif any(term in query_lower for term in ['修改', '更新', 'modified', 'updated']):
+        preferred = ['Modified', 'Creation Date', 'Start Date', 'Due Date']
+    else:
+        # Ticket/request volume and broad date filters should default to creation date.
+        preferred = ['Creation Date', 'Start Date', 'Due Date', 'Modified']
+
+    for col in preferred:
+        actual_col = _resolve_column(df, col)
+        if actual_col and pd.api.types.is_datetime64_any_dtype(df[actual_col]):
+            return actual_col
+    return None
+
+
+def _wants_duration_reason_analysis(query: str) -> bool:
+    query_lower = query.lower()
+    compact = re.sub(r"\s+", "", query_lower)
+    duration_terms = ['long duration', 'duration', '耗時', '花很久', '花費時間', '處理時間', '久', '延遲']
+    reason_terms = ['reason', 'cause', 'why', '原因', '為什麼', '導致', '瓶頸']
+    return any(term in query_lower or term in compact for term in duration_terms) and any(
+        term in query_lower or term in compact for term in reason_terms
+    )
+
+
+def _format_source_footer(worksheet_name: str, total_rows: int) -> str:
+    fetched_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return (
+        "\n\n---\n"
+        f"Source: Google Sheet worksheet `{worksheet_name}`\n"
+        f"Fetched at: {fetched_at}\n"
+        f"Rows read before filtering: {total_rows}\n"
+        "Grounding rule: All numbers and row details above are computed directly from the worksheet data returned in this tool call."
+    )
+
+
 def _monthly_counts(df: pd.DataFrame, date_col: str) -> pd.Series:
     valid_dates = df.dropna(subset=[date_col]).copy()
     if valid_dates.empty:
@@ -505,18 +547,16 @@ def query_worksheet_data(worksheet_name: str, query_description: str) -> str:
       請先將其轉換為明確的日期區間再傳入，例如「今年」→「2026年1月到12月」。
     """
     try:
-        # 讀取資料（含緩存）
-        if worksheet_name not in _cached_data:
-            gc = get_gspread_client()
-            spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
-            worksheet = spreadsheet.worksheet(worksheet_name)
-            all_records = get_all_records_safe(worksheet)
-            _cached_data[worksheet_name] = all_records
-        else:
-            all_records = _cached_data[worksheet_name]
+        # Always fetch the worksheet for analysis queries so answers reflect the
+        # current Google Sheet instead of a stale in-memory cache.
+        gc = get_gspread_client()
+        spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
+        worksheet = spreadsheet.worksheet(worksheet_name)
+        all_records = get_all_records_safe(worksheet)
+        _cached_data[worksheet_name] = all_records
 
         if not all_records:
-            return f"Worksheet '{worksheet_name}' has no data."
+            return f"Worksheet '{worksheet_name}' has no data." + _format_source_footer(worksheet_name, 0)
 
         df = pd.DataFrame(all_records)
         df = _drop_empty_columns(df)
@@ -532,14 +572,13 @@ def query_worksheet_data(worksheet_name: str, query_description: str) -> str:
         # ── Step 2：依日期區間篩選 ────────────────────────────
         date_start, date_end = _extract_date_range(query_description)
         if date_start:
-            # 依別名對映找日期欄位，優先 Start Date，次選 Creation Date
-            ref_col = _resolve_column(df, 'Start Date') or _resolve_column(df, 'Creation Date')
+            ref_col = _choose_filter_date_column(df, query_description)
             if ref_col:
                 mask = (df[ref_col] >= date_start) & (df[ref_col] <= date_end)
                 df = df[mask]
                 result += f"📅 Date filter: {date_start.strftime('%Y-%m-%d')} to {date_end.strftime('%Y-%m-%d')} ({ref_col}), {len(df)} rows\n\n"
                 if df.empty:
-                    return result + "No data in this date range."
+                    return result + "No data in this date range." + _format_source_footer(worksheet_name, total_rows)
 
         # ── Step 3：依狀態篩選 ────────────────────────────────
         status_col = _resolve_column(df, 'Status')
@@ -557,7 +596,7 @@ def query_worksheet_data(worksheet_name: str, query_description: str) -> str:
             df = df[df[status_col].str.contains(status_filter, case=False, na=False)]
             result += f"🔍 Status filter: {status_filter}, {len(df)} rows\n\n"
             if df.empty:
-                return result + f"No rows have status \"{status_filter}\"."
+                return result + f"No rows have status \"{status_filter}\"." + _format_source_footer(worksheet_name, total_rows)
 
         # ── Step 4：依 Ticket ID 搜尋 ────────────────────────
         ticket_pattern = r'(REQ\d+)'
@@ -572,7 +611,7 @@ def query_worksheet_data(worksheet_name: str, query_description: str) -> str:
                 df = df[combined_mask]
                 result += f"🔎 ID search: {', '.join(potential_ids)}, {len(df)} rows\n\n"
                 if df.empty:
-                    return result + "No matching ticket ID was found."
+                    return result + "No matching ticket ID was found." + _format_source_footer(worksheet_name, total_rows)
 
         # ── Step 4.5：依欄位值篩選（中文別名對映）────────────
         # 例：「部門 是 Marketing」→ Department == Marketing
@@ -584,7 +623,7 @@ def query_worksheet_data(worksheet_name: str, query_description: str) -> str:
                 df = df[df[actual_col].astype(str).str.contains(value, case=False, na=False)]
                 result += f"🏷️ Field filter: {actual_col} ({col_term}) contains \"{value}\", {len(df)} rows\n\n"
                 if df.empty:
-                    return result + f"No rows match \"{actual_col} = {value}\"."
+                    return result + f"No rows match \"{actual_col} = {value}\"." + _format_source_footer(worksheet_name, total_rows)
 
         # ── Step 5：統計類查詢（平均天數）────────────────────
         if any(k in query_lower for k in ['平均', 'average', '天數', '處理時間', '花費', '工時']):
@@ -612,7 +651,33 @@ def query_worksheet_data(worksheet_name: str, query_description: str) -> str:
                             values=list(chart_df['_處理天數'].astype(int)),
                             chart_type=_chart_type(query_description),
                         )
-                    return result
+                    if _wants_duration_reason_analysis(query_description):
+                        evidence_cols = [
+                            col for col in [
+                                ticket_col,
+                                _resolve_column(df_valid, 'Subject'),
+                                _resolve_column(df_valid, 'Request Details'),
+                                _resolve_column(df_valid, 'Status'),
+                                _resolve_column(df_valid, 'Labels'),
+                                _resolve_column(df_valid, 'Data Source'),
+                                _resolve_column(df_valid, 'Data Support'),
+                                _resolve_column(df_valid, 'Assigned To'),
+                                '_處理天數',
+                            ]
+                            if col
+                        ]
+                        evidence = (
+                            df_valid.sort_values('_處理天數', ascending=False)
+                            .head(10)[evidence_cols]
+                            .rename(columns={'_處理天數': 'Processing Days'})
+                        )
+                        result += "\n\n### Evidence Rows For Duration Analysis\n\n"
+                        result += _to_markdown_table(evidence)
+                        result += (
+                            "\n\nCausality note: The worksheet can show which rows took longer and the text recorded in "
+                            "`Subject` / `Request Details`, but it does not prove a root cause unless the row text explicitly states one."
+                        )
+                    return result + _format_source_footer(worksheet_name, total_rows)
 
         # ── Step 6：輸出資料內容（Markdown 表格）────────────
         df = _drop_empty_columns(df)
@@ -660,7 +725,7 @@ def query_worksheet_data(worksheet_name: str, query_description: str) -> str:
                     if not _wants_detail_rows(query_description):
                         if not already_filtered_by_assignee:
                             result += "\nTo filter by a specific assignee, ask for example: \"Monthly ticket count for assignee Kelly Dong\".\n"
-                        return result
+                        return result + _format_source_footer(worksheet_name, total_rows)
             else:
                 result += "No usable date column was found, so monthly statistics cannot be calculated.\n\n"
 
@@ -699,13 +764,13 @@ def query_worksheet_data(worksheet_name: str, query_description: str) -> str:
 
         if analysis_intent.get('output') == 'chart' and not _wants_detail_rows(query_description):
             result += f"{len(df)} rows were summarized and a chart was generated from the filters. Ask for details if you need row-level data.\n"
-            return result
+            return result + _format_source_footer(worksheet_name, total_rows)
 
         # 資料表格
         result += f"### Data Details ({len(df)} rows)\n\n"
         result += _to_markdown_table(df)
 
-        return result
+        return result + _format_source_footer(worksheet_name, total_rows)
 
     except gspread.exceptions.WorksheetNotFound:
         return f"Worksheet '{worksheet_name}' was not found."

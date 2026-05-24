@@ -1,12 +1,14 @@
 # Node
 node_modules/
 dist/
+frontend/.npm-cache/
 npm-debug.log
 
 # Python
 __pycache__/
 *.py[cod]
 venv/
+.venv/
 .env
 .pytest_cache/
 
@@ -15,6 +17,8 @@ venv/
 
 # Agent
 .gemini/
+.claude/
+*.log
 backend/.venv/
 backend/faiss_index/
 backend/.conversation_store/

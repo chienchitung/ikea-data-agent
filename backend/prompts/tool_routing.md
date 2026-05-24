@@ -80,6 +80,8 @@
 
 重要規則：
 - 提供清晰資料摘要；若資料量大，提供關鍵統計。
+- Data Analyst 工具是 Request 工作表數字與統計的唯一事實來源；回答時不得自行推算工具未回傳的數字、比例、排名、原因或 row details。
+- 若詢問原因、延遲、long duration 或 bottleneck，必須使用 `query_worksheet_data` 取得 evidence rows；只能根據 `Subject`、`Request Details`、Status、Labels 等實際欄位文字描述可能線索，不得把相關性說成確定根因。
 - 若用戶要求圖表、圖形、視覺化、chart、bar chart、pie chart 或 line chart，必須使用 `query_worksheet_data` 取得統計結果，並保留工具回傳的 ```chart code block，不要刪除或改寫其中 JSON。
 - 若用戶要求圖表，預設只回答摘要統計與圖表；不要列出每筆資料明細，除非用戶明確要求「明細」、「資料表」或「列出每筆」。
 - 圖表回答的文字摘要最多保留 3-4 個高價值欄位，例如 Status、Market、Data Source、Data Support；不要把所有欄位分布完整列出，除非用戶明確要求「所有欄位分布」。

@@ -156,10 +156,23 @@ function getResponseStatusLabel(phase, elapsedSeconds) {
     return 'Drafting the response';
 }
 
-function formatAssistantNotice(title, message, nextSteps = []) {
-    let content = `**${toEnglishUiText(title)}**\n\n${toEnglishUiText(message)}`;
+function detectMessageLanguage(value) {
+    const text = String(value || '');
+    const cjkCount = (text.match(/[\u3400-\u9fff]/g) || []).length;
+    const englishChars = (text.match(/[A-Za-z]{2,}/g) || []).join('').length;
+    if (cjkCount === 0 && englishChars > 0) return 'en';
+    if (englishChars === 0 && cjkCount > 0) return 'zh';
+    return englishChars > cjkCount * 1.5 ? 'en' : 'zh';
+}
+
+function formatAssistantNotice(title, message, nextSteps = [], language = 'en') {
+    const displayTitle = language === 'zh' ? title : toEnglishUiText(title);
+    const displayMessage = language === 'zh' ? message : toEnglishUiText(message);
+    const displaySteps = language === 'zh' ? nextSteps : toEnglishUiList(nextSteps);
+    let content = `**${displayTitle}**\n\n${displayMessage}`;
     if (nextSteps.length > 0) {
-        content += `\n\nYou can try:\n${toEnglishUiList(nextSteps).map(step => `- ${step}`).join('\n')}`;
+        const helper = language === 'zh' ? '你可以試試：' : 'You can try:';
+        content += `\n\n${helper}\n${displaySteps.map(step => `- ${step}`).join('\n')}`;
     }
     return content;
 }
@@ -177,48 +190,55 @@ function getStructuredError(error) {
     return null;
 }
 
-function buildRequestErrorMessage(error, context = 'chat') {
+function buildRequestErrorMessage(error, context = 'chat', userMessage = '') {
+    const language = detectMessageLanguage(userMessage);
+    const zh = language === 'zh';
     const structured = getStructuredError(error);
     if (structured?.title && structured?.message) {
-        return formatAssistantNotice(structured.title, structured.message, structured.nextSteps);
+        return formatAssistantNotice(structured.title, structured.message, structured.nextSteps, language);
     }
 
     if (!error?.response) {
         return formatAssistantNotice(
-            'Backend service is unreachable',
-            'I did not receive a backend response, so this request was not completed.',
-            ['Check that the backend server is running', 'Try again later']
+            zh ? '目前連不到後端服務' : 'Backend service is unreachable',
+            zh ? '我沒有收到後端回應，所以這次請求沒有完成。' : 'I did not receive a backend response, so this request was not completed.',
+            zh ? ['確認 backend server 是否正在執行', '稍後再試一次'] : ['Check that the backend server is running', 'Try again later'],
+            language
         );
     }
 
     if (error.response.status === 413) {
         return formatAssistantNotice(
-            'File or request is too large',
-            'The submitted content is larger than the backend can process.',
-            ['Reduce the file size and upload again', 'Or split the question into a smaller scope']
+            zh ? '檔案或請求太大' : 'File or request is too large',
+            zh ? '這次送出的內容超過後端可處理的大小。' : 'The submitted content is larger than the backend can process.',
+            zh ? ['縮小檔案後重新上傳', '或把問題拆成較小範圍'] : ['Reduce the file size and upload again', 'Or split the question into a smaller scope'],
+            language
         );
     }
 
     if (context === 'upload') {
         return formatAssistantNotice(
-            'PDF upload did not finish',
-            error.response?.data?.message || error.message || 'An error occurred while uploading or parsing the PDF.',
-            ['Confirm that the PDF opens correctly', 'Upload it again later']
+            zh ? 'PDF 上傳沒有完成' : 'PDF upload did not finish',
+            error.response?.data?.message || error.message || (zh ? '上傳或解析 PDF 時發生錯誤。' : 'An error occurred while uploading or parsing the PDF.'),
+            zh ? ['確認 PDF 可以正常開啟', '稍後重新上傳一次'] : ['Confirm that the PDF opens correctly', 'Upload it again later'],
+            language
         );
     }
 
     if (context === 'regenerate') {
         return formatAssistantNotice(
-            'Regeneration failed',
-            'I could not regenerate this answer.',
-            ['Try again later', 'Or send a new message with the changes you want']
+            zh ? '重新生成失敗' : 'Regeneration failed',
+            zh ? '我無法重新整理這則回答。' : 'I could not regenerate this answer.',
+            zh ? ['稍後再試一次', '或直接用新的訊息補充你想修改的方向'] : ['Try again later', 'Or send a new message with the changes you want'],
+            language
         );
     }
 
     return formatAssistantNotice(
-        'Processing was interrupted',
-        error.response?.data?.message || error.message || 'The backend encountered an error while processing the request.',
-        ['Try again later', 'If the question is long, narrow the scope first']
+        zh ? '處理過程中斷了' : 'Processing was interrupted',
+        error.response?.data?.message || error.message || (zh ? '後端處理請求時發生錯誤。' : 'The backend encountered an error while processing the request.'),
+        zh ? ['稍後重試一次', '如果問題很長，先縮小範圍再問'] : ['Try again later', 'If the question is long, narrow the scope first'],
+        language
     );
 }
 
@@ -347,6 +367,7 @@ function App() {
     const [pendingMessage, setPendingMessage] = useState("");
     const [pendingHistorySnapshot, setPendingHistorySnapshot] = useState([]);
     const [pendingTurnContext, setPendingTurnContext] = useState({});
+    const [pendingConversationId, setPendingConversationId] = useState(null);
     const [isClarifying, setIsClarifying] = useState(false);
     const [isSourcesExpanded, setIsSourcesExpanded] = useState(true);
     const [isConvsExpanded, setIsConvsExpanded] = useState(true);
@@ -361,6 +382,9 @@ function App() {
     const messagesEndRef = useRef(null);
     const fileInputRef = useRef(null);
     const abortControllerRef = useRef(null);
+    const currentConvIdRef = useRef(null);
+    const conversationsRef = useRef([]);
+    const messagesRef = useRef([]);
     const recognitionRef = useRef(null);
     const speechBaseInputRef = useRef("");
     const speechTranscriptRef = useRef("");
@@ -370,6 +394,18 @@ function App() {
     const pendingScrollBehaviorRef = useRef("auto");
     const responseStartedAtRef = useRef(null);
     const responseStatusLabel = responseStatusText || getResponseStatusLabel(responsePhase, responseElapsedSeconds);
+
+    useEffect(() => {
+        currentConvIdRef.current = currentConvId;
+    }, [currentConvId]);
+
+    useEffect(() => {
+        conversationsRef.current = conversations;
+    }, [conversations]);
+
+    useEffect(() => {
+        messagesRef.current = messages;
+    }, [messages]);
 
     // ── 初始化：從 localStorage 載入 ─────────────────────
     useEffect(() => {
@@ -416,6 +452,37 @@ function App() {
             return updated;
         });
     }, [messages, currentConvId]);
+
+    const updateConversationMessages = (convId, updater) => {
+        if (!convId) return;
+
+        const currentMessages = currentConvIdRef.current === convId
+            ? messagesRef.current
+            : conversationsRef.current.find(c => c.id === convId)?.messages || [];
+        const nextMessages = typeof updater === 'function' ? updater(currentMessages) : updater;
+        const existing = conversationsRef.current.find(c => c.id === convId);
+        const nextConversation = existing
+            ? { ...existing, messages: nextMessages, title: makeTitle(nextMessages), updatedAt: Date.now() }
+            : {
+                id: convId,
+                title: makeTitle(nextMessages),
+                messages: nextMessages,
+                createdAt: Date.now(),
+                updatedAt: Date.now(),
+            };
+        const updated = existing
+            ? conversationsRef.current.map(c => c.id === convId ? nextConversation : c)
+            : [nextConversation, ...conversationsRef.current];
+
+        conversationsRef.current = updated;
+        saveConversations(updated);
+        setConversations(updated);
+
+        if (currentConvIdRef.current === convId) {
+            messagesRef.current = nextMessages;
+            setMessages(nextMessages);
+        }
+    };
 
     // currentConvId 變動時同步到 localStorage
     useEffect(() => {
@@ -529,12 +596,16 @@ function App() {
     const startNewConversation = () => {
         const newId = generateId();
         pendingScrollBehaviorRef.current = "auto";
+        currentConvIdRef.current = newId;
+        messagesRef.current = [];
         setCurrentConvId(newId);
         setMessages([]);
     };
 
     const switchConversation = (conv) => {
         pendingScrollBehaviorRef.current = "auto";
+        currentConvIdRef.current = conv.id;
+        messagesRef.current = conv.messages;
         setCurrentConvId(conv.id);
         setMessages(conv.messages);
     };
@@ -548,6 +619,8 @@ function App() {
         if (convId === currentConvId) {
             if (updated.length > 0) {
                 pendingScrollBehaviorRef.current = "auto";
+                currentConvIdRef.current = updated[0].id;
+                messagesRef.current = updated[0].messages;
                 setCurrentConvId(updated[0].id);
                 setMessages(updated[0].messages);
             } else {
@@ -787,7 +860,7 @@ function App() {
         turnContext = {}
     ) => {
         if (appendUserMessage) {
-            setMessages(prev => [...prev, { role: 'user', content: messageContent }]);
+            updateConversationMessages(activeConvId, prev => [...prev, { role: 'user', content: messageContent }]);
         }
         setInput("");
         beginResponseStatus(statusPhase, resetStatusTimer);
@@ -803,7 +876,7 @@ function App() {
                 clarifications,
                 turn_context: turnContext
             }, abortControllerRef.current.signal, handleResponseProgress);
-            setMessages(prev => [...prev, {
+            updateConversationMessages(activeConvId, prev => [...prev, {
                 role: 'assistant',
                 content: response.response,
                 metadata: response.metadata || {},
@@ -812,9 +885,9 @@ function App() {
         } catch (error) {
             if (axios.isCancel(error) || error.code === 'ERR_CANCELED' || error.name === 'AbortError') return;
             console.error("Error:", error);
-            setMessages(prev => [...prev, {
+            updateConversationMessages(activeConvId, prev => [...prev, {
                 role: 'assistant',
-                content: buildRequestErrorMessage(error, statusPhase === "regenerating" ? 'regenerate' : 'chat')
+                content: buildRequestErrorMessage(error, statusPhase === "regenerating" ? 'regenerate' : 'chat', messageContent)
             }]);
         } finally {
             abortControllerRef.current = null;
@@ -852,12 +925,16 @@ function App() {
         setPendingMessage("");
         setPendingHistorySnapshot([]);
         setPendingTurnContext({});
+        setPendingConversationId(null);
     };
 
     const confirmClarification = async () => {
         if (!pendingMessage || isLoading) return;
-        const activeConvId = currentConvId || generateId();
-        if (!currentConvId) setCurrentConvId(activeConvId);
+        const activeConvId = pendingConversationId || currentConvId || generateId();
+        if (!currentConvId) {
+            currentConvIdRef.current = activeConvId;
+            setCurrentConvId(activeConvId);
+        }
         const clarificationSelections = buildClarificationSelections();
         const historySnapshot = pendingHistorySnapshot;
         const turnContext = pendingTurnContext;
@@ -868,8 +945,11 @@ function App() {
 
     const skipClarification = async () => {
         if (!pendingMessage || isLoading) return;
-        const activeConvId = currentConvId || generateId();
-        if (!currentConvId) setCurrentConvId(activeConvId);
+        const activeConvId = pendingConversationId || currentConvId || generateId();
+        if (!currentConvId) {
+            currentConvIdRef.current = activeConvId;
+            setCurrentConvId(activeConvId);
+        }
         const messageToSend = pendingMessage;
         const historySnapshot = pendingHistorySnapshot;
         const turnContext = pendingTurnContext;
@@ -890,13 +970,16 @@ function App() {
         }
 
         const activeConvId = currentConvId || generateId();
-        if (!currentConvId) setCurrentConvId(activeConvId);
+        if (!currentConvId) {
+            currentConvIdRef.current = activeConvId;
+            setCurrentConvId(activeConvId);
+        }
 
         const messageContent = input.trim();
         const historySnapshot = messages;
         const userMessage = { role: 'user', content: messageContent };
 
-        setMessages(prev => [...prev, userMessage]);
+        updateConversationMessages(activeConvId, prev => [...prev, userMessage]);
         setInput("");
         if (textarea) textarea.style.height = 'auto';
         beginResponseStatus("understanding");
@@ -920,6 +1003,7 @@ function App() {
                 setPendingMessage(messageContent);
                 setPendingHistorySnapshot(historySnapshot);
                 setPendingTurnContext(turnContext);
+                setPendingConversationId(activeConvId);
                 setClarification(nextClarification);
                 setClarificationAnswers(defaultAnswers);
                 setClarificationCustomAnswers({});
@@ -942,7 +1026,7 @@ function App() {
         if (isLoading) return;
         const historyContext = messages.slice(0, index);
         const updatedUserMessage = { ...messages[index], content: newContent };
-        setMessages([...historyContext, updatedUserMessage]);
+        updateConversationMessages(currentConvId, [...historyContext, updatedUserMessage]);
         await sendChatMessage(newContent, currentConvId, historyContext, [], false, "regenerating", true);
     };
 

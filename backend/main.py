@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -53,6 +54,17 @@ class ClarificationResponse(BaseModel):
     reason: str = ""
     turn_context: Dict[str, Any] = Field(default_factory=dict)
 
+def detect_reply_language(text: str) -> str:
+    value = str(text or "")
+    cjk_count = len(re.findall(r"[\u3400-\u9fff]", value))
+    english_chars = sum(len(word) for word in re.findall(r"[A-Za-z]{2,}", value))
+    if cjk_count == 0 and english_chars > 0:
+        return "en"
+    if english_chars == 0 and cjk_count > 0:
+        return "zh"
+    return "en" if english_chars > cjk_count * 1.5 else "zh"
+
+
 def product_error(code: str, title: str, message: str, next_steps: Optional[List[str]] = None, details=None):
     return {
         "code": code,
@@ -62,25 +74,67 @@ def product_error(code: str, title: str, message: str, next_steps: Optional[List
         "details": details,
     }
 
-def error_markdown(error: dict) -> str:
+def error_markdown(error: dict, language: str = "en") -> str:
     next_steps = error.get("next_steps") or []
     output = f"**{error.get('title', 'Something went wrong')}**\n\n{error.get('message', '')}".strip()
     if next_steps:
-        output += "\n\nYou can try:\n" + "\n".join(f"- {step}" for step in next_steps)
+        helper = "你可以試試：" if language == "zh" else "You can try:"
+        output += f"\n\n{helper}\n" + "\n".join(f"- {step}" for step in next_steps)
     return output
 
-def classify_chat_error_text(text: str) -> Optional[dict]:
+
+def localized_product_error(code: str, language: str, details=None) -> dict:
+    zh = language == "zh"
+    if code == "ai_provider_unavailable":
+        return product_error(
+            code,
+            "AI 服務目前無法使用" if zh else "AI service is unavailable",
+            "後端目前無法連到模型服務，或缺少 API 設定，所以這次請求無法完成。" if zh else "The backend cannot reach the model service or is missing API configuration, so this request could not be completed.",
+            ["確認 GOOGLE_API_KEY / GEMINI_API_KEY 已設定", "稍後再試一次"] if zh else ["Check that GOOGLE_API_KEY / GEMINI_API_KEY is configured", "Try again later"],
+            details,
+        )
+    if code == "pdf_not_ready":
+        return product_error(
+            code,
+            "PDF 知識庫尚未準備好" if zh else "PDF knowledge base is not ready",
+            "目前還沒有可搜尋的 PDF 內容。PDF 可能尚未上傳，或解析 / embedding 尚未成功完成。" if zh else "There is no searchable PDF content yet. The PDF may not have been uploaded, or parsing / embedding may not have completed successfully.",
+            ["上傳 PDF 並等待處理完成", "如果剛上傳，請確認上傳結果顯示成功"] if zh else ["Upload a PDF and wait for processing to finish", "If you just uploaded one, confirm the upload result shows success"],
+            details,
+        )
+    if code == "no_relevant_result":
+        return product_error(
+            code,
+            "找不到可支持回答的資料" if zh else "No supporting data was found",
+            "目前可用資料不足以可靠回答。為了避免混入不相關內容，我不會猜測。" if zh else "The available data is not enough to answer this reliably. To avoid mixing unrelated content, I will not guess.",
+            ["改用更接近來源文件的關鍵字", "補充頁碼、段落標題或截圖標題", "如果內容是圖片型資料，請詢問掃描頁或圖片頁細節"] if zh else ["Try a keyword closer to the source document", "Add a page number, section title, or screenshot heading", "If the content is image-based, ask for the scanned/image page details"],
+            details,
+        )
+    if code == "agent_runtime_error":
+        return product_error(
+            code,
+            "處理過程中斷了" if zh else "Processing was interrupted",
+            "解讀問題或呼叫工具時發生錯誤，所以這次回答可能沒有完成。" if zh else "An error occurred while interpreting the question or calling tools, so this answer may not have completed.",
+            ["稍後再試一次", "如果問題很長，請先縮小範圍", "如果持續發生，請檢查後端 log"] if zh else ["Try again later", "If the question is long, narrow the scope first", "If it keeps happening, check the backend log"],
+            details,
+        )
+    if code == "chat_server_error":
+        return product_error(
+            code,
+            "後端無法處理這則訊息" if zh else "Backend failed to process the message",
+            "訊息已送到後端，但處理流程中斷了。" if zh else "The message reached the backend, but processing was interrupted.",
+            ["稍後再試一次", "如果問題很長，請先縮小範圍", "如果持續發生，請檢查後端 log"] if zh else ["Try again later", "If the question is long, narrow the scope first", "If it keeps happening, check the backend log"],
+            details,
+        )
+    return product_error(code, "發生錯誤" if zh else "Something went wrong", "請稍後再試一次。" if zh else "Please try again later.", details=details)
+
+
+def classify_chat_error_text(text: str, language: str = "en") -> Optional[dict]:
     lowered = str(text or "").lower()
     if not text:
         return None
 
     if "google_api_key" in lowered or "api key" in lowered or "gemini" in lowered:
-        return product_error(
-            "ai_provider_unavailable",
-            "AI service is unavailable",
-            "The backend cannot reach the model service or is missing API configuration, so this request could not be completed.",
-            ["Check that GOOGLE_API_KEY / GEMINI_API_KEY is configured", "Try again later"],
-        )
+        return localized_product_error("ai_provider_unavailable", language)
 
     if (
         "知識庫尚未建立" in text
@@ -88,12 +142,7 @@ def classify_chat_error_text(text: str) -> Optional[dict]:
         or "knowledge base is not ready" in lowered
         or "upload a pdf first" in lowered
     ):
-        return product_error(
-            "pdf_not_ready",
-            "PDF knowledge base is not ready",
-            "There is no searchable PDF content yet. The PDF may not have been uploaded, or parsing / embedding may not have completed successfully.",
-            ["Upload a PDF and wait for processing to finish", "If you just uploaded one, confirm the upload result shows success"],
-        )
+        return localized_product_error("pdf_not_ready", language)
 
     if (
         "文件中完全未提及" in text
@@ -103,20 +152,10 @@ def classify_chat_error_text(text: str) -> Optional[dict]:
         or "no relevant content" in lowered
         or "does not contain enough information" in lowered
     ):
-        return product_error(
-            "no_relevant_result",
-            "No supporting data was found",
-            "The available data is not enough to answer this reliably. To avoid mixing unrelated content, I will not guess.",
-            ["Try a keyword closer to the source document", "Add a page number, section title, or screenshot heading", "If the content is image-based, ask for the scanned/image page details"],
-        )
+        return localized_product_error("no_relevant_result", language)
 
     if "error processing request" in lowered or "工具執行錯誤" in text or "發生錯誤" in text:
-        return product_error(
-            "agent_runtime_error",
-            "Processing was interrupted",
-            "An error occurred while interpreting the question or calling tools, so this answer may not have completed.",
-            ["Try again later", "If the question is long, narrow the scope first", "If it keeps happening, check the backend log"],
-        )
+        return localized_product_error("agent_runtime_error", language)
 
     return None
 
@@ -156,6 +195,7 @@ async def chat_endpoint(request: ChatRequest):
     print(f"📩 Received: {request.message}")
     
     chat_history = convert_history(request.history)
+    reply_language = detect_reply_language(request.message)
     
     # Process
     try:
@@ -167,10 +207,10 @@ async def chat_endpoint(request: ChatRequest):
         )
         response_text = result["response"]
         metadata = result.get("metadata", {})
-        productized_error = classify_chat_error_text(response_text)
+        productized_error = classify_chat_error_text(response_text, reply_language)
         if productized_error:
             return ChatResponse(
-                response=error_markdown(productized_error),
+                response=error_markdown(productized_error, reply_language),
                 error_code=productized_error["code"],
                 metadata=metadata,
             )
@@ -179,13 +219,7 @@ async def chat_endpoint(request: ChatRequest):
         print(f"❌ Error: {e}")
         raise HTTPException(
             status_code=500,
-            detail=product_error(
-                "chat_server_error",
-                "Backend failed to process the message",
-                "The message reached the backend, but processing was interrupted.",
-                ["Try again later", "If the question is long, narrow the scope first", "If it keeps happening, check the backend log"],
-                str(e),
-            )
+            detail=localized_product_error("chat_server_error", reply_language, str(e))
         )
 
 
@@ -194,6 +228,7 @@ async def chat_stream_endpoint(request: ChatRequest):
     print(f"📡 Streaming: {request.message}")
     chat_history = convert_history(request.history)
     message_for_agent = message_with_clarifications(request)
+    reply_language = detect_reply_language(request.message)
 
     async def event_generator():
         queue: asyncio.Queue = asyncio.Queue()
@@ -212,10 +247,10 @@ async def chat_stream_endpoint(request: ChatRequest):
                 )
                 response_text = result["response"]
                 metadata = result.get("metadata", {})
-                productized_error = classify_chat_error_text(response_text)
+                productized_error = classify_chat_error_text(response_text, reply_language)
                 if productized_error:
                     await queue.put(("final", {
-                        "response": error_markdown(productized_error),
+                        "response": error_markdown(productized_error, reply_language),
                         "error_code": productized_error["code"],
                         "metadata": metadata,
                     }))
@@ -226,13 +261,7 @@ async def chat_stream_endpoint(request: ChatRequest):
                     }))
             except Exception as e:
                 print(f"❌ Stream Error: {e}")
-                await queue.put(("error", product_error(
-                    "chat_server_error",
-                    "Backend failed to process the message",
-                    "The message reached the backend, but processing was interrupted.",
-                    ["Try again later", "If the question is long, narrow the scope first", "If it keeps happening, check the backend log"],
-                    str(e),
-                )))
+                await queue.put(("error", localized_product_error("chat_server_error", reply_language, str(e))))
 
         task = asyncio.create_task(run_chat())
         yield sse_event("progress", {"phase": "understanding", "label": "Understanding your question"})

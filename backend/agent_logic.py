@@ -76,6 +76,22 @@ def _clean_user_query(message: str) -> str:
     return text or str(message or "")
 
 
+def _detect_reply_language(user_query: str) -> str:
+    text = _clean_user_query(str(user_query or "")).strip()
+    if not text:
+        return "Traditional Chinese"
+
+    cjk_count = len(re.findall(r"[\u3400-\u9fff]", text))
+    english_words = re.findall(r"[A-Za-z]{2,}", text)
+    english_chars = sum(len(word) for word in english_words)
+
+    if cjk_count == 0 and english_chars > 0:
+        return "English"
+    if english_chars == 0 and cjk_count > 0:
+        return "Traditional Chinese"
+    return "English" if english_chars > cjk_count * 1.5 else "Traditional Chinese"
+
+
 def _is_visible_chat_message(message) -> bool:
     return isinstance(message, (HumanMessage, AIMessage))
 
@@ -190,6 +206,42 @@ def _structured_tool_metadata(messages: list) -> list[dict]:
     return results
 
 
+def _numbers_in_text(text: str) -> set[str]:
+    normalized = str(text or "")
+    return set(re.findall(r"(?<![A-Za-z])\d+(?:\.\d+)?%?(?![A-Za-z])", normalized))
+
+
+def _latest_tool_content(messages: list, tool_names: set[str]) -> str:
+    for message in reversed(_tool_messages(messages)):
+        name = getattr(message, "name", "") or ""
+        if name in tool_names:
+            return _message_text(message.content).strip()
+    return ""
+
+
+def _enforce_grounded_analyst_response(agent_response: str, messages: list, reply_language: str = "Traditional Chinese") -> str:
+    analyst_tool_content = _latest_tool_content(
+        messages,
+        {"query_worksheet_data", "get_worksheet_structure", "list_worksheets"},
+    )
+    if not analyst_tool_content:
+        return agent_response
+
+    response_numbers = _numbers_in_text(agent_response)
+    tool_numbers = _numbers_in_text(analyst_tool_content)
+    ungrounded_numbers = response_numbers - tool_numbers
+    if ungrounded_numbers:
+        warning = (
+            "I found numbers in the drafted answer that were not present in the worksheet tool result, "
+            "so I am returning the grounded tool result directly to avoid unsupported data."
+            if reply_language == "English"
+            else "我發現草稿回答中出現了工作表工具結果沒有提供的數字，因此改為直接回傳已依工具結果計算的內容，避免使用未受支持的資料。"
+        )
+        return f"{warning}\n\n{analyst_tool_content}"
+
+    return agent_response
+
+
 def _usage_metadata(messages: list) -> dict:
     total_input = 0
     total_output = 0
@@ -227,11 +279,12 @@ def _collect_confluence_links(messages, stored_tool_context: str) -> dict:
     return links
 
 
-def _ensure_confluence_source_links(response: str, confluence_links: dict) -> str:
+def _ensure_confluence_source_links(response: str, confluence_links: dict, reply_language: str = "Traditional Chinese") -> str:
     if not response or not confluence_links:
         return response
 
     updated = response
+    source_prefix = "Source:" if reply_language == "English" else "來源："
     for title, url in confluence_links.items():
         markdown_link = f"[{title}]({url})"
         plain_source_patterns = [
@@ -241,18 +294,19 @@ def _ensure_confluence_source_links(response: str, confluence_links: dict) -> st
             f"[來源：{title}]",
         ]
         for pattern in plain_source_patterns:
-            updated = updated.replace(pattern, f"來源： {markdown_link}")
+            updated = updated.replace(pattern, f"{source_prefix} {markdown_link}")
 
         source_line_patterns = [
             f"來源: {title}",
             f"來源： {title}",
+            f"Source: {title}",
         ]
         for pattern in source_line_patterns:
-            updated = updated.replace(pattern, f"來源： {markdown_link}")
+            updated = updated.replace(pattern, f"{source_prefix} {markdown_link}")
 
-    if "來源" not in updated:
+    if "來源" not in updated and "Source:" not in updated:
         first_title, first_url = next(iter(confluence_links.items()))
-        updated = f"{updated.rstrip()}\n\n來源： [{first_title}]({first_url})"
+        updated = f"{updated.rstrip()}\n\n{source_prefix} [{first_title}]({first_url})"
     return updated
 
 
@@ -305,17 +359,19 @@ async def _answer_from_document_base(message: str) -> Optional[str]:
     ):
         return document_context
 
+    reply_language = _detect_reply_language(clean_message)
     response = await llm.ainvoke([
         SystemMessage(content=(
             "你是 IKEA Data Team 的 PDF 文件問答助理。"
             "請只根據提供的 PDF 內容回答；若內容不足以回答，請明確說文件內容不足。"
-            "回答要使用繁體中文，先給直接答案，再整理重點。"
+            f"回答語言必須跟隨最新使用者問題；本輪請使用 {reply_language}。"
+            "先給直接答案，再整理重點。"
             "如果使用者要求整份文件摘要或解讀，請從全文件角度整理主題、重點、流程與可行動事項。"
             "PDF 內容可能同時包含 Type=text 的文字層與 Type=visual_summary 的圖片/截圖/圖表摘要。"
             "不要只因為文字與圖片在同一頁，就推論它們在描述同一件事；"
             "只有 visual_summary 明確指出圖文關係時，才可把圖片與附近文字連結。"
             "如果圖文關係不確定，請直接說明不確定，不要硬配對。"
-            "最後必須列出來源，格式如：來源：Guidebook.pdf（第 1 頁）。"
+            "最後必須列出來源；中文回答用「來源：Guidebook.pdf（第 1 頁）」，英文回答用「Source: Guidebook.pdf (page 1)」。"
         )),
         HumanMessage(content=(
             f"使用者問題：{clean_message}\n\n"
@@ -408,7 +464,16 @@ async def process_chat_detailed(
             agent_response = str(agent_response_raw)
 
         confluence_links = _collect_confluence_links(response_state["messages"], stored_tool_context)
-        agent_response = _ensure_confluence_source_links(agent_response, confluence_links)
+        agent_response = _ensure_confluence_source_links(
+            agent_response,
+            confluence_links,
+            _detect_reply_language(clean_message),
+        )
+        agent_response = _enforce_grounded_analyst_response(
+            agent_response,
+            response_state["messages"],
+            _detect_reply_language(clean_message),
+        )
         await _emit_progress(progress_callback, "composing", "Finalizing the response")
 
         save_messages = (

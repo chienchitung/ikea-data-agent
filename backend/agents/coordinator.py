@@ -61,6 +61,11 @@ system_prompt = f"""
 
 - 今天的日期是：{current_date}
 - 今年是：{current_year} 年。當用戶提到「今年」、「去年」、「本月」等相對時間詞彙時，請一律以這個當下日期為基準來推算。
+- Final answer language must follow the latest user message:
+  - If the latest user message is mainly Traditional Chinese, answer in Traditional Chinese.
+  - If the latest user message is mainly English, answer in English.
+  - If the latest user message mixes languages, use the language used for the actual question or request.
+  - This rule applies only to assistant answers. Frontend UI fields such as clarification panel labels remain English.
 
 # Prompt Priority
 
@@ -129,6 +134,12 @@ _DEFAULT_CLARIFICATION = {
 _DOCUMENT_QUERY_TERMS = [
     "pdf", "PDF", "文件", "文檔", "檔案", "document",
     "上傳", "剛上傳", "這份", "這個檔", "這份檔", "這份資料"
+]
+
+_FRESH_DATA_TERMS = [
+    "request", "ticket", "tickets", "worksheet", "sheet", "工單", "工作表", "資料",
+    "統計", "數量", "幾筆", "分析", "原因", "為什麼", "圖表", "chart", "趨勢",
+    "最新", "目前", "全部", "所有", "重新", "再查", "long duration", "duration",
 ]
 
 _CHART_DIMENSION_OPTIONS = [
@@ -244,6 +255,33 @@ def _content_to_text(content: Any) -> str:
     return str(content)
 
 
+def _detect_reply_language(user_query: str) -> str:
+    text = _extract_user_query_for_guardrail(str(user_query or "")).strip()
+    if not text:
+        return "Traditional Chinese"
+
+    cjk_count = len(re.findall(r"[\u3400-\u9fff]", text))
+    english_words = re.findall(r"[A-Za-z]{2,}", text)
+    english_chars = sum(len(word) for word in english_words)
+
+    if cjk_count == 0 and english_chars > 0:
+        return "English"
+    if english_chars == 0 and cjk_count > 0:
+        return "Traditional Chinese"
+
+    # For mixed messages, bias toward the language carrying the question text.
+    return "English" if english_chars > cjk_count * 1.5 else "Traditional Chinese"
+
+
+def _language_instruction_for(user_query: str) -> SystemMessage:
+    language = _detect_reply_language(user_query)
+    return SystemMessage(content=(
+        "## Response Language\n\n"
+        f"Answer the user in {language}. Match the latest user's language for the final assistant response. "
+        "Do not use this rule for frontend UI labels; UI labels must remain English."
+    ))
+
+
 def _parse_json_object(text: str) -> dict:
     try:
         return json.loads(text)
@@ -261,7 +299,10 @@ def _parse_json_object(text: str) -> dict:
 
 def _latest_human_index(messages: list[BaseMessage]) -> int:
     for i in range(len(messages) - 1, -1, -1):
-        if isinstance(messages[i], HumanMessage) and not str(messages[i].content).startswith("⚠️ 系統強制攔截"):
+        if isinstance(messages[i], HumanMessage) and not (
+            str(messages[i].content).startswith("⚠️ 系統強制攔截")
+            or str(messages[i].content).startswith("System guardrail:")
+        ):
             return i
     return -1
 
@@ -286,6 +327,7 @@ def _has_answerable_context_before_latest_human(messages: list[BaseMessage]) -> 
 async def _answer_from_context(messages: list[BaseMessage], user_query: str) -> AIMessage:
     direct_instruction = SystemMessage(content=(
         "## Contextual Follow-up Handling\n\n"
+        f"Answer in {_detect_reply_language(user_query)} based on the latest user message. "
         "最新使用者問題是在延續、追問、擴寫、改寫或重新組織前文，不是獨立的新問題。"
         "請直接根據近期對話、Conversation Memory、Turn Context Decision 與 Prior Tool Context 回答。"
         "不要呼叫工具，也不要把最新問題當成搜尋關鍵字。"
@@ -415,6 +457,13 @@ def _should_answer_from_context(turn_context: dict, messages: list[BaseMessage])
         return False
     if turn_context.get("should_force_fresh_tool"):
         return False
+    latest_query = ""
+    for message in reversed(messages):
+        if isinstance(message, HumanMessage):
+            latest_query = _extract_user_query_for_guardrail(_content_to_text(message.content))
+            break
+    if _requires_fresh_data_query(latest_query):
+        return False
     return _has_answerable_context_before_latest_human(messages)
 
 
@@ -438,7 +487,17 @@ def _prepare_messages_for_model(messages: list[BaseMessage]) -> list[BaseMessage
     if len(dialogue_messages) > MAX_HISTORY:
         dialogue_messages = dialogue_messages[-MAX_HISTORY:]
 
-    return [primary_system] + context_systems + dialogue_messages
+    latest_user_query = ""
+    for message in reversed(dialogue_messages):
+        if isinstance(message, HumanMessage):
+            latest_user_query = _content_to_text(message.content)
+            break
+
+    language_systems = []
+    if latest_user_query:
+        language_systems.append(_language_instruction_for(latest_user_query))
+
+    return [primary_system] + context_systems + language_systems + dialogue_messages
 
 
 def _looks_like_document_query(user_query: str) -> bool:
@@ -456,6 +515,12 @@ def _looks_like_document_query(user_query: str) -> bool:
 
     compact = re.sub(r"\s+", "", normalized)
     return any(term.lower() in lowered or term in compact for term in _DOCUMENT_QUERY_TERMS)
+
+
+def _requires_fresh_data_query(user_query: str) -> bool:
+    lowered = str(user_query or "").lower()
+    compact = re.sub(r"\s+", "", lowered)
+    return any(term in lowered or term in compact for term in _FRESH_DATA_TERMS)
 
 
 def _fallback_clarification(user_query: str) -> dict:
@@ -514,7 +579,10 @@ def _fallback_clarification(user_query: str) -> dict:
 def _has_tool_result_after_latest_human(messages: list[BaseMessage]) -> bool:
     latest_human_index = -1
     for i in range(len(messages) - 1, -1, -1):
-        if isinstance(messages[i], HumanMessage) and not str(messages[i].content).startswith("⚠️ 系統強制攔截"):
+        if isinstance(messages[i], HumanMessage) and not (
+            str(messages[i].content).startswith("⚠️ 系統強制攔截")
+            or str(messages[i].content).startswith("System guardrail:")
+        ):
             latest_human_index = i
             break
 
@@ -632,7 +700,8 @@ async def suggest_clarifications(user_query: str, history_text: str = "") -> dic
 - 如果使用者是在上一則回答後要求「更完整」、「比較完整」、「有結構」、「更詳細」或「整理成報告」，
   且近期對話已經提供資料脈絡，請不要再釐清資料來源；這是延續前文的改寫/擴寫需求。
 
-請最多提出 2 個問題，每題 2-5 個選項。選項要短、具體、互斥。不要問已經可從問題或上下文推斷的事。
+請只提出 1 個最關鍵的問題，每題 2-5 個選項。選項要短、具體、互斥。不要問已經可從問題或上下文推斷的事。
+如果有多個缺口，優先詢問「最會影響工具查詢結果」的問題；其他缺口留到下一輪再問，不要一次塞進同一個提示框。
 
 回傳 JSON schema：
 {{
@@ -671,7 +740,7 @@ async def suggest_clarifications(user_query: str, history_text: str = "") -> dic
             return with_turn_context(_DEFAULT_CLARIFICATION)
 
         questions = []
-        for question in parsed.get("questions", [])[:2]:
+        for question in parsed.get("questions", [])[:1]:
             options = []
             for option in question.get("options", [])[:5]:
                 label = str(option.get("label", "")).strip()
@@ -783,6 +852,7 @@ async def agent_node(state: AgentState):
 
     last_human_msg = next((m.content for m in reversed(messages) if isinstance(m, HumanMessage)), "")
     guardrail_query = _extract_user_query_for_guardrail(last_human_msg)
+    reply_language = _detect_reply_language(guardrail_query)
     turn_context = _extract_turn_context(messages)
 
     if _should_answer_from_context(turn_context, messages):
@@ -841,7 +911,12 @@ async def agent_node(state: AgentState):
             response = await model_with_tools.ainvoke(messages + [retry_prompt])
             # 如果第二次還是不呼叫，就給強制安全回應
             if not _has_tool_calls(response):
-                forced_msg = AIMessage(content="I searched the available tools but could not find relevant information. To keep the answer accurate, please provide more specific keywords or context.")
+                forced_content = (
+                    "I searched the available tools but could not find relevant information. To keep the answer accurate, please provide more specific keywords or context."
+                    if reply_language == "English"
+                    else "我已經查過可用工具，但目前找不到相關資訊。為了避免回答不準確，請提供更具體的關鍵字或背景。"
+                )
+                forced_msg = AIMessage(content=forced_content)
                 return {"messages": [forced_msg]}
 
     # 🛑 防護 A2：禁止把「請稍等 / 我正在處理」當作最終答案
@@ -854,7 +929,12 @@ async def agent_node(state: AgentState):
         )
         response = await model_with_tools.ainvoke(messages + [HumanMessage(content=retry_msg)])
         if not _has_tool_calls(response) and _is_interim_response(response.content):
-            forced_msg = AIMessage(content="I need one more detail to avoid using the wrong data. Please provide the worksheet, time range, assignee, or other filter you want to query.")
+            forced_content = (
+                "I need one more detail to avoid using the wrong data. Please provide the worksheet, time range, assignee, or other filter you want to query."
+                if reply_language == "English"
+                else "我需要再確認一個條件，才不會查錯資料。請補充要查的工作表、時間範圍、負責人或其他篩選條件。"
+            )
+            forced_msg = AIMessage(content=forced_content)
             return {"messages": [forced_msg]}
 
     # 🛑 防護 B：工具查無資料，但大腦開始亂掰 (幻覺生成) -> 直接覆寫
@@ -874,7 +954,12 @@ async def agent_node(state: AgentState):
                 admit_keywords = ["找不到", "沒有找到", "無法找到", "沒有相關", "查無", "未提及", "沒有提及"]
                 if not any(ak in response.content for ak in admit_keywords):
                     print("\n⚠️ [Guardrail] 偵測到 LLM 在 Tool 查無結果後試圖捏造答案 (幻覺)！已被強制阻擋。")
-                    safe_msg = AIMessage(content="I checked the available systems, but I could not find relevant information. To avoid giving incorrect details, please confirm the keyword or provide more context.")
+                    safe_content = (
+                        "I checked the available systems, but I could not find relevant information. To avoid giving incorrect details, please confirm the keyword or provide more context."
+                        if reply_language == "English"
+                        else "我查過可用系統，但目前找不到相關資訊。為了避免提供錯誤內容，請確認關鍵字或補充更多背景。"
+                    )
+                    safe_msg = AIMessage(content=safe_content)
                     return {"messages": [safe_msg]}
 
     return {"messages": [response]}
