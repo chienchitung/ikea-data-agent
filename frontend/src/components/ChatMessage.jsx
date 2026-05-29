@@ -66,9 +66,17 @@ function preprocessContent(content) {
             if (closingIdx !== -1) {
                 // 有結尾 ```：格式正確或可修復
                 const rawCode = content.slice(codeStart, closingIdx).trim();
-                result = ensureNewline(result);
-                result += `\`\`\`${lang}\n${rawCode}\n\`\`\`\n`;
-                i = closingIdx + 3;
+                // 若無語言標籤且內容含中文或 Markdown 粗體，代表 LLM 誤將敘述文字包在 code block 中
+                // 直接輸出為純 Markdown，不要渲染成 code block
+                if (!lang && /[一-鿿]|\*\*/.test(rawCode)) {
+                    result = ensureNewline(result);
+                    result += rawCode + '\n';
+                    i = closingIdx + 3;
+                } else {
+                    result = ensureNewline(result);
+                    result += `\`\`\`${lang}\n${rawCode}\n\`\`\`\n`;
+                    i = closingIdx + 3;
+                }
             } else {
                 // 沒有結尾 ```（LLM 忘記加）：
                 // 取到段落結束（雙換行）或字串結尾
@@ -77,9 +85,15 @@ function preprocessContent(content) {
                     ? content.slice(codeStart, paraEnd).trim()
                     : content.slice(codeStart).trim();
 
-                result = ensureNewline(result);
-                result += `\`\`\`${lang}\n${rawCode}\n\`\`\`\n`;
-                i = paraEnd !== -1 ? paraEnd : len;
+                if (!lang && /[一-鿿]|\*\*/.test(rawCode)) {
+                    result = ensureNewline(result);
+                    result += rawCode + '\n';
+                    i = paraEnd !== -1 ? paraEnd : len;
+                } else {
+                    result = ensureNewline(result);
+                    result += `\`\`\`${lang}\n${rawCode}\n\`\`\`\n`;
+                    i = paraEnd !== -1 ? paraEnd : len;
+                }
             }
             continue;
         }
@@ -147,20 +161,47 @@ function CodeBlock({ language, code }) {
 function parseChartSpec(code) {
     try {
         const spec = JSON.parse(code);
-        const data = Array.isArray(spec.data) ? spec.data : [];
-        return {
+        const validType = ['bar', 'line', 'pie'].includes(spec.type) ? spec.type : 'bar';
+        const base = {
             title: spec.title || 'Chart',
-            type: ['bar', 'line', 'pie'].includes(spec.type) ? spec.type : 'bar',
+            type: validType,
             xKey: spec.xKey || 'label',
             yKey: spec.yKey || 'value',
             isSequential: spec.isSequential === true,
-            data: data
+        };
+
+        // Internal format: { data: [{ label, value }] }
+        if (Array.isArray(spec.data) && spec.data.length > 0 && typeof spec.data[0] === 'object') {
+            const data = spec.data
                 .map(item => ({
                     label: String(item[spec.xKey || 'label'] ?? item.label ?? ''),
                     value: Number(item[spec.yKey || 'value'] ?? item.value ?? 0),
                 }))
-                .filter(item => item.label && Number.isFinite(item.value)),
-        };
+                .filter(item => item.label && Number.isFinite(item.value));
+            if (data.length > 0) return { ...base, data };
+        }
+
+        // Chart.js-style: { labels: [...], datasets: [{ data: [...] }] }
+        //              or: { labels: [...], values: [...] }
+        //              or: { labels: [...], data: [10, 8, 3] }
+        if (Array.isArray(spec.labels) && spec.labels.length > 0) {
+            let rawValues = [];
+            if (Array.isArray(spec.datasets) && spec.datasets.length > 0 && Array.isArray(spec.datasets[0].data)) {
+                rawValues = spec.datasets[0].data;
+            } else if (Array.isArray(spec.values)) {
+                rawValues = spec.values;
+            } else if (Array.isArray(spec.data) && spec.data.every(d => typeof d === 'number')) {
+                rawValues = spec.data;
+            }
+            if (rawValues.length > 0) {
+                const data = spec.labels
+                    .map((label, i) => ({ label: String(label), value: Number(rawValues[i] ?? 0) }))
+                    .filter(item => item.label && Number.isFinite(item.value));
+                if (data.length > 0) return { ...base, xKey: 'label', yKey: 'value', data };
+            }
+        }
+
+        return null;
     } catch {
         return null;
     }

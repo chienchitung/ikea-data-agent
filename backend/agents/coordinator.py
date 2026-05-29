@@ -113,9 +113,9 @@ _progress_handler_var = contextvars.ContextVar("progress_handler", default=None)
 MAX_HISTORY = 20
 
 _INTERIM_RESPONSE_MARKERS = [
-    "請稍等", "請等一下", "稍等一下", "等我一下", "我正在", "正在處理",
-    "處理中", "我將", "我會", "我來幫你", "讓我來", "讓我先", "立刻請",
-    "馬上請", "我幫你查", "我幫你整理", "我來查", "我來整理"
+    "請稍等", "請等一下", "稍等一下", "等我一下", "我正在查",
+    "正在處理", "處理中", "立刻請", "馬上請",
+    "我幫你查", "我來查",
 ]
 
 _DEFAULT_INTENT = {
@@ -840,127 +840,27 @@ async def parallel_tool_node(state: AgentState):
     return {"messages": list(results)}
 
 async def agent_node(state: AgentState):
-    """
-    LLM 思考節點：決定要呼叫工具，還是直接回答
-    我們在這裡加上客製化的防禦邏輯，防堵幻覺。
-    """
     messages = state["messages"]
-
-    # 確保系統提示詞永遠在對話最前面，並保留由 process_chat 放入的長對話記憶/工具上下文。
-    # 只有一般對話訊息會被截斷，避免長對話時把最新任務或必要 context 切掉。
     messages = _prepare_messages_for_model(messages)
 
     last_human_msg = next((m.content for m in reversed(messages) if isinstance(m, HumanMessage)), "")
     guardrail_query = _extract_user_query_for_guardrail(last_human_msg)
-    reply_language = _detect_reply_language(guardrail_query)
     turn_context = _extract_turn_context(messages)
 
+    # Follow-up / refinement：上下文已足夠，直接整理回答，不重新查工具
     if _should_answer_from_context(turn_context, messages):
-        print(f"\n✅ [Context] Answering from prior context. Decision: {turn_context}")
         await emit_progress("composing", "Drafting from context")
         response = await _answer_from_context(messages, guardrail_query)
         return {"messages": [response]}
 
+    # 主流程：信任 LLM 自行決定要呼叫工具還是直接回答
     await emit_progress("thinking", "Choosing the right tool")
     response = await model_with_tools.ainvoke(messages)
+
     if _has_tool_calls(response):
         await emit_progress("tool", "Preparing data lookup", status="queued")
     else:
         await emit_progress("composing", "Drafting the response")
-
-    # 🕵️‍♂️ 【客製化攔截點：強制檢查工具使用與幻覺防護】
-    # 2. 如果模型沒有呼叫工具，才用語意分類器判斷是否需要攔截重試。
-    #    這取代舊版不斷擴充 keyword list 的做法。
-    intent = dict(_DEFAULT_INTENT)
-    if turn_context.get("should_force_fresh_tool"):
-        domain_hint = turn_context.get("domain_hint")
-        if domain_hint in {"trello", "analyst", "confluence", "document"}:
-            intent = {
-                "needs_tool": True,
-                "fresh_query": True,
-                "domain": domain_hint,
-                "reason": turn_context.get("reason", "Semantic routing requires a fresh tool lookup"),
-            }
-        else:
-            intent = await _classify_user_intent(guardrail_query)
-            intent["fresh_query"] = True
-    elif not _has_tool_calls(response):
-        intent = await _classify_user_intent(guardrail_query)
-    needs_tool = bool(intent.get("needs_tool", False))
-    needs_fresh_query = bool(intent.get("fresh_query", False))
-
-    # 3. 檢查是否已經針對最新 user turn 取得 tool 結果。
-    # fresh_query 只需要在「尚未查過」時強制，避免工具回來後又被同一個 user turn 反覆觸發。
-    has_tool_result_after_latest_human = _has_tool_result_after_latest_human(messages)
-
-    # 同時保留最近 tool result 的檢查，給後面的查無結果防幻覺使用。
-    tool_messages = [m for m in messages[-10:] if getattr(m, "type", "") == "tool" or m.__class__.__name__ == "ToolMessage"]
-    has_recent_tool_result = len(tool_messages) > 0
-
-    # 🛑 防護 A：該查沒查 -> 強制重試 (內部自動 re-prompt)
-    if not _has_tool_calls(response):
-        if needs_tool and not has_tool_result_after_latest_human:
-            if needs_fresh_query:
-                print(f"\n⚠️ [Guardrail] Intent={intent.get('domain')} fresh query，強制重新呼叫工具。Reason: {intent.get('reason')}")
-                retry_msg = f"System guardrail: intent classification says this question needs a fresh internal tool query. Suggested tool domain: {intent.get('domain')}. Do not only summarize old chat history. Original user question: {guardrail_query}. Preserve the requested output format, such as chart, and call the best tool now."
-            else:
-                print(f"\n⚠️ [Guardrail] Intent={intent.get('domain')} needs tool but no tool call，強制重發 Prompt。Reason: {intent.get('reason')}")
-                retry_msg = f"System guardrail: intent classification says this question needs an internal tool. Suggested tool domain: {intent.get('domain')}, but no tool was called. Original user question: {guardrail_query}. Preserve the requested output format, such as chart, and call the best tool now."
-            retry_prompt = HumanMessage(content=retry_msg)
-            await emit_progress("tool", "Choosing a different data tool", status="retry")
-            response = await model_with_tools.ainvoke(messages + [retry_prompt])
-            # 如果第二次還是不呼叫，就給強制安全回應
-            if not _has_tool_calls(response):
-                forced_content = (
-                    "I searched the available tools but could not find relevant information. To keep the answer accurate, please provide more specific keywords or context."
-                    if reply_language == "English"
-                    else "我已經查過可用工具，但目前找不到相關資訊。為了避免回答不準確，請提供更具體的關鍵字或背景。"
-                )
-                forced_msg = AIMessage(content=forced_content)
-                return {"messages": [forced_msg]}
-
-    # 🛑 防護 A2：禁止把「請稍等 / 我正在處理」當作最終答案
-    if not _has_tool_calls(response) and needs_tool and _is_interim_response(response.content):
-        print("\n⚠️ [Guardrail] 偵測到 LLM 只回覆處理中訊息，強制改為立即呼叫工具！")
-        retry_msg = (
-            "System guardrail: your previous response was only an interim waiting message. "
-            "The system cannot treat that as the final answer. Do not say you will query later. "
-            "Call the most relevant tool now, or ask a specific clarification question if the request is underspecified."
-        )
-        response = await model_with_tools.ainvoke(messages + [HumanMessage(content=retry_msg)])
-        if not _has_tool_calls(response) and _is_interim_response(response.content):
-            forced_content = (
-                "I need one more detail to avoid using the wrong data. Please provide the worksheet, time range, assignee, or other filter you want to query."
-                if reply_language == "English"
-                else "我需要再確認一個條件，才不會查錯資料。請補充要查的工作表、時間範圍、負責人或其他篩選條件。"
-            )
-            forced_msg = AIMessage(content=forced_content)
-            return {"messages": [forced_msg]}
-
-    # 🛑 防護 B：工具查無資料，但大腦開始亂掰 (幻覺生成) -> 直接覆寫
-    if not _has_tool_calls(response):
-        if has_recent_tool_result:
-            last_tool_content = tool_messages[-1].content
-            # 如果末次工具回傳了警告或找不到
-            if (
-                "系統警告" in last_tool_content
-                or "找不到" in last_tool_content
-                or "無結果" in last_tool_content
-                or "system warning" in last_tool_content.lower()
-                or "not found" in last_tool_content.lower()
-                or "no relevant" in last_tool_content.lower()
-            ):
-                # 檢查 LLM 的回答是否有乖乖承認找不到
-                admit_keywords = ["找不到", "沒有找到", "無法找到", "沒有相關", "查無", "未提及", "沒有提及"]
-                if not any(ak in response.content for ak in admit_keywords):
-                    print("\n⚠️ [Guardrail] 偵測到 LLM 在 Tool 查無結果後試圖捏造答案 (幻覺)！已被強制阻擋。")
-                    safe_content = (
-                        "I checked the available systems, but I could not find relevant information. To avoid giving incorrect details, please confirm the keyword or provide more context."
-                        if reply_language == "English"
-                        else "我查過可用系統，但目前找不到相關資訊。為了避免提供錯誤內容，請確認關鍵字或補充更多背景。"
-                    )
-                    safe_msg = AIMessage(content=safe_content)
-                    return {"messages": [safe_msg]}
 
     return {"messages": [response]}
 

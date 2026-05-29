@@ -180,7 +180,11 @@ def _memory_summary(messages) -> str:
     ][-5:]
     if assistant_turns:
         lines.append("近期助理回答重點：")
-        lines.extend(f"- {turn[:700]}" for turn in assistant_turns)
+        # Keep the most recent assistant turn at full detail so the classifier
+        # can see enough of long reports to correctly identify follow-up questions.
+        for i, turn in enumerate(assistant_turns):
+            limit = 1800 if i == len(assistant_turns) - 1 else 700
+            lines.append(f"- {turn[:limit]}")
 
     summary = "\n".join(lines)
     if len(summary) > MAX_MEMORY_SUMMARY_CHARS:

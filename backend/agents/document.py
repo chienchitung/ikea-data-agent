@@ -153,7 +153,7 @@ def get_document_corpus(max_chars: int = 60000) -> str:
     """
     chunks = document_chunks or _chunks_from_vector_db()
     if not chunks:
-        return "Error: The knowledge base is not ready. Please upload a PDF first."
+        return "Error: No PDF files have been uploaded yet. This tool only works for uploaded PDF documents. For ticket statistics, worksheet data, or request analysis, use the Data Analyst Agent tools (query_worksheet_data) instead."
 
     output_parts = ["Below is the available full-document PDF context. Use it to answer from the whole-document perspective.\n"]
     current_chars = len(output_parts[0])
@@ -839,7 +839,7 @@ def search_document_base(query: str) -> str:
     """
     global vector_db
     if vector_db is None:
-        return "Error: The knowledge base is not ready. Please upload a PDF first."
+        return "Error: No PDF files have been uploaded yet. This tool only works for uploaded PDF documents. For ticket statistics, worksheet data, or request analysis, use the Data Analyst Agent tools (query_worksheet_data) instead."
     
     print(f"\n[Knowledge Search] 正在檢索: {query} ...")
 

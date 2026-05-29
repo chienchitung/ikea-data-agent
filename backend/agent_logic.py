@@ -99,9 +99,14 @@ def _is_visible_chat_message(message) -> bool:
 def _format_history_for_router(history: list) -> str:
     visible_history = [m for m in history if _is_visible_chat_message(m)]
     lines = []
-    for message in visible_history[-12:]:
+    messages_window = visible_history[-14:]
+    last_idx = len(messages_window) - 1
+    for idx, message in enumerate(messages_window):
         role = "user" if isinstance(message, HumanMessage) else "assistant"
-        lines.append(f"{role}: {_truncate_text(_message_text(message.content), 900)}")
+        # Give the most recent assistant message a larger budget so the classifier
+        # can see enough of long reports to correctly identify follow-up questions.
+        limit = 2400 if (role == "assistant" and idx == last_idx - 1) else 1400
+        lines.append(f"{role}: {_truncate_text(_message_text(message.content), limit)}")
     return "\n".join(lines)
 
 
@@ -166,19 +171,26 @@ def _build_prior_tool_context(stored_tool_context: str, turn_context: dict) -> l
     if not stored_tool_context:
         return []
 
+    if turn_context.get("should_force_fresh_tool"):
+        return []
+
     relation = str(turn_context.get("relation", "standalone"))
     include_context = (
         turn_context.get("should_include_prior_tool_context")
         or turn_context.get("should_answer_from_context")
         or relation in {"context_follow_up", "context_refinement"}
+        # Fallback: include prior context for ambiguous turns so the LLM can
+        # decide whether to reuse it or re-query; standalone turns with an
+        # explicit force-fresh flag already exit above.
+        or relation == "ambiguous"
     )
-    if not include_context or turn_context.get("should_force_fresh_tool"):
+    if not include_context:
         return []
 
     context = stored_tool_context[-MAX_PRIOR_TOOL_CONTEXT_CHARS:]
     return [SystemMessage(content=(
         "## Prior Tool Context\n\n"
-        "以下是同一對話先前工具查詢取得的資料。Turn Context Decision 已判斷這輪可能需要延續前文時，才會提供此段。"
+        "以下是同一對話先前工具查詢取得的資料。若最新問題是在延續前文、追問或改寫，可直接引用此資料作答。"
         "若最新問題要求最新、全部或新的資料範圍，請重新呼叫工具，不要只依賴這段資料。\n\n"
         f"{context}"
     ))]

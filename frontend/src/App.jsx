@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useLayoutEffect } from 'react';
 import axios from 'axios';
 import { ChatMessage } from './components/ChatMessage';
-import { ArrowUp, Loader2, Sparkles, FileText, ChevronDown, ChevronLeft, ChevronRight, Plus, Check, Edit2, Trash2, User, MessageSquare, PenSquare, Search, Mic, Square, X, Bug } from 'lucide-react';
+import { ArrowUp, Loader2, Sparkles, FileText, ChevronDown, ChevronLeft, ChevronRight, Plus, Check, Edit2, Trash2, User, MessageSquare, PenSquare, Search, Mic, Square, X, Bug, Pin, MoreHorizontal } from 'lucide-react';
 import bearAvatar from './assets/img/ikea-bear.png';
 import dogAvatar from './assets/img/ikea-dog.png';
 import monkeyAvatar from './assets/img/ikea-monkey.png';
@@ -351,14 +351,13 @@ function App() {
     const [conversations, setConversations] = useState([]);
     const [documents, setDocuments] = useState([]);
     const [selectedDocuments, setSelectedDocuments] = useState(new Set());
-    const [isLoading, setIsLoading] = useState(false);
+    const [loadingConvIds, setLoadingConvIds] = useState(new Set());
+    const [convStatuses, setConvStatuses] = useState({});
+    const [clarifyingConvId, setClarifyingConvId] = useState(null);
+    const [displayElapsedSeconds, setDisplayElapsedSeconds] = useState(0);
     const [isUploading, setIsUploading] = useState(false);
     const [isListening, setIsListening] = useState(false);
     const [speechSupported, setSpeechSupported] = useState(true);
-    const [responsePhase, setResponsePhase] = useState("idle");
-    const [responseStartedAt, setResponseStartedAt] = useState(null);
-    const [responseElapsedSeconds, setResponseElapsedSeconds] = useState(0);
-    const [responseStatusText, setResponseStatusText] = useState("");
     const [uploadProgress, setUploadProgress] = useState(0);
     const [uploadStage, setUploadStage] = useState("");
     const [clarification, setClarification] = useState(null);
@@ -368,7 +367,6 @@ function App() {
     const [pendingHistorySnapshot, setPendingHistorySnapshot] = useState([]);
     const [pendingTurnContext, setPendingTurnContext] = useState({});
     const [pendingConversationId, setPendingConversationId] = useState(null);
-    const [isClarifying, setIsClarifying] = useState(false);
     const [isSourcesExpanded, setIsSourcesExpanded] = useState(true);
     const [isConvsExpanded, setIsConvsExpanded] = useState(true);
     const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(
@@ -376,12 +374,17 @@ function App() {
     );
     const [renamingDoc, setRenamingDoc] = useState(null);
     const [newDocName, setNewDocName] = useState("");
+    const [renamingConvId, setRenamingConvId] = useState(null);
+    const [renamingConvTitle, setRenamingConvTitle] = useState("");
+    const [openMenuConvId, setOpenMenuConvId] = useState(null);
+    const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0 });
     const [userAvatar, setUserAvatar] = useState(bearAvatar);
     const [showAvatarPicker, setShowAvatarPicker] = useState(false);
     const [debugMode, setDebugMode] = useState(false);
     const messagesEndRef = useRef(null);
     const fileInputRef = useRef(null);
-    const abortControllerRef = useRef(null);
+    const abortControllersRef = useRef(new Map());
+    const clarificationAbortRef = useRef(null);
     const currentConvIdRef = useRef(null);
     const conversationsRef = useRef([]);
     const messagesRef = useRef([]);
@@ -392,8 +395,12 @@ function App() {
     const speechErrorRef = useRef(false);
     const speechDiscardRef = useRef(false);
     const pendingScrollBehaviorRef = useRef("auto");
-    const responseStartedAtRef = useRef(null);
-    const responseStatusLabel = responseStatusText || getResponseStatusLabel(responsePhase, responseElapsedSeconds);
+    const isCurrentConvLoading = loadingConvIds.has(currentConvId);
+    const isClarifyingCurrentConv = clarifyingConvId === currentConvId;
+    const currentStatus = convStatuses[currentConvId] || {};
+    const responsePhase = currentStatus.phase || 'idle';
+    const responseStatusText = currentStatus.statusText || '';
+    const responseStatusLabel = responseStatusText || getResponseStatusLabel(responsePhase, displayElapsedSeconds);
 
     useEffect(() => {
         currentConvIdRef.current = currentConvId;
@@ -435,7 +442,7 @@ function App() {
             if (exists) {
                 updated = prev.map(c =>
                     c.id === currentConvId
-                        ? { ...c, messages, title: makeTitle(messages), updatedAt: Date.now() }
+                        ? { ...c, messages, title: c.autoTitle === false ? c.title : makeTitle(messages), updatedAt: Date.now() }
                         : c
                 );
             } else {
@@ -461,8 +468,10 @@ function App() {
             : conversationsRef.current.find(c => c.id === convId)?.messages || [];
         const nextMessages = typeof updater === 'function' ? updater(currentMessages) : updater;
         const existing = conversationsRef.current.find(c => c.id === convId);
+        // Bug 1 fix: don't resurrect a conversation that was deleted
+        if (!existing && currentConvIdRef.current !== convId) return;
         const nextConversation = existing
-            ? { ...existing, messages: nextMessages, title: makeTitle(nextMessages), updatedAt: Date.now() }
+            ? { ...existing, messages: nextMessages, title: existing.autoTitle === false ? existing.title : makeTitle(nextMessages), updatedAt: Date.now() }
             : {
                 id: convId,
                 title: makeTitle(nextMessages),
@@ -503,29 +512,29 @@ function App() {
     };
 
     useLayoutEffect(() => {
-        if (messages.length === 0 && !isLoading) return;
+        if (messages.length === 0 && !isCurrentConvLoading) return;
 
         const behavior = pendingScrollBehaviorRef.current;
         scrollToBottom(behavior);
         pendingScrollBehaviorRef.current = "smooth";
-    }, [messages, isLoading]);
+    }, [messages, isCurrentConvLoading]);
 
     useEffect(() => {
         fetchDocuments();
     }, []);
 
     useEffect(() => {
-        if (!isLoading || !responseStartedAtRef.current) return;
-
-        const updateElapsed = () => {
-            const elapsed = Math.floor((Date.now() - responseStartedAtRef.current) / 1000);
-            setResponseElapsedSeconds(Math.max(0, elapsed));
-        };
-
-        updateElapsed();
-        const intervalId = window.setInterval(updateElapsed, 1000);
+        if (!isCurrentConvLoading) {
+            setDisplayElapsedSeconds(0);
+            return;
+        }
+        const startedAt = convStatuses[currentConvId]?.startedAt;
+        if (!startedAt) return;
+        const update = () => setDisplayElapsedSeconds(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)));
+        update();
+        const intervalId = window.setInterval(update, 1000);
         return () => window.clearInterval(intervalId);
-    }, [isLoading, responseStartedAt]);
+    }, [isCurrentConvLoading, currentConvId]); // eslint-disable-line react-hooks/exhaustive-deps
 
     useEffect(() => {
         const textarea = document.getElementById('chat-input');
@@ -612,6 +621,16 @@ function App() {
 
     const deleteConversation = (e, convId) => {
         e.stopPropagation();
+        // Abort any in-flight request for this conversation
+        const ctrl = abortControllersRef.current.get(convId);
+        if (ctrl) { ctrl.abort(); abortControllersRef.current.delete(convId); }
+        if (clarifyingConvId === convId) {
+            clarificationAbortRef.current?.abort();
+            clarificationAbortRef.current = null;
+            setClarifyingConvId(null);
+        }
+        setConvStatuses(prev => { const n = { ...prev }; delete n[convId]; return n; });
+        setLoadingConvIds(prev => { const n = new Set(prev); n.delete(convId); return n; });
         const updated = conversations.filter(c => c.id !== convId);
         saveConversations(updated);
         setConversations(updated);
@@ -627,6 +646,34 @@ function App() {
                 startNewConversation();
             }
         }
+    };
+
+    const pinConversation = (e, convId) => {
+        e.stopPropagation();
+        setConversations(prev => {
+            const updated = prev.map(c => c.id === convId ? { ...c, pinned: !c.pinned } : c);
+            conversationsRef.current = updated;
+            saveConversations(updated);
+            return updated;
+        });
+    };
+
+    const startRenameConv = (e, convId, currentTitle) => {
+        e.stopPropagation();
+        setRenamingConvId(convId);
+        setRenamingConvTitle(currentTitle);
+    };
+
+    const confirmRenameConv = (convId) => {
+        const trimmed = renamingConvTitle.trim();
+        setRenamingConvId(null);
+        if (!trimmed) return;
+        setConversations(prev => {
+            const updated = prev.map(c => c.id === convId ? { ...c, title: trimmed, autoTitle: false } : c);
+            conversationsRef.current = updated;
+            saveConversations(updated);
+            return updated;
+        });
     };
 
     // ── 文件管理 ─────────────────────────────────────────
@@ -762,58 +809,50 @@ function App() {
         }
     };
 
-    const handleStop = () => {
-        if (abortControllerRef.current) {
-            abortControllerRef.current.abort();
-            abortControllerRef.current = null;
+    const handleStop = (convId) => {
+        const ctrl = abortControllersRef.current.get(convId);
+        if (ctrl) { ctrl.abort(); abortControllersRef.current.delete(convId); }
+        if (clarifyingConvId === convId) {
+            clarificationAbortRef.current?.abort();
+            clarificationAbortRef.current = null;
+            setClarifyingConvId(null);
         }
-        endResponseStatus();
-        setIsLoading(false);
+        setConvStatuses(prev => { const n = { ...prev }; delete n[convId]; return n; });
+        setLoadingConvIds(prev => { const n = new Set(prev); n.delete(convId); return n; });
     };
 
-    const beginResponseStatus = (phase = "understanding", resetTimer = true, label = "") => {
-        if (resetTimer || !responseStartedAtRef.current) {
-            responseStartedAtRef.current = Date.now();
-            setResponseStartedAt(responseStartedAtRef.current);
-            setResponseElapsedSeconds(0);
-        }
-        setResponsePhase(phase);
-        setResponseStatusText(label);
+    const beginResponseStatus = (convId, phase = "understanding") => {
+        setConvStatuses(prev => ({ ...prev, [convId]: { phase, statusText: '', startedAt: Date.now() } }));
     };
 
-    const advanceResponseStatus = (phase, label = "") => {
-        if (!responseStartedAtRef.current) {
-            beginResponseStatus(phase, true, label);
-            return;
-        }
-        setResponsePhase(phase);
-        setResponseStatusText(label);
+    const advanceResponseStatus = (convId, phase, label = "") => {
+        setConvStatuses(prev => {
+            if (!prev[convId]) return prev;
+            return { ...prev, [convId]: { ...prev[convId], phase, statusText: label } };
+        });
     };
 
-    const endResponseStatus = () => {
-        responseStartedAtRef.current = null;
-        setResponseStartedAt(null);
-        setResponseElapsedSeconds(0);
-        setResponsePhase("idle");
-        setResponseStatusText("");
+    const endResponseStatus = (convId) => {
+        setConvStatuses(prev => { const n = { ...prev }; delete n[convId]; return n; });
     };
 
-    const handleResponseProgress = (payload = {}) => {
+    const makeProgressHandler = (convId) => (payload = {}) => {
         const phase = payload.phase || "thinking";
         const normalizedPhase = phase === "tool" ? "searching" : phase;
-        setResponsePhase(normalizedPhase);
-        if (payload.label) {
-            const translatedLabel = toEnglishUiText(payload.label);
-            setResponseStatusText(
-                hasCjkText(translatedLabel)
-                    ? getResponseStatusLabel(normalizedPhase, responseElapsedSeconds)
-                    : translatedLabel
-            );
-        }
+        setConvStatuses(prev => {
+            if (!prev[convId]) return prev;
+            let statusText = '';
+            if (payload.label) {
+                const translated = toEnglishUiText(payload.label);
+                statusText = hasCjkText(translated) ? '' : translated;
+            }
+            return { ...prev, [convId]: { ...prev[convId], phase: normalizedPhase, statusText } };
+        });
     };
 
+
     const toggleVoiceInput = () => {
-        if (!speechSupported || !recognitionRef.current || isClarifying) return;
+        if (!speechSupported || !recognitionRef.current || isClarifyingCurrentConv) return;
 
         if (isListening) {
             recognitionRef.current.stop();
@@ -863,10 +902,11 @@ function App() {
             updateConversationMessages(activeConvId, prev => [...prev, { role: 'user', content: messageContent }]);
         }
         setInput("");
-        beginResponseStatus(statusPhase, resetStatusTimer);
-        setIsLoading(true);
+        beginResponseStatus(activeConvId, statusPhase);
+        setLoadingConvIds(prev => new Set([...prev, activeConvId]));
 
-        abortControllerRef.current = new AbortController();
+        const controller = new AbortController();
+        abortControllersRef.current.set(activeConvId, controller);
 
         try {
             const response = await streamChat({
@@ -875,7 +915,7 @@ function App() {
                 conversation_id: activeConvId,
                 clarifications,
                 turn_context: turnContext
-            }, abortControllerRef.current.signal, handleResponseProgress);
+            }, controller.signal, makeProgressHandler(activeConvId));
             updateConversationMessages(activeConvId, prev => [...prev, {
                 role: 'assistant',
                 content: response.response,
@@ -890,9 +930,9 @@ function App() {
                 content: buildRequestErrorMessage(error, statusPhase === "regenerating" ? 'regenerate' : 'chat', messageContent)
             }]);
         } finally {
-            abortControllerRef.current = null;
-            endResponseStatus();
-            setIsLoading(false);
+            abortControllersRef.current.delete(activeConvId);
+            endResponseStatus(activeConvId);
+            setLoadingConvIds(prev => { const n = new Set(prev); n.delete(activeConvId); return n; });
         }
     };
 
@@ -929,7 +969,7 @@ function App() {
     };
 
     const confirmClarification = async () => {
-        if (!pendingMessage || isLoading) return;
+        if (!pendingMessage || isCurrentConvLoading) return;
         const activeConvId = pendingConversationId || currentConvId || generateId();
         if (!currentConvId) {
             currentConvIdRef.current = activeConvId;
@@ -944,7 +984,7 @@ function App() {
     };
 
     const skipClarification = async () => {
-        if (!pendingMessage || isLoading) return;
+        if (!pendingMessage || isCurrentConvLoading) return;
         const activeConvId = pendingConversationId || currentConvId || generateId();
         if (!currentConvId) {
             currentConvIdRef.current = activeConvId;
@@ -960,7 +1000,7 @@ function App() {
     // ── 聊天邏輯 ─────────────────────────────────────────
     const handleSubmit = async (e) => {
         if (e) e.preventDefault();
-        if (!input.trim() || isLoading || isClarifying) return;
+        if (!input.trim() || isCurrentConvLoading || isClarifyingCurrentConv) return;
 
         const textarea = document.getElementById('chat-input');
         if (isListening && recognitionRef.current) {
@@ -982,16 +1022,20 @@ function App() {
         updateConversationMessages(activeConvId, prev => [...prev, userMessage]);
         setInput("");
         if (textarea) textarea.style.height = 'auto';
-        beginResponseStatus("understanding");
-        setIsLoading(true);
-        setIsClarifying(true);
+        beginResponseStatus(activeConvId, "understanding");
+        setLoadingConvIds(prev => new Set([...prev, activeConvId]));
+        setClarifyingConvId(activeConvId);
+
+        const clarAbort = new AbortController();
+        clarificationAbortRef.current = clarAbort;
+
         let turnContext = {};
         try {
             const clarificationResponse = await axios.post(`${API_URL}/clarifications`, {
                 message: messageContent,
                 history: historySnapshot,
                 conversation_id: activeConvId
-            });
+            }, { signal: clarAbort.signal });
             turnContext = clarificationResponse.data?.turn_context || {};
 
             if (clarificationResponse.data?.needs_clarification && clarificationResponse.data?.questions?.length > 0) {
@@ -1008,22 +1052,28 @@ function App() {
                 setClarificationAnswers(defaultAnswers);
                 setClarificationCustomAnswers({});
                 setInput("");
-                endResponseStatus();
-                setIsLoading(false);
+                endResponseStatus(activeConvId);
+                setLoadingConvIds(prev => { const n = new Set(prev); n.delete(activeConvId); return n; });
                 return;
             }
         } catch (error) {
+            if (error.name === 'AbortError' || axios.isCancel(error)) {
+                endResponseStatus(activeConvId);
+                setLoadingConvIds(prev => { const n = new Set(prev); n.delete(activeConvId); return n; });
+                return;
+            }
             console.error("Clarification check failed:", error);
         } finally {
-            setIsClarifying(false);
+            clarificationAbortRef.current = null;
+            setClarifyingConvId(null);
         }
 
-        advanceResponseStatus("searching");
+        advanceResponseStatus(activeConvId, "searching");
         await sendChatMessage(messageContent, activeConvId, historySnapshot, [], false, "searching", false, turnContext);
     };
 
     const handleMessageUpdate = async (index, newContent) => {
-        if (isLoading) return;
+        if (isCurrentConvLoading) return;
         const historyContext = messages.slice(0, index);
         const updatedUserMessage = { ...messages[index], content: newContent };
         updateConversationMessages(currentConvId, [...historyContext, updatedUserMessage]);
@@ -1089,38 +1139,87 @@ function App() {
                         </div>
 
                         {isConvsExpanded && (
-                            <div className="space-y-0.5">
-                                {conversations.length === 0 ? (
-                                    <p className="text-sm text-[#767676] text-center py-4">No conversations yet</p>
-                                ) : (
-                                    conversations
-                                        .slice()
-                                        .sort((a, b) => b.updatedAt - a.updatedAt)
-                                        .map(conv => (
-                                            <div
-                                                key={conv.id}
-                                                onClick={() => switchConversation(conv)}
-                                                className={`group flex items-start gap-2 px-2 py-2 rounded-lg cursor-pointer transition-colors ${conv.id === currentConvId ? 'bg-white' : 'hover:bg-white'}`}
-                                            >
-                                                <MessageSquare className={`w-3.5 h-3.5 mt-0.5 flex-shrink-0 ${conv.id === currentConvId ? 'text-[#484848]' : 'text-[#767676]'}`} />
-                                                <div className="flex-1 min-w-0">
-                                                    <p className={`text-sm font-medium truncate ${conv.id === currentConvId ? 'text-[#484848]' : 'text-[#111111]'}`}>
-                                                        {conv.title}
-                                                    </p>
-                                                    <p className="text-xs text-[#767676] mt-0.5">
-                                                        {formatRelativeTime(conv.updatedAt)}
-                                                    </p>
-                                                </div>
-                                                <button
-                                                    onClick={(e) => deleteConversation(e, conv.id)}
-                                                    className="flex-shrink-0 p-0.5 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 hover:bg-red-100 rounded transition-all"
-                                                    title="Delete conversation"
-                                                >
-                                                    <Trash2 className="w-3 h-3 text-red-500" />
-                                                </button>
-                                            </div>
-                                        ))
-                                )}
+                            <div className="max-h-[280px] overflow-y-auto -mr-1 pr-1">
+                                <div className="space-y-0.5">
+                                    {conversations.length === 0 ? (
+                                        <p className="text-sm text-[#767676] text-center py-4">No conversations yet</p>
+                                    ) : (
+                                        conversations
+                                            .slice()
+                                            .sort((a, b) => {
+                                                if (a.pinned && !b.pinned) return -1;
+                                                if (!a.pinned && b.pinned) return 1;
+                                                return b.createdAt - a.createdAt;
+                                            })
+                                            .map(conv => {
+                                                const isLoading = loadingConvIds.has(conv.id);
+                                                const isActive = conv.id === currentConvId;
+                                                const isRenamingThis = renamingConvId === conv.id;
+                                                return (
+                                                    <div
+                                                        key={conv.id}
+                                                        onClick={() => !isRenamingThis && switchConversation(conv)}
+                                                        className={`group flex items-center gap-2 px-2 py-2 rounded-lg cursor-pointer transition-colors ${isActive ? 'bg-white' : 'hover:bg-white'} ${conv.pinned ? 'border-l-2 border-[#0058A3]' : ''}`}
+                                                    >
+                                                        {/* Icon: loading spinner → pin → chat bubble */}
+                                                        {isLoading ? (
+                                                            <Loader2 className="w-3.5 h-3.5 flex-shrink-0 text-[#0058A3] animate-spin" />
+                                                        ) : conv.pinned ? (
+                                                            <Pin className="w-3.5 h-3.5 flex-shrink-0 text-[#0058A3]" />
+                                                        ) : (
+                                                            <MessageSquare className={`w-3.5 h-3.5 flex-shrink-0 ${isActive ? 'text-[#484848]' : 'text-[#767676]'}`} />
+                                                        )}
+
+                                                        <div className="flex-1 min-w-0">
+                                                            {isRenamingThis ? (
+                                                                <input
+                                                                    autoFocus
+                                                                    value={renamingConvTitle}
+                                                                    onChange={e => setRenamingConvTitle(e.target.value)}
+                                                                    onKeyDown={e => {
+                                                                        if (e.key === 'Enter') confirmRenameConv(conv.id);
+                                                                        if (e.key === 'Escape') setRenamingConvId(null);
+                                                                        e.stopPropagation();
+                                                                    }}
+                                                                    onBlur={() => confirmRenameConv(conv.id)}
+                                                                    onClick={e => e.stopPropagation()}
+                                                                    className="w-full text-sm bg-transparent border-b border-[#0058A3] outline-none text-[#111111] py-0.5"
+                                                                />
+                                                            ) : (
+                                                                <>
+                                                                    <p className={`text-sm font-medium truncate ${isActive ? 'text-[#484848]' : 'text-[#111111]'}`}>
+                                                                        {conv.title}
+                                                                    </p>
+                                                                    <p className="text-xs text-[#767676] mt-0.5">
+                                                                        {isLoading ? (
+                                                                            <span className="text-[#0058A3] font-medium">Responding…</span>
+                                                                        ) : formatRelativeTime(conv.createdAt)}
+                                                                    </p>
+                                                                </>
+                                                            )}
+                                                        </div>
+
+                                                        {/* Three-dot menu trigger */}
+                                                        {!isRenamingThis && (
+                                                            <button
+                                                                onClick={(e) => {
+                                                                    e.stopPropagation();
+                                                                    if (openMenuConvId === conv.id) { setOpenMenuConvId(null); return; }
+                                                                    const rect = e.currentTarget.getBoundingClientRect();
+                                                                    setMenuPosition({ top: rect.bottom + 4, left: rect.left - 128 });
+                                                                    setOpenMenuConvId(conv.id);
+                                                                }}
+                                                                className={`flex-shrink-0 p-1 rounded transition-all hover:bg-[#DFDFDF] ${openMenuConvId === conv.id ? 'opacity-100 bg-[#DFDFDF]' : 'opacity-0 group-hover:opacity-100'}`}
+                                                                title="More options"
+                                                            >
+                                                                <MoreHorizontal className="w-3.5 h-3.5 text-[#767676]" />
+                                                            </button>
+                                                        )}
+                                                    </div>
+                                                );
+                                            })
+                                    )}
+                                </div>
                             </div>
                         )}
                     </div>
@@ -1333,7 +1432,7 @@ function App() {
                                     onCopy={(content) => navigator.clipboard.writeText(content)}
                                 />
                             ))}
-                            {isLoading && (
+                            {isCurrentConvLoading && (
                                 <div className="flex justify-start">
                                     <div className="typing-indicator" role="status" aria-live="polite">
                                         <div className="typing-dots" aria-hidden="true">
@@ -1343,7 +1442,7 @@ function App() {
                                         </div>
                                         <div className="typing-status">
                                             <span>{responseStatusLabel}</span>
-                                            <span>{responseElapsedSeconds}s</span>
+                                            <span>{displayElapsedSeconds}s</span>
                                         </div>
                                     </div>
                                 </div>
@@ -1355,7 +1454,7 @@ function App() {
 
                 {/* Input */}
                 <footer className="w-full max-w-4xl mx-auto px-2 sm:px-4 py-3 bg-white">
-                    {clarification && (
+                    {clarification && pendingConversationId === currentConvId && (
                         <div className="clarification-panel">
                             <div className="clarification-panel-header">
                                 <div>
@@ -1448,8 +1547,8 @@ function App() {
                                     handleSubmit(e);
                                 }
                             }}
-                            placeholder={isLoading ? "Hold that thought!" : "Type your question here"}
-                            disabled={isLoading || isClarifying}
+                            placeholder={isCurrentConvLoading || isClarifyingCurrentConv ? "Hold that thought!" : "Type your question here"}
+                            disabled={isCurrentConvLoading || isClarifyingCurrentConv || (clarification && pendingConversationId === currentConvId)}
                             className="chatbot-input"
                             rows={1}
                         />
@@ -1471,8 +1570,8 @@ function App() {
                             </div>
                         )}
                         <div className="input-actions">
-                            {isLoading ? (
-                                <button type="button" onClick={handleStop} className="stop-button" aria-label="Stop generation">
+                            {isCurrentConvLoading || isClarifyingCurrentConv ? (
+                                <button type="button" onClick={() => handleStop(currentConvId)} className="stop-button" aria-label="Stop generation">
                                     <Square fill="currentColor" />
                                 </button>
                             ) : isListening ? (
@@ -1501,7 +1600,7 @@ function App() {
                                     <button
                                         type="button"
                                         onClick={toggleVoiceInput}
-                                        disabled={isClarifying || !speechSupported}
+                                        disabled={isClarifyingCurrentConv || !speechSupported}
                                         className={`mic-button ${isListening ? 'listening' : ''}`}
                                         aria-label={isListening ? "Stop voice input" : "Voice input"}
                                         title={!speechSupported ? "Voice input is not supported in this browser" : isListening ? "Stop voice input" : "Voice input"}
@@ -1509,7 +1608,7 @@ function App() {
                                         <Mic />
                                     </button>
                                     {input.trim() && (
-                                        <button type="submit" disabled={isClarifying} className="send-button" aria-label="Send message">
+                                        <button type="submit" disabled={isClarifyingCurrentConv} className="send-button" aria-label="Send message">
                                             <ArrowUp />
                                         </button>
                                     )}
@@ -1544,6 +1643,44 @@ function App() {
                     </div>
                 </div>
             )}
+
+            {/* ── Conversation Context Menu ── */}
+            {openMenuConvId && (() => {
+                const menuConv = conversations.find(c => c.id === openMenuConvId);
+                if (!menuConv) return null;
+                return (
+                    <>
+                        <div className="fixed inset-0 z-40" onClick={() => setOpenMenuConvId(null)} />
+                        <div
+                            style={{ top: menuPosition.top, left: Math.max(8, menuPosition.left) }}
+                            className="fixed z-50 bg-white border border-[#DFDFDF] rounded-lg shadow-xl py-1.5 w-44"
+                        >
+                            <button
+                                onClick={(e) => { startRenameConv(e, menuConv.id, menuConv.title); setOpenMenuConvId(null); }}
+                                className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-[#111111] hover:bg-[#F5F5F5] transition-colors"
+                            >
+                                <Edit2 className="w-3.5 h-3.5 text-[#767676]" />
+                                Rename
+                            </button>
+                            <button
+                                onClick={(e) => { pinConversation(e, menuConv.id); setOpenMenuConvId(null); }}
+                                className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-[#111111] hover:bg-[#F5F5F5] transition-colors"
+                            >
+                                <Pin className={`w-3.5 h-3.5 ${menuConv.pinned ? 'text-[#0058A3]' : 'text-[#767676]'}`} />
+                                {menuConv.pinned ? 'Unpin' : 'Pin to top'}
+                            </button>
+                            <div className="border-t border-[#DFDFDF] my-1" />
+                            <button
+                                onClick={(e) => { deleteConversation(e, menuConv.id); setOpenMenuConvId(null); }}
+                                className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors"
+                            >
+                                <Trash2 className="w-3.5 h-3.5" />
+                                Delete
+                            </button>
+                        </div>
+                    </>
+                );
+            })()}
 
             {/* ── Avatar Picker ── */}
             {showAvatarPicker && (
