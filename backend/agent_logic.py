@@ -218,40 +218,6 @@ def _structured_tool_metadata(messages: list) -> list[dict]:
     return results
 
 
-def _numbers_in_text(text: str) -> set[str]:
-    normalized = str(text or "")
-    return set(re.findall(r"(?<![A-Za-z])\d+(?:\.\d+)?%?(?![A-Za-z])", normalized))
-
-
-def _latest_tool_content(messages: list, tool_names: set[str]) -> str:
-    for message in reversed(_tool_messages(messages)):
-        name = getattr(message, "name", "") or ""
-        if name in tool_names:
-            return _message_text(message.content).strip()
-    return ""
-
-
-def _enforce_grounded_analyst_response(agent_response: str, messages: list, reply_language: str = "Traditional Chinese") -> str:
-    analyst_tool_content = _latest_tool_content(
-        messages,
-        {"query_worksheet_data", "get_worksheet_structure", "list_worksheets"},
-    )
-    if not analyst_tool_content:
-        return agent_response
-
-    response_numbers = _numbers_in_text(agent_response)
-    tool_numbers = _numbers_in_text(analyst_tool_content)
-    ungrounded_numbers = response_numbers - tool_numbers
-    if ungrounded_numbers:
-        warning = (
-            "I found numbers in the drafted answer that were not present in the worksheet tool result, "
-            "so I am returning the grounded tool result directly to avoid unsupported data."
-            if reply_language == "English"
-            else "我發現草稿回答中出現了工作表工具結果沒有提供的數字，因此改為直接回傳已依工具結果計算的內容，避免使用未受支持的資料。"
-        )
-        return f"{warning}\n\n{analyst_tool_content}"
-
-    return agent_response
 
 
 def _usage_metadata(messages: list) -> dict:
@@ -479,11 +445,6 @@ async def process_chat_detailed(
         agent_response = _ensure_confluence_source_links(
             agent_response,
             confluence_links,
-            _detect_reply_language(clean_message),
-        )
-        agent_response = _enforce_grounded_analyst_response(
-            agent_response,
-            response_state["messages"],
             _detect_reply_language(clean_message),
         )
         await _emit_progress(progress_callback, "composing", "Finalizing the response")

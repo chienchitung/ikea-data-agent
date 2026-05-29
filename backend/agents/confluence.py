@@ -130,7 +130,8 @@ def _search_with_cql(query: str, limit: int = 10) -> list:
 @tool
 def search_confluence_pages(query: str) -> str:
     """
-    當不知道確切頁面標題時，使用此工具搜索 Confluence 頁面。
+    搜索 Data Team Toolbox（Confluence）頁面。
+    當不知道確切頁面標題時使用此工具。
     輸入關鍵字，返回相關頁面的 ID、標題和完整連結。
     會自動嘗試多種關鍵字變體（含/不含空格、拆分關鍵字），提高找到正確頁面的機率。
     """
@@ -163,7 +164,7 @@ def search_confluence_pages(query: str) -> str:
 @tool
 def get_all_pages() -> str:
     """
-    列出 Confluence 中所有頁面的標題與 ID。
+    列出 Data Team Toolbox（Confluence）中所有頁面的標題與 ID。
     當 search_confluence_pages 找不到結果時，使用此工具瀏覽所有頁面標題，
     從中找到最相關的頁面再用 get_confluence_page_content 取得內容。
     """
@@ -195,7 +196,7 @@ def get_all_pages() -> str:
 @tool
 def get_confluence_page_content(page_id: str) -> str:
     """
-    獲取指定 Confluence 頁面的詳細內容。
+    獲取 Data Team Toolbox（Confluence）中指定頁面的詳細內容。
     必須輸入 search_confluence_pages 返回的 Page ID。
     """
     print(f"\n[Tool Call] 正在讀取 Confluence 頁面: {page_id} ...")

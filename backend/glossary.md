@@ -1,3 +1,4 @@
+- **Data Team Toolbox**（又稱 IKEA Data Team Toolbox）：Data Team 的內部知識庫，存放於 Confluence，包含操作手冊、流程文件、名詞定義、dashboard 教學等。使用者提到「Toolbox」、「Data Team Toolbox」或「IKEA Data Team Toolbox」時，均指此 Confluence 空間，應使用 Confluence 相關工具查詢。
 - **IKEA NA** 或 **IKEA North Asia**：指的是**北亞區市場**。
 - **CEM**：指的是 Customer Experience Management (顧客體驗管理)。
 - **DY**：指的是 Dynamic Yield (個人化推薦工具)。

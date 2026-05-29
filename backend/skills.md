@@ -4,7 +4,7 @@ A concise overview of Data Machi's capabilities, approach, and communication sty
 
 ## Core Abilities
 
-- Retrieve and synthesize information from available IKEA Data Team tools, including Trello, Confluence, internal documents, and worksheet data.
+- Retrieve and synthesize information from available IKEA Data Team tools, including Trello, Data Team Toolbox (the team's Confluence knowledge base), internal documents, and worksheet data.
 - Summarize and explain complex internal topics, project status, workflow rules, and data request context.
 - Draft, edit, refine, and translate user-facing text when it supports IKEA Data Team workflows.
 - Generate ideas, plans, task breakdowns, and next-step recommendations for data and project work.
@@ -38,7 +38,7 @@ A concise overview of Data Machi's capabilities, approach, and communication sty
 ## Usage Examples
 
 - "Summarize current IKEA Data Requests assigned to Jackie."
-- "Explain this Confluence process in simple terms."
+- "Explain this process from the Data Team Toolbox in simple terms."
 - "Draft a short update email for this request status."
 - "Summarize these worksheet results into a 5-bullet brief."
 - "Translate this paragraph to English and refine it for readability."

@@ -178,9 +178,9 @@ _TOOL_PROGRESS_LABELS = {
     "list_worksheets": "Reading worksheet list",
     "get_worksheet_structure": "Checking worksheet fields",
     "query_worksheet_data": "Querying worksheet data",
-    "search_confluence_pages": "Searching Confluence",
-    "get_confluence_page_content": "Reading Confluence content",
-    "get_all_pages": "Organizing Confluence pages",
+    "search_confluence_pages": "Searching Data Team Toolbox",
+    "get_confluence_page_content": "Reading Data Team Toolbox",
+    "get_all_pages": "Browsing Data Team Toolbox",
     "search_document_base": "Searching PDF knowledge base",
     "get_project_status": "Checking Trello progress",
     "get_card_details": "Reading Trello card",
@@ -617,7 +617,7 @@ async def _classify_user_intent(user_query: str) -> dict:
 可用工具領域：
 - trello: IKEA Data Requests Trello 看板、卡片、專案進度、負責人、標籤、留言。
 - analyst: Google Sheet / worksheet / Request 工作表、工單/ticket/request 數量、統計、圖表、KPI、趨勢、資料表查詢。
-- confluence: 團隊文件、流程、名詞定義、dashboard/tool 內部說明、操作教學。
+- confluence: Data Team Toolbox（Confluence）中的團隊文件、流程、名詞定義、dashboard/tool 內部說明、操作教學。使用者說「Toolbox」或「Data Team Toolbox」即屬於此 domain。
 - document: 已上傳 PDF/文件內容。
 - none: 一般閒聊、改寫、翻譯、或可以直接根據目前對話文字回答且不需要內部資料。
 

@@ -1158,7 +1158,7 @@ function App() {
                                                 return (
                                                     <div
                                                         key={conv.id}
-                                                        onClick={() => !isRenamingThis && switchConversation(conv)}
+                                                        onClick={() => switchConversation(conv)}
                                                         className={`group flex items-center gap-2 px-2 py-2 rounded-lg cursor-pointer transition-colors ${isActive ? 'bg-white' : 'hover:bg-white'} ${conv.pinned ? 'border-l-2 border-[#0058A3]' : ''}`}
                                                     >
                                                         {/* Icon: loading spinner → pin → chat bubble */}
@@ -1171,50 +1171,30 @@ function App() {
                                                         )}
 
                                                         <div className="flex-1 min-w-0">
-                                                            {isRenamingThis ? (
-                                                                <input
-                                                                    autoFocus
-                                                                    value={renamingConvTitle}
-                                                                    onChange={e => setRenamingConvTitle(e.target.value)}
-                                                                    onKeyDown={e => {
-                                                                        if (e.key === 'Enter') confirmRenameConv(conv.id);
-                                                                        if (e.key === 'Escape') setRenamingConvId(null);
-                                                                        e.stopPropagation();
-                                                                    }}
-                                                                    onBlur={() => confirmRenameConv(conv.id)}
-                                                                    onClick={e => e.stopPropagation()}
-                                                                    className="w-full text-sm bg-transparent border-b border-[#0058A3] outline-none text-[#111111] py-0.5"
-                                                                />
-                                                            ) : (
-                                                                <>
-                                                                    <p className={`text-sm font-medium truncate ${isActive ? 'text-[#484848]' : 'text-[#111111]'}`}>
-                                                                        {conv.title}
-                                                                    </p>
-                                                                    <p className="text-xs text-[#767676] mt-0.5">
-                                                                        {isLoading ? (
-                                                                            <span className="text-[#0058A3] font-medium">Responding…</span>
-                                                                        ) : formatRelativeTime(conv.createdAt)}
-                                                                    </p>
-                                                                </>
-                                                            )}
+                                                            <p className={`text-sm font-medium truncate ${isActive ? 'text-[#484848]' : 'text-[#111111]'}`}>
+                                                                {conv.title}
+                                                            </p>
+                                                            <p className="text-xs text-[#767676] mt-0.5">
+                                                                {isLoading ? (
+                                                                    <span className="text-[#0058A3] font-medium">Responding…</span>
+                                                                ) : formatRelativeTime(conv.createdAt)}
+                                                            </p>
                                                         </div>
 
                                                         {/* Three-dot menu trigger */}
-                                                        {!isRenamingThis && (
-                                                            <button
-                                                                onClick={(e) => {
-                                                                    e.stopPropagation();
-                                                                    if (openMenuConvId === conv.id) { setOpenMenuConvId(null); return; }
-                                                                    const rect = e.currentTarget.getBoundingClientRect();
-                                                                    setMenuPosition({ top: rect.bottom + 4, left: rect.left - 128 });
-                                                                    setOpenMenuConvId(conv.id);
-                                                                }}
-                                                                className={`flex-shrink-0 p-1 rounded transition-all hover:bg-[#DFDFDF] ${openMenuConvId === conv.id ? 'opacity-100 bg-[#DFDFDF]' : 'opacity-0 group-hover:opacity-100'}`}
-                                                                title="More options"
-                                                            >
-                                                                <MoreHorizontal className="w-3.5 h-3.5 text-[#767676]" />
-                                                            </button>
-                                                        )}
+                                                        <button
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                if (openMenuConvId === conv.id) { setOpenMenuConvId(null); return; }
+                                                                const rect = e.currentTarget.getBoundingClientRect();
+                                                                setMenuPosition({ top: rect.bottom + 4, left: rect.left - 128 });
+                                                                setOpenMenuConvId(conv.id);
+                                                            }}
+                                                            className={`flex-shrink-0 p-1 rounded transition-all hover:bg-[#DFDFDF] ${openMenuConvId === conv.id ? 'opacity-100 bg-[#DFDFDF]' : 'opacity-0 group-hover:opacity-100'}`}
+                                                            title="More options"
+                                                        >
+                                                            <MoreHorizontal className="w-3.5 h-3.5 text-[#767676]" />
+                                                        </button>
                                                     </div>
                                                 );
                                             })
@@ -1622,7 +1602,43 @@ function App() {
                 </footer>
             </div>
 
-            {/* ── Rename Modal ── */}
+            {/* ── Rename Conversation Modal ── */}
+            {renamingConvId && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setRenamingConvId(null)}>
+                    <div className="bg-white rounded-2xl p-6 w-[min(400px,calc(100vw-2rem))] shadow-2xl" onClick={e => e.stopPropagation()}>
+                        <h3 className="text-base font-semibold text-[#111111] mb-1">Rename conversation</h3>
+                        <p className="text-sm text-[#767676] mb-4">Enter a new name for this conversation.</p>
+                        <input
+                            type="text"
+                            value={renamingConvTitle}
+                            onChange={e => setRenamingConvTitle(e.target.value)}
+                            onKeyDown={e => {
+                                if (e.key === 'Enter') confirmRenameConv(renamingConvId);
+                                if (e.key === 'Escape') setRenamingConvId(null);
+                            }}
+                            className="w-full px-3 py-2 text-sm border border-[#DFDFDF] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#0058A3] focus:border-transparent text-[#111111]"
+                            autoFocus
+                            onFocus={e => e.target.select()}
+                        />
+                        <div className="flex gap-2 mt-4 justify-end">
+                            <button
+                                onClick={() => setRenamingConvId(null)}
+                                className="px-4 py-2 text-sm font-medium text-[#111111] hover:bg-[#F5F5F5] rounded-lg transition-colors"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={() => confirmRenameConv(renamingConvId)}
+                                className="px-4 py-2 text-sm font-medium text-white bg-[#0058A3] hover:bg-[#004F93] rounded-lg transition-colors"
+                            >
+                                Save
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* ── Rename Document Modal ── */}
             {renamingDoc && (
                 <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setRenamingDoc(null)}>
                     <div className="bg-white rounded-lg p-6 w-96 shadow-xl" onClick={(e) => e.stopPropagation()}>
