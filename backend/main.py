@@ -8,7 +8,8 @@ from typing import Any, Dict, List, Optional
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.messages import HumanMessage, AIMessage
 from agent_logic import process_chat_detailed
-from agents.coordinator import suggest_clarifications
+from agents.coordinator import suggest_clarifications, set_api_key, reset_api_key
+from agents.document import set_active_documents, reset_active_documents
 import uvicorn
 
 app = FastAPI()
@@ -37,6 +38,8 @@ class ChatRequest(BaseModel):
     conversation_id: Optional[str] = None
     clarifications: List[ClarificationSelection] = Field(default_factory=list)
     turn_context: Dict[str, Any] = Field(default_factory=dict)
+    gemini_api_key: Optional[str] = None
+    active_documents: Optional[List[str]] = None
 
 class ChatResponse(BaseModel):
     response: str
@@ -47,6 +50,8 @@ class ClarificationRequest(BaseModel):
     message: str
     history: List[Message] = Field(default_factory=list)
     conversation_id: Optional[str] = None
+    gemini_api_key: Optional[str] = None
+    active_documents: Optional[List[str]] = None
 
 class ClarificationResponse(BaseModel):
     needs_clarification: bool = False
@@ -133,7 +138,13 @@ def classify_chat_error_text(text: str, language: str = "en") -> Optional[dict]:
     if not text:
         return None
 
-    if "google_api_key" in lowered or "api key" in lowered or "gemini" in lowered:
+    is_error_response = lowered.startswith("error processing request")
+    api_key_error = (
+        "google_api_key" in lowered
+        or ("api key" in lowered and (is_error_response or "not valid" in lowered or "invalid" in lowered))
+        or ("gemini" in lowered and is_error_response)
+    )
+    if api_key_error:
         return localized_product_error("ai_provider_unavailable", language)
 
     if (
@@ -148,9 +159,9 @@ def classify_chat_error_text(text: str, language: str = "en") -> Optional[dict]:
         "文件中完全未提及" in text
         or "找不到相關" in text
         or "無結果" in text
-        or "找不到" in text
         or "no relevant content" in lowered
         or "does not contain enough information" in lowered
+        or "system warning: no relevant" in lowered
     ):
         return localized_product_error("no_relevant_result", language)
 
@@ -204,6 +215,8 @@ async def chat_endpoint(request: ChatRequest):
             chat_history,
             request.conversation_id,
             request.turn_context or None,
+            gemini_api_key=request.gemini_api_key or None,
+            active_documents=request.active_documents,
         )
         response_text = result["response"]
         metadata = result.get("metadata", {})
@@ -244,6 +257,8 @@ async def chat_stream_endpoint(request: ChatRequest):
                     request.conversation_id,
                     request.turn_context or None,
                     progress_handler,
+                    gemini_api_key=request.gemini_api_key or None,
+                    active_documents=request.active_documents,
                 )
                 response_text = result["response"]
                 metadata = result.get("metadata", {})
@@ -279,27 +294,39 @@ async def chat_stream_endpoint(request: ChatRequest):
 
 @app.post("/clarifications", response_model=ClarificationResponse)
 async def clarification_endpoint(request: ClarificationRequest):
+    api_key_token = set_api_key(request.gemini_api_key) if request.gemini_api_key else None
+    docs_token = set_active_documents(request.active_documents) if request.active_documents is not None else None
     try:
         history_text = "\n".join(
             f"{msg.role}: {msg.content}"
             for msg in request.history[-8:]
         )
-        result = await suggest_clarifications(request.message, history_text)
+        result = await suggest_clarifications(
+            request.message,
+            history_text,
+            active_documents=request.active_documents,
+        )
         return ClarificationResponse(**result)
     except Exception as e:
         print(f"❌ Clarification Error: {e}")
         return ClarificationResponse()
+    finally:
+        if api_key_token is not None:
+            reset_api_key(api_key_token)
+        if docs_token is not None:
+            reset_active_documents(docs_token)
 
-from fastapi import UploadFile, File
+from fastapi import UploadFile, File, Form
 from fastapi.responses import JSONResponse
 import shutil
 import os
 from urllib.parse import unquote
 from agents.document import (
-    initialize_knowledge_base, 
-    search_document_base, 
+    initialize_knowledge_base,
+    search_document_base,
     get_loaded_files,
-    rename_document_in_kb
+    rename_document_in_kb,
+    remove_document_from_kb,
 )
 
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -322,7 +349,7 @@ def _list_pdf_files() -> list[str]:
     return sorted(disk_files | set(get_loaded_files()))
 
 @app.post("/upload")
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(file: UploadFile = File(...), gemini_api_key: Optional[str] = Form(None)):
     try:
         if not file.filename.endswith('.pdf'):
             raise HTTPException(
@@ -345,7 +372,7 @@ async def upload_file(file: UploadFile = File(...)):
         print(f"✅ File uploaded: {safe_filename}")
         
         # Trigger reload of knowledge base and get result
-        result = initialize_knowledge_base()
+        result = initialize_knowledge_base(api_key=gemini_api_key or None)
         
         # Check if the uploaded file is in the failed list
         uploaded_filename = safe_filename
@@ -378,14 +405,23 @@ async def upload_file(file: UploadFile = File(...)):
             
         # If result.success is False but file wasn't specifically in failed list (e.g. global error)
         if result and not result.get("success", False):
-             error = product_error(
+            result_message = result.get("message", "")
+            # Missing API key means file is saved but KB can't be built yet — not a hard failure
+            if "GOOGLE_API_KEY missing" in result_message or "Embeddings initialization failed" in result_message:
+                return {
+                    "filename": safe_filename,
+                    "message": "File uploaded. Set your Gemini API key to enable PDF search.",
+                    "warning": "knowledge_base_not_built",
+                    "details": result,
+                }
+            error = product_error(
                 "knowledge_base_unavailable",
                 "PDF knowledge base was not created",
                 "The file was received, but embedding or index creation failed, so this PDF is not queryable yet.",
                 ["Confirm GOOGLE_API_KEY / GEMINI_API_KEY is available", "Confirm the backend can reach the model service", "Retry processing or upload again later"],
                 result,
              )
-             return JSONResponse(
+            return JSONResponse(
                 status_code=422,
                 content={
                     "filename": safe_filename,
@@ -459,9 +495,9 @@ async def delete_document(filename: str):
                 )
             )
         
-        # Reinitialize knowledge base
-        initialize_knowledge_base()
-        
+        # Remove from in-memory KB immediately (no API key needed)
+        remove_document_from_kb(decoded_filename)
+
         return {"message": f"File {decoded_filename} deleted successfully"}
     except HTTPException:
         raise

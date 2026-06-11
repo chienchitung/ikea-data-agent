@@ -12,11 +12,12 @@ from .analyst import analyst_tools
 
 load_dotenv()
 
+_env_api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
 llm = ChatGoogleGenerativeAI(
     model="gemini-2.5-flash",
     temperature=0,
-    google_api_key=os.getenv("GOOGLE_API_KEY")
-)
+    google_api_key=_env_api_key,
+) if _env_api_key else None
 
 # Define coordinator tools wrapper
 all_tools = trello_tools + confluence_tools + document_tools + analyst_tools
@@ -102,12 +103,13 @@ from langgraph.graph.message import add_messages
 class AgentState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
 
-# 綁定所有工具給 LLM
-model_with_tools = llm.bind_tools(all_tools)
+# 綁定所有工具給 LLM（env key 存在時才建立，否則為 None）
+model_with_tools = llm.bind_tools(all_tools) if llm else None
 
 # 建立工具查詢 map，供 parallel_tool_node 使用
 _tool_map = {t.name: t for t in all_tools}
 _progress_handler_var = contextvars.ContextVar("progress_handler", default=None)
+_api_key_var = contextvars.ContextVar("gemini_api_key", default=None)
 
 # Chat history 上限（保留 system + 最近 N 則，避免 token 越來越多）
 MAX_HISTORY = 20
@@ -131,10 +133,7 @@ _DEFAULT_CLARIFICATION = {
     "reason": "",
 }
 
-_DOCUMENT_QUERY_TERMS = [
-    "pdf", "PDF", "文件", "文檔", "檔案", "document",
-    "上傳", "剛上傳", "這份", "這個檔", "這份檔", "這份資料"
-]
+from .document import DOCUMENT_QUERY_TERMS as _DOCUMENT_QUERY_TERMS
 
 _FRESH_DATA_TERMS = [
     "request", "ticket", "tickets", "worksheet", "sheet", "工單", "工作表", "資料",
@@ -196,6 +195,23 @@ def reset_progress_handler(token) -> None:
     _progress_handler_var.reset(token)
 
 
+def set_api_key(key: str):
+    return _api_key_var.set(key)
+
+
+def reset_api_key(token) -> None:
+    _api_key_var.reset(token)
+
+
+def _effective_llm():
+    api_key = _api_key_var.get()
+    if api_key:
+        return ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0, google_api_key=api_key)
+    if llm is not None:
+        return llm
+    raise ValueError("No Gemini API key configured. Please set your API key in the app settings.")
+
+
 async def emit_progress(phase: str, label: str, **extra) -> None:
     handler = _progress_handler_var.get()
     if not handler:
@@ -206,9 +222,12 @@ async def emit_progress(phase: str, label: str, **extra) -> None:
         "label": label,
         **extra,
     }
-    result = handler(payload)
-    if inspect.isawaitable(result):
-        await result
+    try:
+        result = handler(payload)
+        if inspect.isawaitable(result):
+            await result
+    except Exception as e:
+        print(f"⚠️ [emit_progress] callback error (ignored): {e}")
 
 
 def _has_tool_calls(message) -> bool:
@@ -342,7 +361,7 @@ async def _answer_from_context(messages: list[BaseMessage], user_query: str) -> 
     else:
         direct_messages = messages + [direct_instruction]
 
-    response = await llm.ainvoke(direct_messages)
+    response = await _effective_llm().ainvoke(direct_messages)
     return AIMessage(content=_content_to_text(response.content).strip())
 
 
@@ -404,7 +423,7 @@ has_prior_tool_context: {str(bool(has_prior_tool_context)).lower()}
 """
     try:
         await emit_progress("understanding", "Checking context")
-        response = await llm.ainvoke([HumanMessage(content=router_prompt)])
+        response = await _effective_llm().ainvoke([HumanMessage(content=router_prompt)])
         parsed = _parse_json_object(_content_to_text(response.content))
         if not parsed:
             return dict(_DEFAULT_TURN_CONTEXT)
@@ -641,7 +660,7 @@ async def _classify_user_intent(user_query: str) -> dict:
 {user_query}
 """
     try:
-        response = await llm.ainvoke([HumanMessage(content=classifier_prompt)])
+        response = await _effective_llm().ainvoke([HumanMessage(content=classifier_prompt)])
         parsed = _parse_json_object(_content_to_text(response.content))
         if not parsed:
             return dict(_DEFAULT_INTENT)
@@ -661,7 +680,7 @@ async def _classify_user_intent(user_query: str) -> dict:
         return dict(_DEFAULT_INTENT)
 
 
-async def suggest_clarifications(user_query: str, history_text: str = "") -> dict:
+async def suggest_clarifications(user_query: str, history_text: str = "", active_documents: list = None) -> dict:
     """
     Decide whether the UI should ask a short clarification before running tools.
     This powers the floating option panel above the input box.
@@ -728,11 +747,13 @@ async def suggest_clarifications(user_query: str, history_text: str = "") -> dic
 對話脈絡判斷：
 {json.dumps(turn_context, ensure_ascii=False)}
 
+{'目前使用者已勾選的 PDF 文件：' + ', '.join(active_documents) if active_documents else '目前未勾選任何 PDF 文件'}
+
 使用者問題：
 {user_query}
 """
     try:
-        response = await llm.ainvoke([HumanMessage(content=clarification_prompt)])
+        response = await _effective_llm().ainvoke([HumanMessage(content=clarification_prompt)])
         parsed = _parse_json_object(_content_to_text(response.content))
         if not parsed:
             return with_turn_context(_fallback_clarification(user_query))
@@ -855,7 +876,7 @@ async def agent_node(state: AgentState):
 
     # 主流程：信任 LLM 自行決定要呼叫工具還是直接回答
     await emit_progress("thinking", "Choosing the right tool")
-    response = await model_with_tools.ainvoke(messages)
+    response = await _effective_llm().bind_tools(all_tools).ainvoke(messages)
 
     if _has_tool_calls(response):
         await emit_progress("tool", "Preparing data lookup", status="queued")

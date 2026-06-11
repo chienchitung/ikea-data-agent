@@ -22,11 +22,25 @@ try:
 except ImportError:
     VISUAL_CONTEXT_AVAILABLE = False
 
+import threading
+import contextvars
+
 load_dotenv()
 
 vector_db = None
 embeddings = None
 loaded_files = []
+_kb_init_lock = threading.Lock()
+
+_active_docs_var = contextvars.ContextVar("active_documents", default=None)
+
+
+def set_active_documents(docs):
+    return _active_docs_var.set(docs)
+
+
+def reset_active_documents(token) -> None:
+    _active_docs_var.reset(token)
 document_chunks = []
 
 # FAISS 持久化路徑（與 document.py 同層的 backend/ 目錄下）
@@ -52,6 +66,20 @@ LAZY_OCR_TRIGGER_TERMS = [
     "picture", "figure", "page", "圖片", "掃描", "掃描頁", "截圖", "圖表", "視覺",
     "畫面", "照片", "附圖", "如圖", "第", "頁", "補充", "看不清", "沒有找到"
 ]
+
+DOCUMENT_QUERY_TERMS = [
+    # 明確指稱檔案
+    "pdf", "PDF", "文件", "文檔", "檔案", "document",
+    "上傳", "剛上傳", "這份", "這個檔", "這份檔", "這份資料",
+    # 書籍 / 手冊類
+    "這本", "書中", "書裡", "書上", "手冊", "指南", "報告", "簡報",
+    # 文件結構
+    "章節", "段落", "頁碼", "第幾頁", "內文", "正文", "條款", "條文",
+    # 查詢動作
+    "查一下", "找找", "幫我找", "有沒有提", "有提到", "有說到",
+    "提到了", "說明了", "提及", "記載",
+]
+
 
 def get_loaded_files():
     return loaded_files
@@ -151,9 +179,18 @@ def get_document_corpus(max_chars: int = 60000) -> str:
     summary questions. This uses the already processed chunks, so it also works
     after loading the persisted FAISS cache.
     """
+    active = _active_docs_var.get()
+    if active is not None and len(active) == 0:
+        return "System warning: No PDF documents are currently active for this conversation."
+
     chunks = document_chunks or _chunks_from_vector_db()
     if not chunks:
         return "Error: No PDF files have been uploaded yet. This tool only works for uploaded PDF documents. For ticket statistics, worksheet data, or request analysis, use the Data Analyst Agent tools (query_worksheet_data) instead."
+
+    if active is not None:
+        chunks = [c for c in chunks if c.get("source", "") in active]
+    if not chunks:
+        return "System warning: No relevant content was found in the active PDF documents."
 
     output_parts = ["Below is the available full-document PDF context. Use it to answer from the whole-document perspective.\n"]
     current_chars = len(output_parts[0])
@@ -506,14 +543,21 @@ def _lazy_ocr_missing_pages_for_query(query: str) -> int:
     print(f"✅ Lazy OCR 補充完成：新增 {len(ocr_splits)} chunks")
     return len(ocr_splits)
 
-def initialize_knowledge_base():
+def initialize_knowledge_base(api_key: str = None):
     global vector_db, embeddings, loaded_files, document_chunks
-    
-    api_key = os.getenv("GOOGLE_API_KEY")
+
+    with _kb_init_lock:
+        return _initialize_knowledge_base_locked(api_key)
+
+
+def _initialize_knowledge_base_locked(api_key: str = None):
+    global vector_db, embeddings, loaded_files, document_chunks
+
+    api_key = api_key or os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
     if not api_key:
         print("Warning: GOOGLE_API_KEY not found for Document Agent.")
         return {
-            "success": False, 
+            "success": False,
             "message": "GOOGLE_API_KEY missing."
         }
 
@@ -830,6 +874,36 @@ def rename_document_in_kb(old_name: str, new_name: str) -> bool:
         print(f"❌ Fast Rename Failed: {e}")
         return False
 
+def remove_document_from_kb(filename: str) -> None:
+    """
+    Remove a deleted file from in-memory KB state without needing an API key.
+    Clears loaded_files, document_chunks, and the on-disk FAISS cache so the
+    next request will rebuild the index from the remaining files.
+    """
+    global vector_db, embeddings, loaded_files, document_chunks
+
+    if filename in loaded_files:
+        loaded_files.remove(filename)
+        print(f"⚡️ KB: removed '{filename}' from loaded_files ({len(loaded_files)} remaining)")
+
+    before = len(document_chunks)
+    document_chunks = [c for c in document_chunks if c.get("source") != filename]
+    removed = before - len(document_chunks)
+    if removed:
+        _save_document_chunks(document_chunks)
+        print(f"⚡️ KB: removed {removed} chunks for '{filename}' from chunk cache")
+
+    # Invalidate the FAISS index so the next request rebuilds it cleanly
+    vector_db = None
+    embeddings = None
+    try:
+        if os.path.exists(FAISS_INDEX_PATH):
+            shutil.rmtree(FAISS_INDEX_PATH)
+            print("🗑️ KB: cleared on-disk FAISS index (will rebuild on next request)")
+    except Exception as e:
+        print(f"⚠️ KB: could not clear FAISS index: {e}")
+
+
 @tool
 def search_document_base(query: str) -> str:
     """
@@ -841,13 +915,23 @@ def search_document_base(query: str) -> str:
     if vector_db is None:
         return "Error: No PDF files have been uploaded yet. This tool only works for uploaded PDF documents. For ticket statistics, worksheet data, or request analysis, use the Data Analyst Agent tools (query_worksheet_data) instead."
     
+    active = _active_docs_var.get()
+    if active is not None and len(active) == 0:
+        return "System warning: No PDF documents are currently active for this conversation."
+
     print(f"\n[Knowledge Search] 正在檢索: {query} ...")
 
     lazy_ocr_added = _lazy_ocr_missing_pages_for_query(query)
-    
+
     # 進行相似度搜尋。不同 embedding model / FAISS distance strategy 的分數範圍
     # 不穩定，不能用固定門檻硬濾，否則相關片段可能全部被丟掉。
     results_with_scores = vector_db.similarity_search_with_score(query, k=6)
+
+    if active is not None:
+        results_with_scores = [
+            (doc, score) for doc, score in results_with_scores
+            if doc.metadata.get("source", "") in active
+        ]
 
     if not results_with_scores:
         return "System warning: No relevant content was found in the PDF. Tell the user the document does not contain enough information, and do not guess."

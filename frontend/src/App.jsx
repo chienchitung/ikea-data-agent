@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useLayoutEffect } from 'react';
 import axios from 'axios';
 import { ChatMessage } from './components/ChatMessage';
-import { ArrowUp, Loader2, Sparkles, FileText, ChevronDown, ChevronLeft, ChevronRight, Plus, Check, Edit2, Trash2, User, MessageSquare, PenSquare, Search, Mic, Square, X, Bug, Pin, MoreHorizontal } from 'lucide-react';
+import { ArrowUp, Loader2, Sparkles, FileText, ChevronDown, ChevronLeft, ChevronRight, Plus, Check, Edit2, Trash2, User, MessageSquare, PenSquare, Search, Mic, Square, X, Bug, Pin, MoreHorizontal, KeyRound, Eye, EyeOff } from 'lucide-react';
 import bearAvatar from './assets/img/ikea-bear.png';
 import dogAvatar from './assets/img/ikea-dog.png';
 import monkeyAvatar from './assets/img/ikea-monkey.png';
@@ -12,6 +12,8 @@ const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 const SHOW_AI_DEBUG = import.meta.env.DEV && import.meta.env.VITE_DEBUG_AI === 'true';
 const STORAGE_KEY = 'ikea_agent_conversations';
 const CURRENT_ID_KEY = 'ikea_agent_current_id';
+const GEMINI_KEY_STORAGE = 'ikea_agent_gemini_key';
+const ACTIVE_DOCS_STORAGE = 'ikea_agent_active_docs';
 
 const AVATARS = [
     { id: 'bear', name: 'Bear', src: bearAvatar },
@@ -302,11 +304,12 @@ async function readSseStream(response, onEvent) {
     }
 }
 
-async function streamChat(payload, signal, onProgress) {
+async function streamChat(payload, signal, onProgress, geminiApiKey) {
+    const body = geminiApiKey ? { ...payload, gemini_api_key: geminiApiKey } : payload;
     const response = await fetch(`${API_URL}/chat/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(body),
         signal,
     });
 
@@ -350,7 +353,10 @@ function App() {
     const [currentConvId, setCurrentConvId] = useState(null);
     const [conversations, setConversations] = useState([]);
     const [documents, setDocuments] = useState([]);
-    const [selectedDocuments, setSelectedDocuments] = useState(new Set());
+    const [selectedDocuments, setSelectedDocuments] = useState(() => {
+        try { return new Set(JSON.parse(localStorage.getItem(ACTIVE_DOCS_STORAGE) || '[]')); }
+        catch { return new Set(); }
+    });
     const [loadingConvIds, setLoadingConvIds] = useState(new Set());
     const [convStatuses, setConvStatuses] = useState({});
     const [clarifyingConvId, setClarifyingConvId] = useState(null);
@@ -381,6 +387,10 @@ function App() {
     const [userAvatar, setUserAvatar] = useState(bearAvatar);
     const [showAvatarPicker, setShowAvatarPicker] = useState(false);
     const [debugMode, setDebugMode] = useState(false);
+    const [showApiKeyModal, setShowApiKeyModal] = useState(false);
+    const [apiKeyInput, setApiKeyInput] = useState('');
+    const [apiKeyVisible, setApiKeyVisible] = useState(false);
+    const [geminiApiKey, setGeminiApiKey] = useState(() => localStorage.getItem(GEMINI_KEY_STORAGE) || '');
     const messagesEndRef = useRef(null);
     const fileInputRef = useRef(null);
     const abortControllersRef = useRef(new Map());
@@ -498,6 +508,11 @@ function App() {
         if (currentConvId) localStorage.setItem(CURRENT_ID_KEY, currentConvId);
     }, [currentConvId]);
 
+    // selectedDocuments 變動時同步到 localStorage
+    useEffect(() => {
+        localStorage.setItem(ACTIVE_DOCS_STORAGE, JSON.stringify([...selectedDocuments]));
+    }, [selectedDocuments]);
+
     const scrollToBottom = (behavior = "smooth") => {
         messagesEndRef.current?.scrollIntoView({ behavior });
     };
@@ -505,7 +520,13 @@ function App() {
     const fetchDocuments = async () => {
         try {
             const response = await axios.get(`${API_URL}/documents`);
-            setDocuments(response.data.documents || []);
+            const fetched = response.data.documents || [];
+            setDocuments(fetched);
+            const fetchedSet = new Set(fetched);
+            setSelectedDocuments(prev => {
+                const pruned = new Set([...prev].filter(d => fetchedSet.has(d)));
+                return pruned.size === prev.size ? prev : pruned;
+            });
         } catch (error) {
             console.error("Failed to fetch documents:", error);
         }
@@ -603,6 +624,14 @@ function App() {
 
     // ── 對話管理 ─────────────────────────────────────────
     const startNewConversation = () => {
+        if (clarifyingConvId) {
+            clarificationAbortRef.current?.abort();
+            clarificationAbortRef.current = null;
+            setClarifyingConvId(null);
+        }
+        if (clarification) {
+            clearClarification();
+        }
         const newId = generateId();
         pendingScrollBehaviorRef.current = "auto";
         currentConvIdRef.current = newId;
@@ -612,6 +641,14 @@ function App() {
     };
 
     const switchConversation = (conv) => {
+        if (clarifyingConvId) {
+            clarificationAbortRef.current?.abort();
+            clarificationAbortRef.current = null;
+            setClarifyingConvId(null);
+        }
+        if (clarification) {
+            clearClarification();
+        }
         pendingScrollBehaviorRef.current = "auto";
         currentConvIdRef.current = conv.id;
         messagesRef.current = conv.messages;
@@ -702,7 +739,6 @@ function App() {
         const toDelete = [...selectedDocuments];
         const failed = [];
 
-        // Optimistic update: immediately remove from UI
         setDocuments(prev => prev.filter(doc => !toDelete.includes(doc)));
         setSelectedDocuments(new Set());
 
@@ -714,38 +750,19 @@ function App() {
             }
         }
 
-        // Confirm final state from server
         await fetchDocuments();
-
-        if (failed.length === 0) {
-            setMessages(prev => [...prev, {
-                role: 'assistant',
-                content: `✅ Deleted ${toDelete.length} file(s) successfully.`
-            }]);
-        } else {
-            setMessages(prev => [...prev, {
-                role: 'assistant',
-                content: `⚠️ Deleted ${toDelete.length - failed.length} file(s). Failed: ${failed.join(', ')}`
-            }]);
-        }
     };
 
     const deleteDocument = async (filename) => {
         if (!confirm(`Are you sure you want to delete "${filename}"?`)) return;
-        // Optimistic update: immediately remove from UI
         setDocuments(prev => prev.filter(doc => doc !== filename));
-        const newSelected = new Set(selectedDocuments);
-        newSelected.delete(filename);
-        setSelectedDocuments(newSelected);
+        setSelectedDocuments(prev => { const n = new Set(prev); n.delete(filename); return n; });
         try {
             await axios.delete(`${API_URL}/documents/${encodeURIComponent(filename)}`);
             await fetchDocuments();
-            setMessages(prev => [...prev, { role: 'assistant', content: `✅ File deleted: \`${filename}\`` }]);
         } catch (error) {
             console.error("Delete failed:", error);
-            // Rollback: re-fetch to restore accurate state
             await fetchDocuments();
-            setMessages(prev => [...prev, { role: 'assistant', content: `❌ Delete failed: ${error.message}` }]);
         }
     };
 
@@ -758,10 +775,16 @@ function App() {
         if (!newDocName.trim()) return;
         try {
             await axios.put(`${API_URL}/documents/${encodeURIComponent(renamingDoc)}`, { new_name: newDocName });
+            setSelectedDocuments(prev => {
+                if (!prev.has(renamingDoc)) return prev;
+                const n = new Set(prev);
+                n.delete(renamingDoc);
+                n.add(`${newDocName}.pdf`);
+                return n;
+            });
             await fetchDocuments();
             setRenamingDoc(null);
             setNewDocName("");
-            setMessages(prev => [...prev, { role: 'assistant', content: `✅ Renamed: \`${renamingDoc}\` → \`${newDocName}.pdf\`` }]);
         } catch (error) {
             console.error("Rename failed:", error);
             alert(`Rename failed: ${error.message}`);
@@ -775,11 +798,13 @@ function App() {
         setIsUploading(true);
         setUploadProgress(0);
         setUploadStage("Uploading file...");
+        let hadError = false;
         const formData = new FormData();
         formData.append("file", file);
+        if (geminiApiKey) formData.append("gemini_api_key", geminiApiKey);
 
         try {
-            await axios.post(`${API_URL}/upload`, formData, {
+            const res = await axios.post(`${API_URL}/upload`, formData, {
                 headers: { 'Content-Type': 'multipart/form-data' },
                 onUploadProgress: (e) => {
                     const pct = Math.round((e.loaded * 90) / e.total);
@@ -793,19 +818,29 @@ function App() {
             setUploadStage("Building knowledge base...");
             await fetchDocuments();
             setUploadProgress(100);
-            setUploadStage("Done!");
-            setMessages(prev => [...prev, { role: 'assistant', content: `✅ **PDF Uploaded**: \`${file.name}\` successfully. I can now answer questions about its content.` }]);
+            if (res.data?.warning === 'knowledge_base_not_built') {
+                setUploadStage("Uploaded. Set your API key to enable PDF search.");
+                hadError = true;
+            } else {
+                setUploadStage("Done!");
+            }
+            if (res.data?.filename) {
+                setSelectedDocuments(prev => new Set([...prev, res.data.filename]));
+            }
         } catch (error) {
             console.error("Upload failed", error);
-            const errorMessage = error.response?.data?.message || error.message;
-            setMessages(prev => [...prev, { role: 'assistant', content: `❌ **Upload Failed**: ${errorMessage}` }]);
+            hadError = true;
+            const detail = error.response?.data;
+            const serverMsg = detail?.message || (typeof detail === 'string' ? detail : null);
+            setUploadStage(serverMsg || "Upload failed. Please try again.");
+            setUploadProgress(0);
         } finally {
             setTimeout(() => {
                 setIsUploading(false);
                 setUploadProgress(0);
                 setUploadStage("");
                 if (fileInputRef.current) fileInputRef.current.value = "";
-            }, 800);
+            }, hadError ? 4000 : 800);
         }
     };
 
@@ -914,8 +949,9 @@ function App() {
                 history: historySnapshot,
                 conversation_id: activeConvId,
                 clarifications,
-                turn_context: turnContext
-            }, controller.signal, makeProgressHandler(activeConvId));
+                turn_context: turnContext,
+                active_documents: [...selectedDocuments],
+            }, controller.signal, makeProgressHandler(activeConvId), geminiApiKey || undefined);
             updateConversationMessages(activeConvId, prev => [...prev, {
                 role: 'assistant',
                 content: response.response,
@@ -1034,7 +1070,9 @@ function App() {
             const clarificationResponse = await axios.post(`${API_URL}/clarifications`, {
                 message: messageContent,
                 history: historySnapshot,
-                conversation_id: activeConvId
+                conversation_id: activeConvId,
+                active_documents: [...selectedDocuments],
+                ...(geminiApiKey ? { gemini_api_key: geminiApiKey } : {}),
             }, { signal: clarAbort.signal });
             turnContext = clarificationResponse.data?.turn_context || {};
 
@@ -1260,48 +1298,47 @@ function App() {
                                     <p className="text-sm text-[#767676] text-center py-4">No documents uploaded</p>
                                 ) : (
                                     <>
-                                        <div className="flex items-center justify-between mb-1">
+                                        <div className="flex items-center justify-between mb-1 px-2">
                                             <button
                                                 onClick={toggleSelectAll}
-                                                className="flex items-center gap-2 hover:bg-white rounded px-2 py-1 transition-colors"
+                                                className="flex items-center gap-2 hover:bg-white rounded py-1 transition-colors"
                                             >
                                                 <div className={`w-3.5 h-3.5 rounded border-2 flex-shrink-0 ${selectedDocuments.size === documents.length && documents.length > 0 ? 'border-[#0058A3] bg-[#0058A3]' : 'border-[#CCCCCC]'} flex items-center justify-center`}>
                                                     {selectedDocuments.size === documents.length && documents.length > 0 && <Check className="w-2.5 h-2.5 text-white" />}
                                                 </div>
-                                                <span className="text-sm text-[#484848]">Select all</span>
+                                                <span className="text-xs text-[#767676]">
+                                                    {selectedDocuments.size === 0 ? 'Enable all' : `${selectedDocuments.size} / ${documents.length} active`}
+                                                </span>
                                             </button>
-                                            {selectedDocuments.size > 0 && (
-                                                <button
-                                                    onClick={deleteSelectedDocuments}
-                                                    className="flex items-center gap-1 px-2 py-1 text-sm text-red-600 hover:bg-red-50 rounded transition-colors"
-                                                    title={`Delete ${selectedDocuments.size} selected`}
-                                                >
-                                                    <Trash2 className="w-3 h-3" />
-                                                    Delete ({selectedDocuments.size})
-                                                </button>
-                                            )}
                                         </div>
-                                        {documents.map((doc, idx) => (
-                                            <div key={idx} className="flex items-center gap-2 p-2 rounded-lg hover:bg-white transition-colors group">
-                                                <button onClick={() => toggleDocumentSelection(doc)} className="flex-shrink-0">
-                                                    <div className={`w-4 h-4 rounded border-2 ${selectedDocuments.has(doc) ? 'border-[#0058A3] bg-[#0058A3]' : 'border-[#CCCCCC]'} flex items-center justify-center transition-colors`}>
-                                                        {selectedDocuments.has(doc) && <Check className="w-2.5 h-2.5 text-white" />}
+                                        {documents.map((doc, idx) => {
+                                            const isActive = selectedDocuments.has(doc);
+                                            return (
+                                                <div key={idx} className="flex items-center gap-2 p-2 rounded-lg hover:bg-white transition-colors group">
+                                                    <button
+                                                        onClick={() => toggleDocumentSelection(doc)}
+                                                        className="flex-shrink-0"
+                                                        title={isActive ? 'Disable for conversation' : 'Enable for conversation'}
+                                                    >
+                                                        <div className={`w-4 h-4 rounded border-2 ${isActive ? 'border-[#0058A3] bg-[#0058A3]' : 'border-[#CCCCCC]'} flex items-center justify-center transition-colors`}>
+                                                            {isActive && <Check className="w-2.5 h-2.5 text-white" />}
+                                                        </div>
+                                                    </button>
+                                                    <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                                                        <FileText className={`w-3.5 h-3.5 flex-shrink-0 ${isActive ? 'text-red-500' : 'text-[#CCCCCC]'}`} />
+                                                        <span className={`text-sm truncate ${isActive ? 'text-[#111111]' : 'text-[#AAAAAA]'}`} title={doc}>{doc}</span>
                                                     </div>
-                                                </button>
-                                                <div className="flex items-center gap-1.5 flex-1 min-w-0">
-                                                    <FileText className="w-3.5 h-3.5 text-red-500 flex-shrink-0" />
-                                                    <span className="text-sm text-[#111111] truncate" title={doc}>{doc}</span>
+                                                    <div className="flex-shrink-0 flex gap-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
+                                                        <button onClick={() => startRename(doc)} className="p-1 hover:bg-[#DFDFDF] rounded" title="Rename">
+                                                            <Edit2 className="w-3 h-3 text-[#484848]" />
+                                                        </button>
+                                                        <button onClick={() => deleteDocument(doc)} className="p-1 hover:bg-red-100 rounded" title="Delete">
+                                                            <Trash2 className="w-3 h-3 text-red-500" />
+                                                        </button>
+                                                    </div>
                                                 </div>
-                                                <div className="flex-shrink-0 flex gap-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
-                                                    <button onClick={() => startRename(doc)} className="p-1 hover:bg-[#DFDFDF] rounded" title="Rename">
-                                                        <Edit2 className="w-3 h-3 text-[#484848]" />
-                                                    </button>
-                                                    <button onClick={() => deleteDocument(doc)} className="p-1 hover:bg-red-100 rounded" title="Delete">
-                                                        <Trash2 className="w-3 h-3 text-red-500" />
-                                                    </button>
-                                                </div>
-                                            </div>
-                                        ))}
+                                            );
+                                        })}
                                     </>
                                 )}
                             </div>
@@ -1375,6 +1412,16 @@ function App() {
                                     <PenSquare className="w-5 h-5 text-[#111111]" />
                                 </button>
                             )}
+                            <button
+                                onClick={() => { setApiKeyInput(geminiApiKey); setShowApiKeyModal(true); }}
+                                className={`p-2 rounded-full transition-colors relative ${geminiApiKey ? 'hover:bg-[#F5F5F5]' : 'hover:bg-[#F5F5F5]'}`}
+                                title={geminiApiKey ? "API Key configured" : "Set Gemini API Key"}
+                            >
+                                <KeyRound className={`w-5 h-5 ${geminiApiKey ? 'text-[#0058A3]' : 'text-[#111111]'}`} />
+                                {!geminiApiKey && (
+                                    <span className="absolute top-1 right-1 w-2 h-2 bg-amber-400 rounded-full" />
+                                )}
+                            </button>
                             <button
                                 onClick={() => setShowAvatarPicker(!showAvatarPicker)}
                                 className="p-2 hover:bg-[#F5F5F5] rounded-full transition-colors"
@@ -1697,6 +1744,122 @@ function App() {
                     </>
                 );
             })()}
+
+            {/* ── API Key Modal ── */}
+            {showApiKeyModal && (
+                <div
+                    className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+                    onClick={() => { setShowApiKeyModal(false); setApiKeyVisible(false); }}
+                >
+                    <div
+                        className="bg-white rounded-2xl shadow-2xl w-full max-w-md"
+                        onClick={e => e.stopPropagation()}
+                    >
+                        <div className="p-6">
+                            <div className="flex items-center gap-3 mb-1">
+                                <div className="w-10 h-10 bg-[#F5F5F5] rounded-full flex items-center justify-center flex-shrink-0">
+                                    <KeyRound className="w-5 h-5 text-[#0058A3]" />
+                                </div>
+                                <div>
+                                    <h2 className="text-lg font-semibold text-[#111111]">Gemini API Key</h2>
+                                    <p className="text-xs text-[#767676]">Stored locally in your browser</p>
+                                </div>
+                            </div>
+                            <p className="text-sm text-[#484848] mt-4 mb-5 leading-relaxed">
+                                Enter your Gemini API Key to enable AI responses. The key is saved only in this browser and is never sent to our servers beyond your own requests.
+                            </p>
+                            <div className="relative">
+                                <input
+                                    type={apiKeyVisible ? 'text' : 'password'}
+                                    value={apiKeyInput}
+                                    onChange={e => setApiKeyInput(e.target.value)}
+                                    onKeyDown={e => {
+                                        if (e.key === 'Enter') {
+                                            const trimmed = apiKeyInput.trim();
+                                            if (trimmed) {
+                                                localStorage.setItem(GEMINI_KEY_STORAGE, trimmed);
+                                                setGeminiApiKey(trimmed);
+                                            }
+                                            setShowApiKeyModal(false);
+                                            setApiKeyVisible(false);
+                                        }
+                                        if (e.key === 'Escape') { setShowApiKeyModal(false); setApiKeyVisible(false); }
+                                    }}
+                                    placeholder="Enter your API Key"
+                                    className="w-full px-3 py-2.5 text-sm border border-[#DFDFDF] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#0058A3] focus:border-transparent font-mono pr-20 text-[#111111]"
+                                    autoFocus
+                                />
+                                <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-0.5">
+                                    <button
+                                        type="button"
+                                        onClick={() => setApiKeyVisible(v => !v)}
+                                        className="p-1 hover:bg-[#F5F5F5] rounded text-[#767676]"
+                                        title={apiKeyVisible ? 'Hide key' : 'Show key'}
+                                    >
+                                        {apiKeyVisible ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                                    </button>
+                                    {apiKeyInput && (
+                                        <button
+                                            type="button"
+                                            onClick={() => setApiKeyInput('')}
+                                            className="p-1 hover:bg-[#F5F5F5] rounded text-[#767676]"
+                                            title="Clear"
+                                        >
+                                            <X className="w-4 h-4" />
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+                            {geminiApiKey && (
+                                <p className="text-xs text-[#0058A3] mt-2 flex items-center gap-1">
+                                    <Check className="w-3 h-3" />
+                                    API key is configured
+                                </p>
+                            )}
+                        </div>
+                        <div className="px-6 pb-6 flex items-center justify-between gap-3">
+                            {geminiApiKey && (
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        localStorage.removeItem(GEMINI_KEY_STORAGE);
+                                        setGeminiApiKey('');
+                                        setApiKeyInput('');
+                                        setShowApiKeyModal(false);
+                                    }}
+                                    className="text-sm font-medium text-red-500 hover:text-red-600 transition-colors"
+                                >
+                                    Remove key
+                                </button>
+                            )}
+                            <div className="flex gap-2 ml-auto">
+                                <button
+                                    type="button"
+                                    onClick={() => { setShowApiKeyModal(false); setApiKeyVisible(false); }}
+                                    className="px-4 py-2 text-sm font-medium text-[#111111] hover:bg-[#F5F5F5] rounded-lg transition-colors"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        const trimmed = apiKeyInput.trim();
+                                        if (trimmed) {
+                                            localStorage.setItem(GEMINI_KEY_STORAGE, trimmed);
+                                            setGeminiApiKey(trimmed);
+                                        }
+                                        setShowApiKeyModal(false);
+                                        setApiKeyVisible(false);
+                                    }}
+                                    className="px-4 py-2 text-sm font-medium text-white bg-[#0058A3] hover:bg-[#004F93] rounded-lg transition-colors"
+                                >
+                                    Save
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* ── Avatar Picker ── */}
             {showAvatarPicker && (

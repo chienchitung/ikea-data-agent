@@ -1,4 +1,7 @@
+import asyncio
+import glob
 import json
+import os
 import re
 import inspect
 import time
@@ -7,12 +10,15 @@ from typing import Optional
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
 from agents.coordinator import (
     coordinator_executor,
-    llm,
+    _effective_llm,
     classify_turn_context,
     reset_progress_handler,
     set_progress_handler,
+    set_api_key,
+    reset_api_key,
 )
-from agents.document import get_document_corpus, get_loaded_files, search_document_base
+from agents.document import get_document_corpus, get_loaded_files, search_document_base, set_active_documents, reset_active_documents, DOCUMENT_QUERY_TERMS
+import agents.document as _doc_module
 from conversation_store import (
     load_conversation_messages,
     load_memory_summary,
@@ -21,11 +27,31 @@ from conversation_store import (
     save_conversation_messages,
 )
 
+_BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+_kb_init_lock = asyncio.Lock()
 
-_DOCUMENT_QUERY_TERMS = [
-    "pdf", "PDF", "文件", "文檔", "檔案", "document",
-    "上傳", "剛上傳", "這份", "這個檔", "這份檔", "這份資料"
-]
+
+async def _ensure_kb_initialized(api_key: str) -> None:
+    """Load KB from the on-disk FAISS cache if it was not loaded at startup."""
+    if _doc_module.vector_db is not None:
+        return
+    faiss_index_dir = os.path.abspath(_doc_module.FAISS_INDEX_PATH)
+    has_cache = os.path.exists(os.path.join(faiss_index_dir, "index.faiss"))
+    has_pdfs = bool(
+        glob.glob(os.path.join(_BACKEND_DIR, "*.pdf"))
+        + glob.glob(os.path.join(_BACKEND_DIR, "..", "*.pdf"))
+    )
+    if not (has_cache or has_pdfs):
+        return
+    async with _kb_init_lock:
+        if _doc_module.vector_db is not None:
+            return
+        print("⚡ Lazy KB init: loading from disk cache with provided API key...")
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, lambda: _doc_module.initialize_knowledge_base(api_key=api_key))
+
+
+_DOCUMENT_QUERY_TERMS = DOCUMENT_QUERY_TERMS
 
 _FULL_DOCUMENT_QUERY_TERMS = [
     "整份", "整個", "完整", "全部", "全篇", "全文", "通篇",
@@ -334,11 +360,13 @@ async def _answer_from_document_base(message: str) -> Optional[str]:
         or "系統警告" in document_context
         or "knowledge base is not ready" in lowered_document_context
         or "system warning" in lowered_document_context
+        or "no pdf files have been uploaded" in lowered_document_context
+        or "error: no pdf" in lowered_document_context
     ):
         return document_context
 
     reply_language = _detect_reply_language(clean_message)
-    response = await llm.ainvoke([
+    response = await _effective_llm().ainvoke([
         SystemMessage(content=(
             "你是 IKEA Data Team 的 PDF 文件問答助理。"
             "請只根據提供的 PDF 內容回答；若內容不足以回答，請明確說文件內容不足。"
@@ -364,10 +392,16 @@ async def process_chat_detailed(
     conversation_id: Optional[str] = None,
     turn_context: Optional[dict] = None,
     progress_callback=None,
+    gemini_api_key: Optional[str] = None,
+    active_documents: Optional[list] = None,
 ) -> dict:
     """
     Process the chat message using the LangGraph Coordinator Agent.
     """
+    api_key_token = set_api_key(gemini_api_key) if gemini_api_key else None
+    active_docs_token = set_active_documents(active_documents) if active_documents is not None else None
+    if gemini_api_key:
+        await _ensure_kb_initialized(gemini_api_key)
     try:
         started_at = time.perf_counter()
         await _emit_progress(progress_callback, "understanding", "Understanding your question")
@@ -483,6 +517,7 @@ async def process_chat_detailed(
             "metadata": metadata,
         }
     except Exception as e:
+        print(f"❌ Chat Error [{type(e).__name__}]: {e}")
         return {
             "response": f"Error processing request: {str(e)}",
             "metadata": {
@@ -490,6 +525,11 @@ async def process_chat_detailed(
                 "turn_context": turn_context or {},
             },
         }
+    finally:
+        if api_key_token is not None:
+            reset_api_key(api_key_token)
+        if active_docs_token is not None:
+            reset_active_documents(active_docs_token)
 
 
 async def process_chat(
