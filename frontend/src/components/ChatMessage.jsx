@@ -404,9 +404,18 @@ const markdownComponents = {
 
         // LLM sometimes mislabels chart specs as json — auto-detect and render as chart
         if (language === 'json') {
-            const chartSpec = parseChartSpec(code);
-            if (chartSpec && chartSpec.data.length > 0) {
-                return <InteractiveChart code={code} />;
+            try {
+                const raw = JSON.parse(code);
+                if (
+                    raw &&
+                    ['bar', 'line', 'pie'].includes(raw.type) &&
+                    Array.isArray(raw.data) &&
+                    'title' in raw
+                ) {
+                    return <InteractiveChart code={code} />;
+                }
+            } catch {
+                // not JSON — fall through to CodeBlock
             }
         }
 

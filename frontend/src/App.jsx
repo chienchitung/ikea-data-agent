@@ -624,9 +624,12 @@ function App() {
 
     // ── 對話管理 ─────────────────────────────────────────
     const startNewConversation = () => {
+        // Do NOT abort the clarification request here. If a clarification is
+        // in-flight for the previous conversation, let it complete in the
+        // background. handleSubmit will detect the conversation switch and
+        // skip the clarification panel, sending the chat directly so the user
+        // gets a response when they return to that conversation.
         if (clarifyingConvId) {
-            clarificationAbortRef.current?.abort();
-            clarificationAbortRef.current = null;
             setClarifyingConvId(null);
         }
         if (clarification) {
@@ -641,9 +644,10 @@ function App() {
     };
 
     const switchConversation = (conv) => {
+        // Same as startNewConversation: don't abort in-flight requests when
+        // the user switches away. The previous conversation continues in the
+        // background and will show the response when the user returns.
         if (clarifyingConvId) {
-            clarificationAbortRef.current?.abort();
-            clarificationAbortRef.current = null;
             setClarifyingConvId(null);
         }
         if (clarification) {
@@ -1077,25 +1081,33 @@ function App() {
             turnContext = clarificationResponse.data?.turn_context || {};
 
             if (clarificationResponse.data?.needs_clarification && clarificationResponse.data?.questions?.length > 0) {
-                const nextClarification = clarificationResponse.data;
-                const defaultAnswers = {};
-                nextClarification.questions.forEach((question) => {
-                    if (question.options?.[0]) defaultAnswers[question.id] = question.options[0].value;
-                });
-                setPendingMessage(messageContent);
-                setPendingHistorySnapshot(historySnapshot);
-                setPendingTurnContext(turnContext);
-                setPendingConversationId(activeConvId);
-                setClarification(nextClarification);
-                setClarificationAnswers(defaultAnswers);
-                setClarificationCustomAnswers({});
-                setInput("");
-                endResponseStatus(activeConvId);
-                setLoadingConvIds(prev => { const n = new Set(prev); n.delete(activeConvId); return n; });
-                return;
+                // Only show the clarification panel if the user is still viewing
+                // this conversation. If they switched away, skip the panel and
+                // let the chat continue in the background without clarification.
+                if (currentConvIdRef.current === activeConvId) {
+                    const nextClarification = clarificationResponse.data;
+                    const defaultAnswers = {};
+                    nextClarification.questions.forEach((question) => {
+                        if (question.options?.[0]) defaultAnswers[question.id] = question.options[0].value;
+                    });
+                    setPendingMessage(messageContent);
+                    setPendingHistorySnapshot(historySnapshot);
+                    setPendingTurnContext(turnContext);
+                    setPendingConversationId(activeConvId);
+                    setClarification(nextClarification);
+                    setClarificationAnswers(defaultAnswers);
+                    setClarificationCustomAnswers({});
+                    setInput("");
+                    endResponseStatus(activeConvId);
+                    setLoadingConvIds(prev => { const n = new Set(prev); n.delete(activeConvId); return n; });
+                    return;
+                }
+                // User switched away — fall through to sendChatMessage without clarification
             }
         } catch (error) {
             if (error.name === 'AbortError' || axios.isCancel(error)) {
+                // Only reaches here when the user explicitly clicked Stop (handleStop).
+                // startNewConversation/switchConversation no longer abort the clarification.
                 endResponseStatus(activeConvId);
                 setLoadingConvIds(prev => { const n = new Set(prev); n.delete(activeConvId); return n; });
                 return;

@@ -38,12 +38,21 @@ def _read_prompt_module(filename: str) -> str:
     return _read_text_file(os.path.join(PROMPT_DIR, filename))
 
 
+# 模組載入順序對應優先等級，Layer 1 最高、Layer 6 最低
+# LLM 遇到衝突時，永遠以編號較小的 Layer 為準
 prompt_modules = {
+    # Layer 1 — 絕對限制，任何情況下不得違反
+    "Hard Constraints": _read_prompt_module("hard_constraints.md"),
+    # Layer 2 — 身份、人設、範疇邊界
     "Core Identity": _read_prompt_module("core_identity.md"),
+    # Layer 3 — 工作流程、零幻覺、工具使用原則
     "Workflow Policy": _read_prompt_module("workflow_policy.md"),
+    # Layer 4 — 各 Agent 工具路由細則與資料 schema
     "Tool Routing": _read_prompt_module("tool_routing.md"),
     "Data Schema": _read_prompt_module("data_schema.md"),
+    # Layer 5 — 輸出格式
     "Response Formatting": _read_prompt_module("response_formatting.md"),
+    # Layer 6 — 溝通技巧、詞彙參考（最低優先，可被上層覆蓋）
     "Skills": _read_text_file(os.path.join(BASE_DIR, "skills.md")),
     "Glossary": _read_text_file(os.path.join(BASE_DIR, "glossary.md")),
 }
@@ -68,16 +77,18 @@ system_prompt = f"""
   - If the latest user message mixes languages, use the language used for the actual question or request.
   - This rule applies only to assistant answers. Frontend UI fields such as clarification panel labels remain English.
 
-# Prompt Priority
+# Prompt Priority（衝突解決規則）
 
-請依照以下優先順序執行。若不同模組之間發生衝突，永遠以前面的規則為準：
+以下六個 Layer 決定規則優先順序。**若任意兩條規則衝突，編號較小的 Layer 永遠勝出，不得以任何理由例外。**
 
-1. 本 System Context 與 Prompt Priority
-2. Core Identity, scope, out-of-scope, identity guardrails
-3. Workflow, zero hallucination, tool usage, citation, empty-result policy
-4. Tool routing and data schema
-5. Response formatting
-6. Skills, communication style, glossary reference
+| Layer | 模組 | 說明 |
+|-------|------|------|
+| 1 | Hard Constraints | 絕對禁止與強制行為，永不被覆蓋 |
+| 2 | Core Identity | 身份、人設、範疇邊界 |
+| 3 | Workflow Policy | 工作流程、零幻覺、工具呼叫原則 |
+| 4 | Tool Routing / Data Schema | 各工具路由細則 |
+| 5 | Response Formatting | 輸出格式規範 |
+| 6 | Skills / Glossary | 溝通風格、詞彙（最低優先） |
 
 # Loaded Prompt Modules
 
@@ -115,10 +126,20 @@ _api_key_var = contextvars.ContextVar("gemini_api_key", default=None)
 MAX_HISTORY = 20
 
 _INTERIM_RESPONSE_MARKERS = [
+    # 中文預告詞
     "請稍等", "請等一下", "稍等一下", "等我一下", "我正在查",
     "正在處理", "處理中", "立刻請", "馬上請",
-    "我幫你查", "我來查",
+    "我幫你查", "我來查", "讓我看看", "讓我查", "讓我來",
+    "讓我幫你", "讓我幫你查", "讓我確認", "讓我先查",
+    "我先查", "我查一下", "我來幫你查", "我來確認",
+    "我先看看", "容我查", "馬上幫你查", "幫你查一下",
+    # 英文預告詞
+    "let me check", "let me look", "let me search", "let me find",
+    "i'll check", "i'll look", "i'll search", "i'll find",
+    "i will check", "i will look", "one moment", "just a moment",
 ]
+
+_MAX_INTERIM_RETRIES = 2
 
 _DEFAULT_INTENT = {
     "needs_tool": False,
@@ -139,6 +160,9 @@ _FRESH_DATA_TERMS = [
     "request", "ticket", "tickets", "worksheet", "sheet", "工單", "工作表", "資料",
     "統計", "數量", "幾筆", "分析", "原因", "為什麼", "圖表", "chart", "趨勢",
     "最新", "目前", "全部", "所有", "重新", "再查", "long duration", "duration",
+    # 篩選條件、時間詞、需求詞 — 這些都需要重新查工具取得新資料
+    "篩選", "今年", "去年", "本月", "上個月", "上月", "今天", "本週",
+    "需求", "請求", "請求狀況", "需求單位", "各單位", "部門",
 ]
 
 _CHART_DIMENSION_OPTIONS = [
@@ -331,12 +355,15 @@ def _has_answerable_context_before_latest_human(messages: list[BaseMessage]) -> 
     if latest_index <= 0:
         return False
 
+    # Only consider actual tool results (ToolMessages or Prior Tool Context) as
+    # "answerable context". Plain AIMessages and Conversation Memory summaries are
+    # excluded because they don't constitute raw queryable data — using them causes
+    # the LLM to be called without bind_tools() for data questions, which produces
+    # function_call-only responses that _content_to_text() renders as empty strings.
     for message in messages[:latest_index]:
-        if isinstance(message, AIMessage) and _content_to_text(message.content).strip():
-            return True
         if isinstance(message, SystemMessage):
             content = _content_to_text(message.content)
-            if "Conversation Memory" in content or "Prior Tool Context" in content:
+            if "Prior Tool Context" in content:
                 return True
         if getattr(message, "type", "") == "tool" or message.__class__.__name__ == "ToolMessage":
             return True
@@ -860,8 +887,33 @@ async def parallel_tool_node(state: AgentState):
     results = await asyncio.gather(*[execute_one(tc) for tc in tool_calls])
     return {"messages": list(results)}
 
+def _consecutive_interim_count(messages: list) -> int:
+    """Count consecutive AI interim responses (no tool calls) at the tail of messages."""
+    count = 0
+    for msg in reversed(messages):
+        if (
+            isinstance(msg, AIMessage)
+            and not _has_tool_calls(msg)
+            and _is_interim_response(_content_to_text(msg.content))
+        ):
+            count += 1
+        else:
+            break
+    return count
+
+
 async def agent_node(state: AgentState):
     messages = state["messages"]
+
+    # Detect retry: the last message is an AI interim response with no tool call.
+    # In that case inject a corrective instruction so the LLM actually calls the tool.
+    is_retry = (
+        messages
+        and isinstance(messages[-1], AIMessage)
+        and not _has_tool_calls(messages[-1])
+        and _is_interim_response(_content_to_text(messages[-1].content))
+    )
+
     messages = _prepare_messages_for_model(messages)
 
     last_human_msg = next((m.content for m in reversed(messages) if isinstance(m, HumanMessage)), "")
@@ -872,10 +924,24 @@ async def agent_node(state: AgentState):
     if _should_answer_from_context(turn_context, messages):
         await emit_progress("composing", "Drafting from context")
         response = await _answer_from_context(messages, guardrail_query)
-        return {"messages": [response]}
+        # Gemini may return only a function_call part (no text) when forced into a
+        # data-fetching path without bind_tools(). _content_to_text() then yields "".
+        # Fall through to the normal tool-calling flow instead of returning empty.
+        if _content_to_text(response.content).strip():
+            return {"messages": [response]}
 
-    # 主流程：信任 LLM 自行決定要呼叫工具還是直接回答
-    await emit_progress("thinking", "Choosing the right tool")
+    if is_retry:
+        await emit_progress("tool", "Retrying tool call")
+        # Append a corrective system message to force an immediate tool call
+        messages = messages + [SystemMessage(content=(
+            "## 工具呼叫強制指令\n\n"
+            "你剛才說要查詢但沒有呼叫任何工具，導致流程中斷。"
+            "請**立即**呼叫適當的工具完成任務，不要再輸出任何說明、預告或中文敘述。"
+            "直接執行工具呼叫，不要有任何前言。"
+        ))]
+    else:
+        await emit_progress("thinking", "Choosing the right tool")
+
     response = await _effective_llm().bind_tools(all_tools).ainvoke(messages)
 
     if _has_tool_calls(response):
@@ -885,15 +951,19 @@ async def agent_node(state: AgentState):
 
     return {"messages": [response]}
 
+
 def should_continue(state: AgentState):
-    """判斷 LLM 是呼叫了工具，還是已經得到最終答案"""
+    """判斷 LLM 是呼叫了工具、需要 retry，還是已得到最終答案"""
     last_message = state["messages"][-1]
-    
-    # 如果有呼叫工具的動作，導向 action 節點
-    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+
+    if _has_tool_calls(last_message):
         return "action"
-    
-    # 如果沒有呼叫工具（代表它想直接跟您講話），結束圖的執行
+
+    # If the LLM generated planning text without calling a tool, retry up to the limit
+    if _is_interim_response(_content_to_text(last_message.content)):
+        if _consecutive_interim_count(state["messages"]) <= _MAX_INTERIM_RETRIES:
+            return "agent"
+
     return END
 
 # 建立我們自己的 LangGraph 狀態機 (StateGraph)

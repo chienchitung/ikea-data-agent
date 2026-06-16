@@ -269,25 +269,47 @@ async def chat_stream_endpoint(request: ChatRequest):
                         "error_code": productized_error["code"],
                         "metadata": metadata,
                     }))
+                elif not response_text or not response_text.strip():
+                    # Guard against empty responses (e.g. LLM returned only a
+                    # function_call part that _content_to_text stripped to "").
+                    empty_error = localized_product_error("agent_runtime_error", reply_language)
+                    await queue.put(("final", {
+                        "response": error_markdown(empty_error, reply_language),
+                        "error_code": empty_error["code"],
+                        "metadata": metadata,
+                    }))
                 else:
                     await queue.put(("final", {
                         "response": response_text,
                         "metadata": metadata,
                     }))
+            except asyncio.CancelledError:
+                # Task was cancelled (e.g. SSE client disconnected). Do not put
+                # anything in the queue — the generator is already closing.
+                raise
             except Exception as e:
                 print(f"❌ Stream Error: {e}")
                 await queue.put(("error", localized_product_error("chat_server_error", reply_language, str(e))))
 
         task = asyncio.create_task(run_chat())
-        yield sse_event("progress", {"phase": "understanding", "label": "Understanding your question"})
+        try:
+            yield sse_event("progress", {"phase": "understanding", "label": "Understanding your question"})
 
-        while True:
-            event, payload = await queue.get()
-            yield sse_event(event, payload)
-            if event in {"final", "error"}:
-                break
-
-        await task
+            while True:
+                event, payload = await queue.get()
+                yield sse_event(event, payload)
+                if event in {"final", "error"}:
+                    break
+        finally:
+            # Cancel the background task if still running (e.g. client disconnected
+            # mid-stream). Without this, orphaned tasks accumulate and exhaust the
+            # Gemini API rate limit, causing other concurrent conversations to fail.
+            if not task.done():
+                task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
 
     from fastapi.responses import StreamingResponse
     return StreamingResponse(event_generator(), media_type="text/event-stream")

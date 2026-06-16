@@ -268,6 +268,33 @@ def _usage_metadata(messages: list) -> dict:
     }
 
 
+def _fix_chart_code_blocks(response: str) -> str:
+    """Convert ```json code blocks that are chart specs into ```chart blocks.
+
+    The LLM occasionally mislabels chart specs as json, which causes the
+    frontend to display raw JSON instead of the interactive chart widget.
+    """
+    pattern = re.compile(r'```json[ \t]*\r?\n(.*?)\r?\n```', re.DOTALL)
+
+    def replace_if_chart(match: re.Match) -> str:
+        code = match.group(1).strip()
+        try:
+            spec = json.loads(code)
+            if (
+                isinstance(spec, dict)
+                and spec.get('type') in ('bar', 'line', 'pie')
+                and isinstance(spec.get('data'), list)
+                and len(spec['data']) > 0
+                and 'title' in spec
+            ):
+                return f"```chart\n{code}\n```"
+        except (json.JSONDecodeError, ValueError):
+            pass
+        return match.group(0)
+
+    return pattern.sub(replace_if_chart, response)
+
+
 def _extract_confluence_links(text: str) -> dict:
     links = {}
     for title, url in re.findall(r"(?:Link|來源連結):\s*\[([^\]]+)\]\(([^)]+)\)", text):
@@ -475,6 +502,7 @@ async def process_chat_detailed(
         else:
             agent_response = str(agent_response_raw)
 
+        agent_response = _fix_chart_code_blocks(agent_response)
         confluence_links = _collect_confluence_links(response_state["messages"], stored_tool_context)
         agent_response = _ensure_confluence_source_links(
             agent_response,
