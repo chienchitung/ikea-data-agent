@@ -9,6 +9,7 @@ from langchain_core.messages import messages_from_dict, messages_to_dict
 
 
 STORE_DIR = Path(__file__).resolve().parent / ".conversation_store"
+TRACE_DIR = Path(__file__).resolve().parent / ".agent_traces"
 MAX_STORED_MESSAGES = 40
 MAX_TOOL_CONTEXT_CHARS = 20000
 MAX_TOOL_RESULTS = 30
@@ -211,3 +212,21 @@ def save_conversation_messages(conversation_id: Optional[str], messages) -> None
             json.dump(payload, f, ensure_ascii=False)
     except Exception as e:
         print(f"⚠️ Failed to save conversation context: {e}")
+
+
+def save_agent_trace(conversation_id: Optional[str], trace: dict) -> None:
+    safe_id = _safe_conversation_id(conversation_id) or "no_conversation"
+    TRACE_DIR.mkdir(parents=True, exist_ok=True)
+    trace_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    path = TRACE_DIR / f"{safe_id}-{trace_id}.json"
+    payload = {
+        "conversation_id": safe_id,
+        "trace_id": trace_id,
+        "saved_at": datetime.now(timezone.utc).isoformat(),
+        **(trace or {}),
+    }
+    try:
+        with path.open("w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"⚠️ Failed to save agent trace: {e}")

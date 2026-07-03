@@ -12,11 +12,20 @@ from .analyst import analyst_tools
 
 load_dotenv()
 
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
 _env_api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+# include_thoughts=False: without this, the Gemini API may return an extra
+# type="thinking" content part alongside the final type="text" part. Nothing
+# in this codebase's content-joining code distinguished the two, so a
+# thinking part (the model's own draft/checklist, sometimes referencing
+# internal prompt rule IDs like "HC-2") could get concatenated in front of
+# the real answer and shown to the user. Disabling it at the source is more
+# reliable than trying to detect and strip it after the fact.
 llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash",
+    model=GEMINI_MODEL,
     temperature=0,
     google_api_key=_env_api_key,
+    include_thoughts=False,
 ) if _env_api_key else None
 
 # Define coordinator tools wrapper
@@ -156,13 +165,22 @@ _DEFAULT_CLARIFICATION = {
 
 from .document import DOCUMENT_QUERY_TERMS as _DOCUMENT_QUERY_TERMS
 
-_FRESH_DATA_TERMS = [
-    "request", "ticket", "tickets", "worksheet", "sheet", "工單", "工作表", "資料",
-    "統計", "數量", "幾筆", "分析", "原因", "為什麼", "圖表", "chart", "趨勢",
-    "最新", "目前", "全部", "所有", "重新", "再查", "long duration", "duration",
-    # 篩選條件、時間詞、需求詞 — 這些都需要重新查工具取得新資料
-    "篩選", "今年", "去年", "本月", "上個月", "上月", "今天", "本週",
-    "需求", "請求", "請求狀況", "需求單位", "各單位", "部門",
+# Explicit correction / verification challenges only. These are the ONLY
+# phrases that force a fresh tool re-query even when classify_turn_context()
+# already said should_answer_from_context=True. Generic/broad terms (資料,
+# 統計, 分析, 需求, 部門, 最新, 全部, ...) were removed — they matched ordinary
+# follow-up phrasing (e.g. "各部門的工單數量可以怎麼分析") and force-vetoed the
+# router's should_answer_from_context decision even when the router had
+# already judged the prior tool context sufficient. classify_turn_context's
+# router prompt already instructs should_force_fresh_tool=true whenever the
+# user asks for "最新、重新查、全部、目前狀態", so removing the broad terms here
+# does not remove that safety net — it removes a redundant, over-broad
+# duplicate that was silently overriding correct LLM judgments.
+_CORRECTION_CHALLENGE_TERMS = [
+    "確定", "正確", "重新檢查", "再確認", "核對", "檢查資訊",
+    "有錯", "錯誤", "不對", "不正確", "修正", "更正",
+    "are you sure", "is that correct", "double check", "recheck", "verify",
+    "incorrect", "wrong", "not correct", "fix the data",
 ]
 
 _CHART_DIMENSION_OPTIONS = [
@@ -230,7 +248,7 @@ def reset_api_key(token) -> None:
 def _effective_llm():
     api_key = _api_key_var.get()
     if api_key:
-        return ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0, google_api_key=api_key)
+        return ChatGoogleGenerativeAI(model=GEMINI_MODEL, temperature=0, google_api_key=api_key, include_thoughts=False)
     if llm is not None:
         return llm
     raise ValueError("No Gemini API key configured. Please set your API key in the app settings.")
@@ -290,6 +308,13 @@ def _content_to_text(content: Any) -> str:
     if isinstance(content, list):
         parts = []
         for item in content:
+            # Skip type="thinking" parts: the Gemini API can return the
+            # model's internal reasoning as a separate content part alongside
+            # the real type="text" answer. include_thoughts=False on the LLM
+            # already asks the API not to send these; this check is a
+            # structural (API-field-based, not keyword-guessed) backstop.
+            if isinstance(item, dict) and item.get("type") == "thinking":
+                continue
             if isinstance(item, dict) and "text" in item:
                 parts.append(str(item["text"]))
             elif isinstance(item, str):
@@ -508,7 +533,7 @@ def _should_answer_from_context(turn_context: dict, messages: list[BaseMessage])
         if isinstance(message, HumanMessage):
             latest_query = _extract_user_query_for_guardrail(_content_to_text(message.content))
             break
-    if _requires_fresh_data_query(latest_query):
+    if _is_correction_challenge_query(latest_query):
         return False
     return _has_answerable_context_before_latest_human(messages)
 
@@ -563,10 +588,10 @@ def _looks_like_document_query(user_query: str) -> bool:
     return any(term.lower() in lowered or term in compact for term in _DOCUMENT_QUERY_TERMS)
 
 
-def _requires_fresh_data_query(user_query: str) -> bool:
+def _is_correction_challenge_query(user_query: str) -> bool:
     lowered = str(user_query or "").lower()
     compact = re.sub(r"\s+", "", lowered)
-    return any(term in lowered or term in compact for term in _FRESH_DATA_TERMS)
+    return any(term in lowered or term in compact for term in _CORRECTION_CHALLENGE_TERMS)
 
 
 def _fallback_clarification(user_query: str) -> dict:

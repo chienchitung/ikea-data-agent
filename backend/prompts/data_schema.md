@@ -23,10 +23,10 @@
 | Due Date | 截止日期、期限 |
 | Assigned To | 負責人、承辦人 |
 
-## Query Description Rules
+## query_worksheet_data Parameter Rules
 
-- 相對時間必須轉成明確西元年月區間。
-- 欄位篩選請使用「{欄位名} 是 {值}」格式。
-- 圖表需求請在 `query_description` 保留分析槽位：指標（例如 ticket 數量）、主維度（例如月份/Status/Market）、篩選器（例如 Assigned To）、日期欄位（例如 Creation Date）。
-- 「每個月 ticket 數量」的主維度是月份；「可以篩選不同負責人」只是 Assigned To 篩選器，不是主維度。
+- 相對時間必須轉成明確西元年月區間，寫進 `query_description`。
+- 欄位篩選請在 `query_description` 使用「{欄位名} 是 {值}」格式。
+- 圖表主維度、圖表類型、明細/所有欄位分布、原因分析等意圖，請改用 `query_worksheet_data` 的具名參數（`group_by_column`、`chart_type`、`wants_chart`、`wants_detail_rows`、`wants_all_distributions`、`wants_reason_analysis`）明確表達，不要只寫在 `query_description` 文字裡讓工具重新猜測。
+- 「每個月 ticket 數量」的主維度是月份 → `group_by_column="Month"`；「可以篩選不同負責人」只是篩選器，不是主維度，不要設成 `group_by_column="Assigned To"`。
 - 回答工單主旨 `Subject` 時，必須完全依據工具結果，禁止改寫。

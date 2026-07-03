@@ -22,3 +22,4 @@ venv/
 backend/.venv/
 backend/faiss_index/
 backend/.conversation_store/
+backend/.agent_traces/

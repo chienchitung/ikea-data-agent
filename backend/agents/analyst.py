@@ -145,6 +145,19 @@ def get_all_records_safe(worksheet) -> list:
         records.append(dict(zip(headers, padded)))
     return records
 
+
+def _load_worksheet_dataframe(worksheet_name: str) -> tuple[pd.DataFrame, int]:
+    gc = get_gspread_client()
+    spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
+    worksheet = spreadsheet.worksheet(worksheet_name)
+    all_records = get_all_records_safe(worksheet)
+    _cached_data[worksheet_name] = all_records
+    if not all_records:
+        return pd.DataFrame(), 0
+    df = _drop_empty_columns(pd.DataFrame(all_records))
+    _detect_date_columns(df)
+    return df, len(df)
+
 # 嘗試預先檢查憑證是否存在 (for logs)
 try:
     _keyfiles = glob.glob("*.json") + glob.glob("backend/*.json")
@@ -396,43 +409,65 @@ def _wants_all_distributions(query: str) -> bool:
     return any(keyword in query_lower for keyword in keywords)
 
 
-def _parse_analysis_intent(query: str, df: pd.DataFrame) -> dict:
+def _parse_analysis_intent(
+    query: str,
+    df: pd.DataFrame,
+    group_by_override: str = "",
+    wants_chart: bool = False,
+    wants_detail_rows: bool = False,
+    chart_type_override: str = "",
+) -> dict:
     """
     Convert a natural-language analysis request into a small, predictable shape.
     This prevents secondary fields like "filter by assignee" from stealing the
     main chart dimension from phrases like "by month".
+
+    group_by_override / chart_type_override take priority over the keyword
+    heuristics below when non-empty — they represent an explicit decision the
+    caller (the LLM, via query_worksheet_data's named params) already made, so
+    there is no need to re-guess it from the free-text query.
     """
     query_lower = query.lower()
     group_by = None
 
-    group_rules = [
-        ('month', ['每個月', '各月', '月份', '月別', '按月', '每月', '月趨勢', 'monthly', 'by month', 'per month']),
-        ('Status', ['狀態', '進度', 'status']),
-        ('Market', ['市場', 'market']),
-        ('Data Source', ['資料來源', '數據來源', 'data source']),
-        ('Data Support', ['資料支援', '數據支援', '支援類型', 'data support']),
-        ('Assigned To', ['依負責人', '按負責人', '各負責人', '負責人分布', 'assigned distribution', 'by assignee']),
-        ('Department', ['部門', 'department']),
-        ('Labels', ['標籤', '分類', 'label']),
-        ('Device', ['裝置', 'device']),
-    ]
-    for value, terms in group_rules:
-        if any(term in query_lower for term in terms):
-            group_by = value
-            break
+    if group_by_override:
+        normalized_override = group_by_override.strip()
+        if normalized_override.lower() in {"month", "monthly", "月份", "月"}:
+            group_by = "month"
+        else:
+            # Fail-safe: an unresolved override simply won't match stat_cols
+            # downstream, so the caller gracefully falls back to today's
+            # chart-column guess instead of erroring out.
+            group_by = _resolve_column(df, normalized_override) or normalized_override
+    else:
+        group_rules = [
+            ('month', ['每個月', '各月', '月份', '月別', '按月', '每月', '月趨勢', 'monthly', 'by month', 'per month']),
+            ('Status', ['狀態', '進度', 'status']),
+            ('Market', ['市場', 'market']),
+            ('Data Source', ['資料來源', '數據來源', 'data source']),
+            ('Data Support', ['資料支援', '數據支援', '支援類型', 'data support']),
+            ('Assigned To', ['依負責人', '按負責人', '各負責人', '負責人分布', 'assigned distribution', 'by assignee']),
+            ('Department', ['部門', 'department']),
+            ('Labels', ['標籤', '分類', 'label']),
+            ('Device', ['裝置', 'device']),
+        ]
+        for value, terms in group_rules:
+            if any(term in query_lower for term in terms):
+                group_by = value
+                break
 
     metric = 'ticket_count'
     if any(term in query_lower for term in ['平均', 'average', '天數', '處理時間', '花費', '工時']):
         metric = 'duration_days'
 
-    output = 'chart' if _wants_chart(query) else 'summary'
-    if _wants_detail_rows(query):
+    output = 'chart' if wants_chart else 'summary'
+    if wants_detail_rows:
         output = 'table'
     elif group_by == 'month':
         output = 'chart'
 
-    chart_type = _chart_type(query)
-    if group_by == 'month':
+    chart_type = chart_type_override or _chart_type(query)
+    if group_by == 'month' and not chart_type_override:
         chart_type = 'line'
 
     date_column = _choose_month_date_column(df, query) if group_by == 'month' else None
@@ -483,8 +518,8 @@ def _choose_chart_column(query: str, stat_cols: list[str]) -> Optional[str]:
     return stat_cols[0]
 
 
-def _summary_columns(query: str, stat_cols: list[str], chart_col: Optional[str]) -> list[str]:
-    if _wants_all_distributions(query):
+def _summary_columns(stat_cols: list[str], chart_col: Optional[str], wants_all_distributions: bool = False) -> list[str]:
+    if wants_all_distributions:
         return stat_cols
 
     preferred = [chart_col, 'Status', 'Market', 'Data Source', 'Data Support']
@@ -529,22 +564,254 @@ def _build_chart_block(title: str, labels: list[str], values: list[int], chart_t
     return "\n\n```chart\n" + json.dumps(chart_spec, ensure_ascii=False, indent=2) + "\n```\n"
 
 
-@tool
-def query_worksheet_data(worksheet_name: str, query_description: str) -> str:
-    """
-    根據查詢需求從指定工作表中檢索和分析資料。
-    此工具可以執行複雜的資料分析，包括：
-    - 統計數量（有多少筆資料、某狀態有幾筆等）
-    - 依日期區間篩選資料（例如：2025年1月到6月）
-    - 依關鍵字篩選（專案名稱、狀態、負責人等）
-    - 計算平均值、總和、處理天數等統計指標
-    - 專案內容摘要整理
+def _parse_iso_date(value: str, fallback_end: bool = False) -> Optional[pd.Timestamp]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    normalized = raw.replace("/", "-").replace("年", "-").replace("月", "").replace("日", "")
+    try:
+        if re.fullmatch(r"\d{4}", normalized):
+            return pd.Timestamp(f"{normalized}-12-31" if fallback_end else f"{normalized}-01-01")
+        if re.fullmatch(r"\d{4}-\d{1,2}", normalized):
+            start = pd.Timestamp(f"{normalized}-01")
+            return start + pd.offsets.MonthEnd(1) if fallback_end else start
+        return pd.Timestamp(normalized)
+    except Exception:
+        return None
 
-    參數:
-    - worksheet_name: 工作表的名稱
-    - query_description: 詳細描述要查詢的內容（可包含日期區間、關鍵字、分析需求）
-      重要：若查詢包含相對時間詞彙（如「今年」、「去年」、「上半年」、「本季」等），
-      請先將其轉換為明確的日期區間再傳入，例如「今年」→「2026年1月到12月」。
+
+def _month_labels_between(start: pd.Timestamp, end: pd.Timestamp) -> list[str]:
+    if start is None or end is None:
+        return []
+    periods = pd.period_range(start=start.to_period("M"), end=end.to_period("M"), freq="M")
+    return [str(period) for period in periods]
+
+
+def _series_counts_dict(series: pd.Series, limit: int = 20) -> dict:
+    counts = series.fillna("(Blank)").astype(str).replace("", "(Blank)").value_counts().head(limit)
+    return {str(key): int(value) for key, value in counts.items()}
+
+
+@tool
+def query_request_tickets_structured(
+    date_start: str = "",
+    date_end: str = "",
+    date_column: str = "Creation Date",
+    group_by: str = "month",
+    include_details: bool = False,
+    status: str = "",
+    assigned_to: str = "",
+    department: str = "",
+    market: str = "",
+    data_source: str = "",
+    chart_type: str = "line",
+) -> str:
+    """
+    Structured Request worksheet query for ticket/request/工單 questions.
+
+    Use this tool before the generic query_worksheet_data when the user asks about
+    Request tickets, yearly/YTD/monthly ticket counts, status distribution,
+    assignee workload, or row-level Request details.
+
+    Parameters should be explicit. For example, a 2026 yearly ticket question must
+    pass date_start="2026-01-01" and date_end="2026-12-31" rather than a vague
+    natural-language range. group_by supports: month, status, assigned_to,
+    department, market, data_source, none.
+    """
+    try:
+        df, total_rows = _load_worksheet_dataframe("Request")
+        if df.empty:
+            return json.dumps({
+                "tool": "query_request_tickets_structured",
+                "error": "Request worksheet has no data.",
+                "source": {"worksheet": "Request", "rows_read_before_filtering": 0},
+            }, ensure_ascii=False, indent=2)
+
+        requested_start = _parse_iso_date(date_start)
+        requested_end = _parse_iso_date(date_end, fallback_end=True)
+        actual_date_col = _resolve_column(df, date_column) or _resolve_column(df, "Creation Date")
+        filtered = df.copy()
+        filters_applied = []
+
+        if requested_start is not None and requested_end is not None and actual_date_col:
+            filtered = filtered[(filtered[actual_date_col] >= requested_start) & (filtered[actual_date_col] <= requested_end)]
+            filters_applied.append({
+                "field": actual_date_col,
+                "operator": "between",
+                "start": requested_start.strftime("%Y-%m-%d"),
+                "end": requested_end.strftime("%Y-%m-%d"),
+            })
+
+        field_filters = {
+            "Status": status,
+            "Assigned To": assigned_to,
+            "Department": department,
+            "Market": market,
+            "Data Source": data_source,
+        }
+        for canonical, value in field_filters.items():
+            cleaned = str(value or "").strip()
+            actual_col = _resolve_column(filtered, canonical)
+            if cleaned and actual_col:
+                filtered = filtered[filtered[actual_col].astype(str).str.contains(cleaned, case=False, na=False)]
+                filters_applied.append({
+                    "field": actual_col,
+                    "operator": "contains",
+                    "value": cleaned,
+                })
+
+        row_count = int(len(filtered))
+        normalized_group_by = str(group_by or "none").strip().lower()
+        group_column_map = {
+            "status": "Status",
+            "assigned_to": "Assigned To",
+            "assignee": "Assigned To",
+            "department": "Department",
+            "market": "Market",
+            "data_source": "Data Source",
+            "source": "Data Source",
+        }
+
+        monthly_counts = {}
+        missing_months = []
+        chart_block = ""
+        if normalized_group_by == "month" and actual_date_col:
+            counts = _monthly_counts(filtered, actual_date_col)
+            monthly_counts = {str(period): int(value) for period, value in counts.items()}
+            if requested_start is not None and requested_end is not None:
+                expected_months = _month_labels_between(requested_start, requested_end)
+                missing_months = [month for month in expected_months if month not in monthly_counts]
+            chart_block = _build_chart_block(
+                title="Monthly ticket count",
+                labels=list(monthly_counts.keys()),
+                values=list(monthly_counts.values()),
+                chart_type="line" if chart_type not in {"bar", "pie", "line"} else chart_type,
+                is_sequential=True,
+            )
+
+        grouped_counts = {}
+        if normalized_group_by != "month":
+            group_col = group_column_map.get(normalized_group_by)
+            actual_group_col = _resolve_column(filtered, group_col) if group_col else None
+            if actual_group_col:
+                grouped_counts = _series_counts_dict(filtered[actual_group_col])
+                chart_block = _build_chart_block(
+                    title=f"{actual_group_col} distribution",
+                    labels=list(grouped_counts.keys()),
+                    values=list(grouped_counts.values()),
+                    chart_type="bar" if chart_type not in {"bar", "pie", "line"} else chart_type,
+                )
+
+        distributions = {}
+        for col in ["Status", "Assigned To", "Department", "Market", "Data Source", "Data Support"]:
+            actual_col = _resolve_column(filtered, col)
+            if actual_col:
+                distributions[actual_col] = _series_counts_dict(filtered[actual_col], limit=12)
+
+        detail_columns = [
+            _resolve_column(filtered, col)
+            for col in ["Ticket No.", "Creation Date", "Subject", "Status", "Market", "Data Source", "Data Support", "Assigned To"]
+        ]
+        detail_columns = [col for col in detail_columns if col]
+        details = []
+        if include_details and detail_columns:
+            detail_df = filtered[detail_columns].copy()
+            for col in detail_df.columns:
+                if pd.api.types.is_datetime64_any_dtype(detail_df[col]):
+                    detail_df[col] = detail_df[col].dt.strftime("%Y-%m-%d").fillna("")
+                else:
+                    detail_df[col] = detail_df[col].fillna("").astype(str)
+            details = detail_df.head(120).to_dict(orient="records")
+
+        checks = {
+            "row_count": row_count,
+            "monthly_sum": int(sum(monthly_counts.values())) if monthly_counts else None,
+            "monthly_sum_matches_row_count": (int(sum(monthly_counts.values())) == row_count) if monthly_counts else None,
+            "details_returned": len(details),
+            "details_truncated": include_details and row_count > len(details),
+        }
+
+        source = {
+            "worksheet": "Request",
+            "spreadsheet_key": SPREADSHEET_KEY,
+            "rows_read_before_filtering": total_rows,
+            "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "grounding_rule": "All counts, distributions, details, and coverage fields are computed directly from the Request worksheet in this tool call.",
+        }
+
+        coverage = {
+            "date_column": actual_date_col,
+            "requested_start": requested_start.strftime("%Y-%m-%d") if requested_start is not None else None,
+            "requested_end": requested_end.strftime("%Y-%m-%d") if requested_end is not None else None,
+            "filtered_min_date": filtered[actual_date_col].min().strftime("%Y-%m-%d") if actual_date_col and row_count else None,
+            "filtered_max_date": filtered[actual_date_col].max().strftime("%Y-%m-%d") if actual_date_col and row_count else None,
+            "missing_months_in_requested_range": missing_months,
+        }
+
+        payload = {
+            "tool": "query_request_tickets_structured",
+            "filters_applied": filters_applied,
+            "coverage": coverage,
+            "row_count": row_count,
+            "monthly_counts": monthly_counts,
+            "grouped_counts": grouped_counts,
+            "field_distributions": distributions,
+            "details": details,
+            "checks": checks,
+            "chart_block": chart_block.strip(),
+            "source": source,
+        }
+        return json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+    except gspread.exceptions.WorksheetNotFound:
+        return json.dumps({
+            "tool": "query_request_tickets_structured",
+            "error": "Worksheet `Request` was not found.",
+        }, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return json.dumps({
+            "tool": "query_request_tickets_structured",
+            "error": str(e),
+        }, ensure_ascii=False, indent=2)
+
+
+@tool
+def query_worksheet_data(
+    worksheet_name: str,
+    query_description: str,
+    wants_chart: bool = False,
+    chart_type: str = "",
+    group_by_column: str = "",
+    wants_detail_rows: bool = False,
+    wants_all_distributions: bool = False,
+    wants_reason_analysis: bool = False,
+) -> str:
+    """
+    根據查詢需求從指定工作表中檢索和分析資料，用於 Request 以外的 worksheet，
+    或 query_request_tickets_structured 無法覆蓋的自由文字分析（跨欄位篩選、
+    duration/reason 分析、任意工作表的欄位分布）。
+
+    請把你已經判斷好的意圖填入下列具名參數，不要只寫進 query_description 讓
+    工具重新用關鍵字猜測：
+    - wants_chart: 使用者要不要圖表/圖形/視覺化。
+    - chart_type: "bar" | "line" | "pie"；不確定就留空（工具會退回猜測）。
+    - group_by_column: 圖表或統計的主維度欄位名，例如 "Status"、"Market"、
+      "Department"、"Assigned To"；月份用 "Month"。這是主維度，不是篩選條件。
+    - wants_detail_rows: 是否要逐筆明細/資料表，而不是摘要統計。
+    - wants_all_distributions: 是否要「所有欄位」分布，而不是重點欄位。
+    - wants_reason_analysis: 是否在問耗時原因/延遲/bottleneck/root cause。
+
+    query_description 仍用來描述：日期區間（相對時間詞彙請先轉換成明確西元
+    年月區間，例如「今年」→「2026年1月到12月」）、欄位篩選條件（格式
+    「{欄位名} 是 {值}」）、以及其他無法用上面具名參數表達的自由文字分析需求。
+
+    範例：使用者問「請用長條圖顯示各市場的工單分布」
+    → query_worksheet_data(
+         worksheet_name="Request",
+         query_description="各市場的工單分布",
+         wants_chart=True,
+         chart_type="bar",
+         group_by_column="Market",
+      )
     """
     try:
         # Always fetch the worksheet for analysis queries so answers reflect the
@@ -563,11 +830,29 @@ def query_worksheet_data(worksheet_name: str, query_description: str) -> str:
         total_rows = len(df)
         query_lower = query_description.lower()
 
+        # LLM-provided intent wins; fall back to keyword guessing on the free-text
+        # query_description only when the caller left a param at its default. This
+        # keeps behavior unchanged for callers/prompts that haven't adopted the new
+        # named params yet, while letting an explicit decision short-circuit the
+        # keyword guess once the caller does provide one.
+        effective_wants_chart = wants_chart or _wants_chart(query_description)
+        effective_wants_detail_rows = wants_detail_rows or _wants_detail_rows(query_description)
+        effective_wants_all_distributions = wants_all_distributions or _wants_all_distributions(query_description)
+        effective_wants_reason_analysis = wants_reason_analysis or _wants_duration_reason_analysis(query_description)
+        normalized_chart_type = chart_type.strip().lower() if chart_type.strip().lower() in {"bar", "line", "pie"} else ""
+
         result = f"Worksheet: {worksheet_name} | Total rows: {total_rows}\n\n"
 
         # ── Step 1：偵測日期欄位 ──────────────────────────────
         date_cols = _detect_date_columns(df)
-        analysis_intent = _parse_analysis_intent(query_description, df)
+        analysis_intent = _parse_analysis_intent(
+            query_description,
+            df,
+            group_by_override=group_by_column,
+            wants_chart=effective_wants_chart,
+            wants_detail_rows=effective_wants_detail_rows,
+            chart_type_override=normalized_chart_type,
+        )
 
         # ── Step 2：依日期區間篩選 ────────────────────────────
         date_start, date_end = _extract_date_range(query_description)
@@ -643,15 +928,15 @@ def query_worksheet_data(worksheet_name: str, query_description: str) -> str:
                     display_cols = [c for c in [ticket_col, start_col, due_col, '_處理天數'] if c]
                     df_display = df_valid[display_cols].rename(columns={'_處理天數': 'Processing Days'})
                     result += _to_markdown_table(df_display)
-                    if _wants_chart(query_description) and ticket_col:
+                    if effective_wants_chart and ticket_col:
                         chart_df = df_valid[[ticket_col, '_處理天數']].dropna().head(12)
                         result += _build_chart_block(
                             title="Ticket processing days",
                             labels=list(chart_df[ticket_col].astype(str)),
                             values=list(chart_df['_處理天數'].astype(int)),
-                            chart_type=_chart_type(query_description),
+                            chart_type=(normalized_chart_type or _chart_type(query_description)),
                         )
-                    if _wants_duration_reason_analysis(query_description):
+                    if effective_wants_reason_analysis:
                         evidence_cols = [
                             col for col in [
                                 ticket_col,
@@ -722,7 +1007,7 @@ def query_worksheet_data(worksheet_name: str, query_description: str) -> str:
                             f"{name} ({count} rows)" for name, count in assignee_counts.items()
                         ) + "\n"
 
-                    if not _wants_detail_rows(query_description):
+                    if not effective_wants_detail_rows:
                         if not already_filtered_by_assignee:
                             result += "\nTo filter by a specific assignee, ask for example: \"Monthly ticket count for assignee Kelly Dong\".\n"
                         return result + _format_source_footer(worksheet_name, total_rows)
@@ -742,7 +1027,7 @@ def query_worksheet_data(worksheet_name: str, query_description: str) -> str:
 
             if analysis_intent.get('output') == 'chart':
                 result += "### Key Summary\n\n"
-                for col in _summary_columns(query_description, stat_cols, chart_col):
+                for col in _summary_columns(stat_cols, chart_col, effective_wants_all_distributions):
                     counts = df[col].fillna("(Blank)").astype(str).replace("", "(Blank)").value_counts()
                     result += _format_counts_line(col, counts)
                 result += "\n"
@@ -762,7 +1047,7 @@ def query_worksheet_data(worksheet_name: str, query_description: str) -> str:
                     result += f"**{col}**: " + ", ".join(f"{v} ({c} rows)" for v, c in counts.items()) + "\n"
                 result += "\n"
 
-        if analysis_intent.get('output') == 'chart' and not _wants_detail_rows(query_description):
+        if analysis_intent.get('output') == 'chart' and not effective_wants_detail_rows:
             result += f"{len(df)} rows were summarized and a chart was generated from the filters. Ask for details if you need row-level data.\n"
             return result + _format_source_footer(worksheet_name, total_rows)
 
@@ -778,7 +1063,7 @@ def query_worksheet_data(worksheet_name: str, query_description: str) -> str:
         return f"Failed to query worksheet data: {str(e)}"
 
 # Data Analyst Agent 的工具列表
-analyst_tools = [list_worksheets, get_worksheet_structure, query_worksheet_data]
+analyst_tools = [list_worksheets, get_worksheet_structure, query_request_tickets_structured, query_worksheet_data]
 
 print("\n✅ Analyst Agent 工具已就緒")
 print(f"   可用工具: {[tool.name for tool in analyst_tools]}")

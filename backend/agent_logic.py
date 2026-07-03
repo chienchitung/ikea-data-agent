@@ -5,6 +5,7 @@ import os
 import re
 import inspect
 import time
+from datetime import datetime
 from typing import Optional
 
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
@@ -24,6 +25,7 @@ from conversation_store import (
     load_memory_summary,
     load_tool_context,
     load_tool_results,
+    save_agent_trace,
     save_conversation_messages,
 )
 
@@ -70,6 +72,13 @@ def _message_text(content) -> str:
     if isinstance(content, list):
         parts = []
         for item in content:
+            # Skip type="thinking" parts: the Gemini API can return the
+            # model's internal reasoning as a separate content part alongside
+            # the real type="text" answer. include_thoughts=False on the LLM
+            # already asks the API not to send these; this check is a
+            # structural (API-field-based, not keyword-guessed) backstop.
+            if isinstance(item, dict) and item.get("type") == "thinking":
+                continue
             if isinstance(item, dict) and "text" in item:
                 parts.append(str(item["text"]))
             elif isinstance(item, str):
@@ -244,6 +253,196 @@ def _structured_tool_metadata(messages: list) -> list[dict]:
     return results
 
 
+def _parse_json_object(text: str) -> dict:
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+
+    match = re.search(r"\{.*\}", str(text or ""), re.DOTALL)
+    if not match:
+        return {}
+    try:
+        return json.loads(match.group(0))
+    except Exception:
+        return {}
+
+
+def _verification_source_context(messages: list, stored_tool_context: str, turn_context: dict) -> str:
+    current_tool_chunks = []
+    for message in _tool_messages(messages):
+        name = getattr(message, "name", "") or "tool"
+        content = _message_text(message.content).strip()
+        if content:
+            current_tool_chunks.append(f"[{name}]\n{content}")
+
+    if current_tool_chunks:
+        return "\n\n".join(current_tool_chunks)[-18000:]
+
+    relation = str((turn_context or {}).get("relation", "standalone"))
+    can_use_prior = (
+        (turn_context or {}).get("should_answer_from_context")
+        or (turn_context or {}).get("should_include_prior_tool_context")
+        or relation in {"context_follow_up", "context_refinement"}
+    )
+    if can_use_prior and stored_tool_context:
+        return str(stored_tool_context)[-14000:]
+
+    return ""
+
+
+def _requested_year_for_ticket_query(user_query: str) -> Optional[int]:
+    query = str(user_query or "")
+    lowered = query.lower()
+    compact = re.sub(r"\s+", "", lowered)
+    ticket_terms = ["工單", "ticket", "tickets", "request", "requests", "需求"]
+    if not any(term in lowered or term in compact for term in ticket_terms):
+        return None
+
+    explicit_year = re.search(r"\b(20\d{2})\b|(?:^|[^\d])(20\d{2})\s*年", query)
+    if explicit_year:
+        year = next(group for group in explicit_year.groups() if group)
+        return int(year)
+
+    if any(term in query for term in ["今年", "本年", "整年", "全年"]):
+        return datetime.now().year
+
+    return None
+
+
+def _source_has_full_year_filter(source_context: str, year: int) -> bool:
+    text = str(source_context or "")
+    full_year_patterns = [
+        f"Date filter: {year}-01-01 to {year}-12-31",
+        f"{year}年1月到12月",
+        f"{year}-01-01",
+    ]
+    has_start = any(pattern in text for pattern in full_year_patterns)
+    has_end = f"{year}-12-31" in text or f"{year}-12" in text
+    return has_start and has_end
+
+
+def _compact_audit_context(audit_text: str, limit: int = 22000) -> str:
+    text = str(audit_text or "")
+    if len(text) <= limit:
+        return text
+
+    head_limit = min(8000, limit // 3)
+    tail_limit = limit - head_limit - 80
+    return (
+        text[:head_limit].rstrip()
+        + "\n\n...[audit detail truncated; opening summary and latest rows retained]...\n\n"
+        + text[-tail_limit:].lstrip()
+    )
+
+
+async def _augment_year_ticket_verification_context(
+    user_query: str,
+    source_context: str,
+) -> tuple[str, dict]:
+    year = _requested_year_for_ticket_query(user_query)
+    if not year:
+        return source_context, {"ran": False, "reason": "not_year_ticket_query"}
+
+    if _source_has_full_year_filter(source_context, year):
+        return source_context, {"ran": False, "reason": "source_already_full_year", "year": year}
+
+    audit_query = f"{year}年1月到12月 每月工單數量，列出每月分佈與明細"
+    try:
+        from agents.analyst import query_worksheet_data
+
+        audit_result = await asyncio.to_thread(
+            query_worksheet_data.invoke,
+            {
+                "worksheet_name": "Request",
+                "query_description": audit_query,
+            },
+        )
+        audit_text = str(audit_result or "")
+        if not audit_text.strip() or audit_text.startswith("Failed to query worksheet data"):
+            return source_context, {
+                "ran": True,
+                "status": "failed",
+                "year": year,
+                "error": audit_text[:500],
+            }
+
+        augmented = (
+            f"{str(source_context or '')[-4000:]}\n\n"
+            "## Internal Full-Year Request Worksheet Audit\n\n"
+            "The user asked for a year-level ticket/request answer. "
+            "This audit query is the authoritative full-year Request worksheet check and must be used to catch omitted months.\n\n"
+            f"{_compact_audit_context(audit_text)}"
+        )
+        return augmented, {
+            "ran": True,
+            "status": "completed",
+            "year": year,
+            "query": audit_query,
+        }
+    except Exception as e:
+        print(f"⚠️ Full-year ticket audit failed: {e}")
+        return source_context, {
+            "ran": True,
+            "status": "failed",
+            "year": year,
+            "error": str(e),
+        }
+
+
+async def _verify_response_against_sources(
+    user_query: str,
+    response: str,
+    source_context: str,
+) -> tuple[str, dict]:
+    if not response.strip() or not source_context.strip():
+        return response, {"checked": False, "status": "skipped", "reason": "no_source_context"}
+
+    verification_prompt = [
+        SystemMessage(content=(
+            "你是 Data Machi 的內部答案查核器。你的工作不是重新發揮，而是比對「候選回答」是否被「來源資料」支持。\n"
+            "請檢查所有數字、筆數、日期、狀態、負責人、部門、市場、資料來源、ticket 明細與原因敘述。\n"
+            "若候選回答的事實都能被來源資料支持，回傳 status=pass。\n"
+            "若有任何來源找不到、數字不一致、把推測說成事實、或 row details 與來源不符，回傳 status=revise，並提供修正版。\n"
+            "修正版必須保留原回答語言，只移除或更正不被支持的內容；不要新增來源資料沒有的事實。\n"
+            "若候選回答含有 ```chart code block，修正版必須逐字保留該 chart block，不得改寫 JSON。\n"
+            "只回傳 JSON，不要輸出 Markdown。Schema:\n"
+            "{\"status\":\"pass|revise\",\"issues\":[\"...\"],\"revised_response\":\"...\"}"
+        )),
+        HumanMessage(content=json.dumps({
+            "user_query": user_query,
+            "candidate_response": response,
+            "source_context": source_context,
+        }, ensure_ascii=False)),
+    ]
+
+    try:
+        verifier_response = await _effective_llm().ainvoke(verification_prompt)
+        parsed = _parse_json_object(_message_text(verifier_response.content))
+        status = str(parsed.get("status", "pass")).lower()
+        issues = parsed.get("issues", [])
+        if not isinstance(issues, list):
+            issues = [str(issues)]
+
+        if status == "revise":
+            revised = str(parsed.get("revised_response", "")).strip()
+            if revised:
+                return revised, {
+                    "checked": True,
+                    "status": "revised",
+                    "issues": [str(issue)[:300] for issue in issues[:8]],
+                }
+
+        return response, {
+            "checked": True,
+            "status": "passed",
+            "issues": [str(issue)[:300] for issue in issues[:8]],
+        }
+    except Exception as e:
+        print(f"⚠️ Response verification failed: {e}")
+        return response, {"checked": False, "status": "failed", "error": str(e)}
+
+
 
 
 def _usage_metadata(messages: list) -> dict:
@@ -370,7 +569,7 @@ def _looks_like_full_document_query(message: str) -> bool:
     return any(term.lower() in lowered or term in compact for term in _FULL_DOCUMENT_QUERY_TERMS)
 
 
-async def _answer_from_document_base(message: str) -> Optional[str]:
+async def _answer_from_document_base(message: str) -> Optional[dict]:
     clean_message = _clean_user_query(message)
     if not _looks_like_document_query(clean_message):
         return None
@@ -390,7 +589,8 @@ async def _answer_from_document_base(message: str) -> Optional[str]:
         or "no pdf files have been uploaded" in lowered_document_context
         or "error: no pdf" in lowered_document_context
     ):
-        return document_context
+        # System/status message, nothing to fact-check against sources.
+        return {"response": document_context, "document_context": document_context, "skip_verification": True}
 
     reply_language = _detect_reply_language(clean_message)
     response = await _effective_llm().ainvoke([
@@ -411,7 +611,11 @@ async def _answer_from_document_base(message: str) -> Optional[str]:
             f"PDF 內容：\n{document_context}"
         )),
     ])
-    return _message_text(response.content).strip()
+    return {
+        "response": _message_text(response.content).strip(),
+        "document_context": document_context,
+        "skip_verification": False,
+    }
 
 async def process_chat_detailed(
     message: str,
@@ -432,17 +636,45 @@ async def process_chat_detailed(
     try:
         started_at = time.perf_counter()
         await _emit_progress(progress_callback, "understanding", "Understanding your question")
-        document_answer = await _answer_from_document_base(message)
-        if document_answer:
+        clean_message = _clean_user_query(message)
+        document_result = await _answer_from_document_base(message)
+        if document_result:
+            document_response = document_result["response"]
+            if document_result.get("skip_verification"):
+                verification_metadata = {"checked": False, "status": "skipped", "reason": "system_message"}
+            else:
+                await _emit_progress(progress_callback, "composing", "Verifying the response")
+                document_response, verification_metadata = await _verify_response_against_sources(
+                    clean_message,
+                    document_response,
+                    document_result["document_context"],
+                )
+
             elapsed_ms = round((time.perf_counter() - started_at) * 1000)
+            document_context_text = str(document_result.get("document_context") or "")
+            save_agent_trace(conversation_id, {
+                "user_query": clean_message,
+                "turn_context": turn_context or {},
+                "tool_outputs": [{
+                    "name": "search_document_base",
+                    "char_count": len(document_context_text),
+                    "content": document_context_text[:12000],
+                    "truncated": len(document_context_text) > 12000,
+                }],
+                "verification": verification_metadata,
+                "final_response_preview": document_response[:4000],
+                "elapsed_ms": elapsed_ms,
+            })
+
             return {
-                "response": document_answer,
+                "response": document_response,
                 "metadata": {
                     "elapsed_ms": elapsed_ms,
                     "mode": "document_direct",
                     "turn_context": turn_context or {},
                     "tool_results": [],
                     "usage": {},
+                    "verification": verification_metadata,
                 },
             }
 
@@ -450,7 +682,6 @@ async def process_chat_detailed(
         stored_tool_context = load_tool_context(conversation_id)
         stored_tool_results = load_tool_results(conversation_id)
         stored_memory_summary = load_memory_summary(conversation_id)
-        clean_message = _clean_user_query(message)
         conversation_history = chat_history if chat_history else stored_messages
 
         if not turn_context:
@@ -494,6 +725,9 @@ async def process_chat_detailed(
         
         if isinstance(agent_response_raw, list):
             for item in agent_response_raw:
+                # Skip type="thinking" parts (see _message_text's comment above).
+                if isinstance(item, dict) and item.get('type') == 'thinking':
+                    continue
                 if isinstance(item, dict) and 'text' in item:
                     agent_response_parts.append(item['text'])
                 elif isinstance(item, str):
@@ -504,6 +738,28 @@ async def process_chat_detailed(
 
         agent_response = _fix_chart_code_blocks(agent_response)
         confluence_links = _collect_confluence_links(response_state["messages"], stored_tool_context)
+        agent_response = _ensure_confluence_source_links(
+            agent_response,
+            confluence_links,
+            _detect_reply_language(clean_message),
+        )
+        await _emit_progress(progress_callback, "composing", "Verifying the response")
+        verification_context = _verification_source_context(
+            response_state["messages"],
+            stored_tool_context,
+            turn_context or {},
+        )
+        verification_context, full_year_audit_metadata = await _augment_year_ticket_verification_context(
+            clean_message,
+            verification_context,
+        )
+        agent_response, verification_metadata = await _verify_response_against_sources(
+            clean_message,
+            agent_response,
+            verification_context,
+        )
+        verification_metadata["full_year_audit"] = full_year_audit_metadata
+        agent_response = _fix_chart_code_blocks(agent_response)
         agent_response = _ensure_confluence_source_links(
             agent_response,
             confluence_links,
@@ -538,7 +794,26 @@ async def process_chat_detailed(
             "tool_results": tool_results,
             "usage": _usage_metadata(response_state["messages"]),
             "memory_summary_used": bool(stored_memory_summary),
+            "verification": verification_metadata,
         }
+
+        raw_tool_outputs = []
+        for tool_message in _tool_messages(response_state["messages"]):
+            raw_content = _message_text(tool_message.content).strip()
+            raw_tool_outputs.append({
+                "name": getattr(tool_message, "name", "") or "tool",
+                "char_count": len(raw_content),
+                "content": raw_content[:12000],
+                "truncated": len(raw_content) > 12000,
+            })
+        save_agent_trace(conversation_id, {
+            "user_query": clean_message,
+            "turn_context": turn_context or {},
+            "tool_outputs": raw_tool_outputs,
+            "verification": verification_metadata,
+            "final_response_preview": agent_response[:4000],
+            "elapsed_ms": elapsed_ms,
+        })
         
         return {
             "response": agent_response,
