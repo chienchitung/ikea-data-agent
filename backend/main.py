@@ -1,8 +1,10 @@
 import asyncio
 import json
 import re
+from datetime import datetime, timezone
+from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field
 from typing import Any, Dict, List, Optional
 from fastapi.middleware.cors import CORSMiddleware
@@ -339,7 +341,7 @@ async def clarification_endpoint(request: ClarificationRequest):
             reset_active_documents(docs_token)
 
 from fastapi import UploadFile, File, Form
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 import shutil
 import os
 from urllib.parse import unquote
@@ -608,6 +610,229 @@ async def rename_document(old_filename: str, new_name: dict):
                 str(e),
             )
         )
+
+from agents.meeting import (
+    new_meeting_id,
+    audio_dir_for,
+    normalize_audio,
+    transcribe_audio,
+    generate_minutes,
+    build_docx,
+    save_meeting_record,
+    load_meeting_record,
+    list_meeting_records,
+    update_meeting_record,
+    delete_meeting_record,
+)
+
+
+class MeetingDataUpdate(BaseModel):
+    meeting_data: Dict[str, Any]
+
+
+def _effective_gemini_api_key(provided: Optional[str]) -> Optional[str]:
+    return provided or os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+
+
+def _meeting_not_found_error(action: str) -> dict:
+    return product_error(
+        "meeting_not_found",
+        "Meeting record not found",
+        f"The system could not find this meeting record to {action}. It may have been deleted.",
+        ["Refresh the meetings list"],
+    )
+
+
+@app.post("/meetings/generate/stream")
+async def generate_meeting_minutes_stream(
+    audio: UploadFile = File(...),
+    meeting_title: str = Form(""),
+    date: str = Form(""),
+    time: str = Form(""),
+    note_taker: str = Form(""),
+    attendees: str = Form(""),
+    apologies: str = Form(""),
+    gemini_api_key: Optional[str] = Form(None),
+):
+    api_key = _effective_gemini_api_key(gemini_api_key)
+    meeting_id = new_meeting_id()
+
+    ext = os.path.splitext(audio.filename or "")[1] or ".bin"
+    meeting_dir = audio_dir_for(meeting_id)
+    meeting_dir.mkdir(parents=True, exist_ok=True)
+    audio_path = meeting_dir / f"audio{ext}"
+
+    with audio_path.open("wb") as buffer:
+        shutil.copyfileobj(audio.file, buffer)
+
+    meta = {
+        "meeting_title": meeting_title,
+        "date": date,
+        "time": time,
+        "note_taker": note_taker,
+        "attendees": attendees,
+        "apologies": apologies,
+    }
+
+    async def event_generator():
+        queue: asyncio.Queue = asyncio.Queue()
+
+        async def run_pipeline():
+            try:
+                if not api_key:
+                    await queue.put(("error", localized_product_error("ai_provider_unavailable", "en")))
+                    return
+
+                await queue.put(("progress", {"phase": "normalizing_audio", "label": "Preparing audio"}))
+                normalized_path = await asyncio.to_thread(normalize_audio, str(audio_path))
+
+                await queue.put(("progress", {"phase": "transcribing", "label": "Transcribing audio"}))
+                transcription = await transcribe_audio(normalized_path, api_key)
+                transcript = transcription["text"]
+                segments = transcription["segments"]
+
+                if not transcript.strip():
+                    await queue.put(("error", product_error(
+                        "transcription_empty",
+                        "No speech was found in this recording",
+                        "The audio was processed but no transcribable speech was detected.",
+                        ["Confirm the recording actually captured audio", "Try uploading a different file"],
+                    )))
+                    return
+
+                await queue.put(("progress", {"phase": "drafting_minutes", "label": "Drafting meeting minutes"}))
+                minutes = await generate_minutes(transcript, meta, api_key)
+
+                record = {
+                    "meeting_id": meeting_id,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "audio_filename": audio_path.name,
+                    # The playback endpoint serves this file; normalize_audio() may
+                    # have converted the original into a browser-playable mp3, or
+                    # fallen back to the original path if pydub/ffmpeg weren't available.
+                    "audio_playback_filename": Path(normalized_path).name,
+                    "transcript": transcript,
+                    "segments": segments,
+                    "meeting_data": minutes,
+                }
+                save_meeting_record(record)
+
+                await queue.put(("final", {
+                    "meeting_id": meeting_id,
+                    "transcript": transcript,
+                    "segments": segments,
+                    "minutes": minutes,
+                }))
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                print(f"❌ Meeting pipeline error: {e}")
+                await queue.put(("error", product_error(
+                    "meeting_processing_error",
+                    "Could not generate meeting minutes",
+                    "An error occurred while transcribing the recording or drafting the minutes.",
+                    ["Try again later", "If the recording is very long, try a shorter clip"],
+                    str(e),
+                )))
+
+        task = asyncio.create_task(run_pipeline())
+        try:
+            yield sse_event("progress", {"phase": "uploading_audio", "label": "Uploading recording"})
+            while True:
+                event, payload = await queue.get()
+                yield sse_event(event, payload)
+                if event in {"final", "error"}:
+                    break
+        finally:
+            # Cancel the background task if still running (e.g. client disconnected
+            # mid-stream) — mirrors chat_stream_endpoint's cleanup so an abandoned
+            # transcription doesn't keep running against the Gemini API forever.
+            if not task.done():
+                task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    from fastapi.responses import StreamingResponse
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@app.get("/meetings")
+async def get_meetings():
+    return {"meetings": list_meeting_records()}
+
+
+@app.get("/meetings/{meeting_id}")
+async def get_meeting(meeting_id: str):
+    record = load_meeting_record(meeting_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=_meeting_not_found_error("view"))
+    return record
+
+
+@app.put("/meetings/{meeting_id}")
+async def update_meeting(meeting_id: str, payload: MeetingDataUpdate):
+    record = update_meeting_record(meeting_id, payload.meeting_data)
+    if record is None:
+        raise HTTPException(status_code=404, detail=_meeting_not_found_error("update"))
+    return record
+
+
+@app.get("/meetings/{meeting_id}/download")
+async def download_meeting(meeting_id: str):
+    record = load_meeting_record(meeting_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=_meeting_not_found_error("download"))
+
+    meeting_data = record.get("meeting_data") or {}
+    docx_bytes = build_docx(meeting_data)
+    title = meeting_data.get("meeting_title") or "Meeting Notes"
+    safe_title = re.sub(r"[^\w\-() ]", "_", title).strip() or "Meeting Notes"
+
+    return Response(
+        content=docx_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{safe_title}.docx"'},
+    )
+
+
+AUDIO_MEDIA_TYPES = {
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".webm": "audio/webm",
+    ".m4a": "audio/mp4",
+    ".mp4": "audio/mp4",
+    ".aac": "audio/aac",
+    ".ogg": "audio/ogg",
+    ".flac": "audio/flac",
+    ".aiff": "audio/aiff",
+}
+
+
+@app.get("/meetings/{meeting_id}/audio")
+async def get_meeting_audio(meeting_id: str):
+    record = load_meeting_record(meeting_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=_meeting_not_found_error("play"))
+
+    playback_filename = record.get("audio_playback_filename") or record.get("audio_filename")
+    audio_path = audio_dir_for(meeting_id) / str(playback_filename or "")
+    if not playback_filename or not audio_path.exists():
+        raise HTTPException(status_code=404, detail=_meeting_not_found_error("play"))
+
+    media_type = AUDIO_MEDIA_TYPES.get(audio_path.suffix.lower(), "application/octet-stream")
+    # FileResponse handles Range requests, which <audio> needs for seeking/scrubbing.
+    return FileResponse(audio_path, media_type=media_type)
+
+
+@app.delete("/meetings/{meeting_id}")
+async def delete_meeting(meeting_id: str):
+    deleted = delete_meeting_record(meeting_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=_meeting_not_found_error("delete"))
+    return {"message": f"Meeting {meeting_id} deleted successfully"}
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

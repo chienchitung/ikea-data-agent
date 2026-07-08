@@ -574,6 +574,19 @@ export function ChatMessage({ message, userAvatar, debugMode = false, onUpdate, 
                     </div>
                 )}
 
+                {/* Actions for Assistant Messages */}
+                {!isUser && (
+                    <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity px-1">
+                        <button
+                            onClick={handleCopy}
+                            className="p-1 text-[#767676] hover:text-[#111111] hover:bg-[#F5F5F5] rounded transition-colors"
+                            title="Copy response"
+                        >
+                            {copied ? <Check size={14} className="text-green-500" /> : <Copy size={14} />}
+                        </button>
+                    </div>
+                )}
+
                 {!isUser && debugMode && (
                     <AssistantDebugPanel metadata={message.metadata} errorCode={message.errorCode} />
                 )}

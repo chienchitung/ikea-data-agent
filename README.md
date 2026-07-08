@@ -127,6 +127,16 @@ PDF_VISUAL_CONTEXT=false
 PDF_VISUAL_PAGE_LIMIT=30
 ```
 
+#### 會議錄音轉逐字稿依賴
+
+如果要使用「會議記錄」功能（上傳/錄製會議錄音 → 轉逐字稿 → 自動產生會議記錄 .docx），
+除了 Python 套件（`pydub`、`python-docx`）外，macOS 還需要安裝 `ffmpeg` 才能把瀏覽器錄音
+（`webm`/`opus`）或手機錄音轉成 Gemini 支援的音訊格式：
+
+```bash
+brew install ffmpeg
+```
+
 ### 2️⃣ 前端啟動方式 (Frontend)
 
 前端是 Data Machi 的聊天介面，會呼叫後端 API。請開啟另一個終端機視窗，保持後端繼續執行。
