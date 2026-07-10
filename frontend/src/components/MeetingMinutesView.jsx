@@ -114,8 +114,13 @@ export function MeetingMinutesView({ apiUrl, meetingId, onClose }) {
     const [isDownloading, setIsDownloading] = useState(false);
     const [activeSegmentIndex, setActiveSegmentIndex] = useState(-1);
     const audioRef = useRef(null);
+    const segmentRefs = useRef([]);
     const segments = useMemo(() => record?.segments || [], [record]);
 
+    // `<audio>` only mounts once showTranscript is true, but segments is usually
+    // already loaded before that toggle happens — so this must depend on
+    // showTranscript too, or the effect runs once while audioRef.current is
+    // still null, bails out, and never re-attaches the listener afterward.
     useEffect(() => {
         const audio = audioRef.current;
         if (!audio || segments.length === 0) return;
@@ -135,7 +140,16 @@ export function MeetingMinutesView({ apiUrl, meetingId, onClose }) {
 
         audio.addEventListener('timeupdate', onTimeUpdate);
         return () => audio.removeEventListener('timeupdate', onTimeUpdate);
-    }, [segments]);
+    }, [segments, showTranscript]);
+
+    // Keeps the currently-playing line visible inside the scrollable transcript
+    // panel as playback progresses, instead of only highlighting it — without
+    // this, the highlighted line can scroll out of view during long recordings
+    // and the sync becomes invisible to the user.
+    useEffect(() => {
+        if (activeSegmentIndex < 0) return;
+        segmentRefs.current[activeSegmentIndex]?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }, [activeSegmentIndex]);
 
     const seekToSegment = (index) => {
         const audio = audioRef.current;
@@ -338,6 +352,7 @@ export function MeetingMinutesView({ apiUrl, meetingId, onClose }) {
                                                 {segments.map((seg, i) => (
                                                     <button
                                                         key={i}
+                                                        ref={(el) => { segmentRefs.current[i] = el; }}
                                                         type="button"
                                                         onClick={() => seekToSegment(i)}
                                                         className={`w-full flex items-start gap-2 text-left px-2 py-1 rounded transition-colors hover:bg-white ${activeSegmentIndex === i ? 'bg-[#0058A3]/10 ring-1 ring-inset ring-[#0058A3]/40' : ''}`}

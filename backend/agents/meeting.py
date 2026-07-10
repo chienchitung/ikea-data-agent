@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+import httpx
 from dotenv import load_dotenv
 
 try:
@@ -20,20 +21,62 @@ except ImportError:
 try:
     from google import genai
     from google.genai import types as genai_types
+    from google.genai.errors import ServerError as GenaiServerError
     GENAI_AVAILABLE = True
 except ImportError:
     GENAI_AVAILABLE = False
+
+try:
+    from opencc import OpenCC
+    # Whisper-family models (including Groq's) transcribe Mandarin speech as
+    # Simplified characters regardless of the speaker's accent/region, so
+    # Traditional-Chinese-speaking teams get output that reads wrong. s2twp
+    # converts Simplified -> Traditional with Taiwan phrasing conventions.
+    _S2TWP_CONVERTER = OpenCC("s2twp")
+    OPENCC_AVAILABLE = True
+except ImportError:
+    _S2TWP_CONVERTER = None
+    OPENCC_AVAILABLE = False
 
 from docx import Document as DocxDocument
 
 load_dotenv()
 
-# Deliberately not chained through GEMINI_MODEL (the chat coordinator's model):
-# audio transcription benefits from its own model choice, and gemini-3.5-flash
-# has been observed under heavy load (measured 90s+ for a trivial text-only
-# call) while gemini-2.5-flash handles the same audio+schema request in ~7s.
-MEETING_MODEL = os.getenv("MEETING_MODEL", "gemini-2.5-flash")
+# Used only for generate_minutes() (text-only) now — transcription is handled
+# by Groq's Whisper API below. Not chained through GEMINI_MODEL (the chat
+# coordinator's model) so it can be tuned independently: gemini-3.5-flash has
+# been observed under heavy load taking 90s+ for a trivial text-only call
+# vs. gemini-2.5-flash's ~7s for the same schema request — a known risk we're
+# accepting here in exchange for gemini-3.5-flash's output quality. If minutes
+# generation starts timing out or feels slow in practice, drop MEETING_MODEL
+# back to gemini-2.5-flash via env var rather than reverting this default.
+MEETING_MODEL = os.getenv("MEETING_MODEL", "gemini-3.5-flash")
 NORMALIZED_AUDIO_FORMAT = "mp3"
+
+# gemini-3.5-flash has been observed returning a transient 503 ("high demand")
+# on large-transcript requests (a ~73k-character transcript from a 2.5-hour
+# meeting hit this in practice) — without a retry, transcription work that
+# already completed is thrown away and the whole meeting is lost. Backoff is
+# linear (15s, 30s, 45s) rather than exponential since these are reported as
+# short-lived demand spikes, not sustained outages worth minutes-long backoff.
+MINUTES_GENERATION_MAX_ATTEMPTS = 4
+MINUTES_GENERATION_RETRY_BASE_SECONDS = 15
+
+# Groq runs Whisper on LPU hardware at roughly 200x real-time (a 1-hour
+# recording transcribes in ~15-20s), which is why transcription is delegated
+# here instead of sending the whole audio file to Gemini as a multimodal
+# input — audio ingestion by a general-purpose LLM was the dominant latency
+# cost in this pipeline (minutes, not seconds, for a typical meeting).
+GROQ_TRANSCRIPTION_MODEL = os.getenv("GROQ_WHISPER_MODEL", "whisper-large-v3-turbo")
+GROQ_TRANSCRIPTIONS_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
+
+# Groq caps direct (multipart) file uploads at 25MB on the free tier — and
+# even the paid tier's 100MB cap reportedly requires URL-based upload rather
+# than posting the file directly, per Groq's own community forum. A 1-hour
+# meeting normalized to mp3 is already ~55MB at a typical 128kbps, so this is
+# routinely hit rather than an edge case. Chunk size is picked as a safety
+# margin under the 25MB limit so this also works unmodified on the free tier.
+GROQ_MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 STORE_DIR = BACKEND_DIR / ".meeting_store"
@@ -41,31 +84,13 @@ AUDIO_DIR = BACKEND_DIR / ".meeting_uploads"
 
 DEFAULT_MEETING_TITLE = "Meeting Notes"
 
-TRANSCRIPTION_PROMPT = """你是專業會議逐字稿聽打員。請將這段會議錄音轉成分段逐字稿，並為每一段標出開始時間（秒數）。
-
-規則：
-- 保留原始語言（可能是繁體中文、英文或中英夾雜），不要翻譯。
-- 盡量區分不同發言者；如果錄音中有人稱呼彼此的名字，優先使用該名字，否則標示為「Speaker 1」「Speaker 2」。
-- 每一段是一句語意完整的話或一小段連續發言，不要把整場會議合成一段，也不要切得比一句話還細。
-- "start" 是這一段開始說話的時間，單位為秒的數字（可以是估計值）。
-- 保留語意完整的句子，不需要保留贅字、口頭禪或明顯的重複詞；不要摘要、不要省略內容，這是逐字稿而非摘要。
-- 只能輸出 JSON，不要輸出任何其他文字或 Markdown。
-
-輸出 JSON schema：
-{
-  "segments": [
-    {"start": 0, "speaker": "Jackie", "text": "Hi everyone, this is Jackie."},
-    {"start": 12, "speaker": "Kelly", "text": "..."}
-  ]
-}
-"""
-
 MINUTES_PROMPT_TEMPLATE = """你是 IKEA Data Team 的會議記錄整理助理。請根據下方的會議逐字稿，整理成結構化的會議記錄 JSON。
 
 輸出規則：
 - 只能輸出 JSON，不要輸出任何其他文字或 Markdown。
 - "agenda"、"notes"、"actions_review" 裡的文字內容，語言必須跟隨逐字稿本身使用的語言；
   逐字稿是英文就用英文寫，逐字稿是中文就用中文寫，中英夾雜就維持中英夾雜，不要自動翻譯成其他語言。
+  寫中文時一律使用繁體中文（台灣用語習慣），不要使用簡體字。
 - "agenda" 是這場會議實際討論到的議程項目，依討論順序列出；如果逐字稿沒有明確的時長，duration 留空字串。
 - "notes" 是這場會議的重點討論內容，用條列式整理，每一條是一個獨立重點、決議或討論細節，愈詳細愈好，
   不要只寫一句空泛的話。
@@ -90,24 +115,6 @@ MINUTES_PROMPT_TEMPLATE = """你是 IKEA Data Team 的會議記錄整理助理�
 # description alone) makes Gemini's structured output far less likely to drift
 # from the expected shape than response_mime_type="application/json" alone.
 if GENAI_AVAILABLE:
-    _SEGMENT_SCHEMA = genai_types.Schema(
-        type=genai_types.Type.OBJECT,
-        properties={
-            "start": genai_types.Schema(type=genai_types.Type.NUMBER, description="Segment start time in seconds"),
-            "speaker": genai_types.Schema(type=genai_types.Type.STRING),
-            "text": genai_types.Schema(type=genai_types.Type.STRING),
-        },
-        required=["start", "speaker", "text"],
-    )
-
-    TRANSCRIPTION_RESPONSE_SCHEMA = genai_types.Schema(
-        type=genai_types.Type.OBJECT,
-        properties={
-            "segments": genai_types.Schema(type=genai_types.Type.ARRAY, items=_SEGMENT_SCHEMA),
-        },
-        required=["segments"],
-    )
-
     _AGENDA_ITEM_SCHEMA = genai_types.Schema(
         type=genai_types.Type.OBJECT,
         properties={
@@ -163,41 +170,6 @@ def normalize_audio(src_path: str) -> str:
         return src_path
 
 
-FILE_ACTIVE_POLL_INTERVAL_SECONDS = 2
-FILE_ACTIVE_POLL_TIMEOUT_SECONDS = 120
-
-
-async def _wait_for_file_active(client, uploaded_file):
-    """
-    Gemini's Files API processes an uploaded file asynchronously (state
-    PROCESSING -> ACTIVE/FAILED) before it can be referenced in generate_content.
-    This is more noticeable for audio than for the small PDF page images
-    document.py sends inline, so unlike that code path we must poll here or
-    generate_content fails with FAILED_PRECONDITION ("not in an ACTIVE state").
-
-    Uses the async client (client.aio) and asyncio.sleep rather than a thread +
-    blocking time.sleep: a request abandoned mid-poll (client disconnects, user
-    navigates away) can then actually be cancelled by asyncio instead of leaking
-    a worker thread that keeps sleeping/polling for up to
-    FILE_ACTIVE_POLL_TIMEOUT_SECONDS with no way to stop it — with enough
-    abandoned requests that exhausts the thread pool and stalls new requests.
-    """
-    waited = 0
-    file_state = getattr(uploaded_file, "state", None)
-    while getattr(file_state, "name", file_state) == "PROCESSING":
-        if waited >= FILE_ACTIVE_POLL_TIMEOUT_SECONDS:
-            raise RuntimeError("Timed out waiting for the uploaded audio file to finish processing.")
-        await asyncio.sleep(FILE_ACTIVE_POLL_INTERVAL_SECONDS)
-        waited += FILE_ACTIVE_POLL_INTERVAL_SECONDS
-        uploaded_file = await client.aio.files.get(name=uploaded_file.name)
-        file_state = getattr(uploaded_file, "state", None)
-
-    if getattr(file_state, "name", file_state) == "FAILED":
-        raise RuntimeError("Gemini failed to process the uploaded audio file.")
-
-    return uploaded_file
-
-
 # ── Structured minutes generation ────────────────────────────
 
 def _parse_json_object(text: str) -> dict:
@@ -243,6 +215,13 @@ def _normalize_segments(items) -> list:
     return normalized
 
 
+def _to_traditional(text) -> str:
+    text = str(text or "")
+    if not text or not OPENCC_AVAILABLE:
+        return text
+    return _S2TWP_CONVERTER.convert(text)
+
+
 def _segments_to_text(segments: list) -> str:
     lines = []
     for seg in segments:
@@ -254,33 +233,73 @@ def _segments_to_text(segments: list) -> str:
     return "\n".join(lines)
 
 
-async def transcribe_audio(audio_path: str, api_key: str) -> dict:
+async def _transcribe_bytes(audio_bytes: bytes, filename: str, groq_api_key: str) -> list:
+    async with httpx.AsyncClient(timeout=120) as client:
+        response = await client.post(
+            GROQ_TRANSCRIPTIONS_URL,
+            headers={"Authorization": f"Bearer {groq_api_key}"},
+            files={"file": (filename, audio_bytes)},
+            data={
+                "model": GROQ_TRANSCRIPTION_MODEL,
+                "response_format": "verbose_json",
+            },
+        )
+    response.raise_for_status()
+    return response.json().get("segments") or []
+
+
+async def transcribe_audio(audio_path: str, groq_api_key: str) -> dict:
     """
     Returns {"segments": [{"start": seconds, "speaker": str, "text": str}, ...], "text": flat_text}.
     Segments power the clickable, timestamped transcript UI; "text" is a flat
     rendering of the same content used as input to generate_minutes().
 
-    Uses the async google-genai client (client.aio) throughout rather than
-    wrapping the sync client in asyncio.to_thread(): a genuinely async call can
-    be cancelled by asyncio when the request is abandoned, whereas a blocking
-    call running in a thread pool worker keeps running to completion regardless
-    of task.cancel() and permanently occupies that thread.
+    "speaker" is always "" here: Whisper transcribes speech but does not perform
+    speaker diarization (unlike the previous audio-aware Gemini prompt, which
+    could pick up on distinct voices). The transcript UI already renders the
+    speaker label conditionally, so this degrades gracefully.
     """
-    if not GENAI_AVAILABLE:
-        raise RuntimeError("google-genai SDK is not installed; cannot transcribe audio.")
-    client = genai.Client(api_key=api_key)
-    uploaded_file = await client.aio.files.upload(file=audio_path)
-    uploaded_file = await _wait_for_file_active(client, uploaded_file)
-    response = await client.aio.models.generate_content(
-        model=MEETING_MODEL,
-        contents=[TRANSCRIPTION_PROMPT, uploaded_file],
-        config={
-            "response_mime_type": "application/json",
-            "response_schema": TRANSCRIPTION_RESPONSE_SCHEMA,
-        },
-    )
-    parsed = _parse_json_object(str(getattr(response, "text", "") or ""))
-    segments = _normalize_segments(parsed.get("segments"))
+    file_size = os.path.getsize(audio_path)
+
+    if file_size <= GROQ_MAX_UPLOAD_BYTES:
+        with open(audio_path, "rb") as f:
+            audio_bytes = f.read()
+        raw_segments = await _transcribe_bytes(audio_bytes, os.path.basename(audio_path), groq_api_key)
+    else:
+        if not PYDUB_AVAILABLE:
+            raise RuntimeError(
+                f"Audio file is {file_size / (1024 * 1024):.1f}MB, over Groq's per-request upload "
+                "limit, and pydub is not installed to split it into smaller chunks."
+            )
+        # Chunk size is derived from this file's actual bytes-per-ms rather than
+        # a fixed duration, so it adapts to whatever bitrate/format normalize_audio
+        # produced instead of assuming a specific encoding.
+        audio = AudioSegment.from_file(audio_path)
+        duration_ms = len(audio)
+        bytes_per_ms = file_size / duration_ms if duration_ms else 0
+        chunk_ms = int(GROQ_MAX_UPLOAD_BYTES / bytes_per_ms) if bytes_per_ms else duration_ms
+        chunk_ms = max(chunk_ms, 60_000)  # never split into slivers under a minute
+
+        offsets_and_chunks = []
+        for offset_ms in range(0, duration_ms, chunk_ms):
+            buffer = io.BytesIO()
+            audio[offset_ms:offset_ms + chunk_ms].export(buffer, format=NORMALIZED_AUDIO_FORMAT)
+            offsets_and_chunks.append((offset_ms / 1000.0, buffer.getvalue()))
+
+        chunk_results = await asyncio.gather(*[
+            _transcribe_bytes(chunk_bytes, f"chunk_{i}.{NORMALIZED_AUDIO_FORMAT}", groq_api_key)
+            for i, (_, chunk_bytes) in enumerate(offsets_and_chunks)
+        ])
+
+        raw_segments = []
+        for (offset_seconds, _), chunk_segments in zip(offsets_and_chunks, chunk_results):
+            for seg in chunk_segments:
+                raw_segments.append({**seg, "start": (seg.get("start") or 0) + offset_seconds})
+
+    segments = _normalize_segments([
+        {"start": seg.get("start"), "speaker": "", "text": _to_traditional(seg.get("text"))}
+        for seg in raw_segments
+    ])
     return {
         "segments": segments,
         "text": _segments_to_text(segments),
@@ -295,9 +314,9 @@ def _normalize_agenda(items) -> list:
         if not isinstance(item, dict):
             continue
         normalized.append({
-            "duration": str(item.get("duration", "") or "").strip(),
-            "item": str(item.get("item", "") or "").strip(),
-            "owner": str(item.get("owner", "") or "").strip(),
+            "duration": _to_traditional(item.get("duration", "")).strip(),
+            "item": _to_traditional(item.get("item", "")).strip(),
+            "owner": _to_traditional(item.get("owner", "")).strip(),
         })
     return normalized
 
@@ -305,7 +324,7 @@ def _normalize_agenda(items) -> list:
 def _normalize_notes(items) -> list:
     if not isinstance(items, list):
         return []
-    return [str(item).strip() for item in items if str(item or "").strip()]
+    return [_to_traditional(item).strip() for item in items if str(item or "").strip()]
 
 
 def _normalize_actions(items) -> list:
@@ -317,9 +336,9 @@ def _normalize_actions(items) -> list:
             continue
         normalized.append({
             "no": item.get("no", index),
-            "item": str(item.get("item", "") or "").strip(),
-            "assigned_to": str(item.get("assigned_to", "") or "").strip(),
-            "deadline": str(item.get("deadline", "") or "").strip(),
+            "item": _to_traditional(item.get("item", "")).strip(),
+            "assigned_to": _to_traditional(item.get("assigned_to", "")).strip(),
+            "deadline": _to_traditional(item.get("deadline", "")).strip(),
         })
     return normalized
 
@@ -330,14 +349,24 @@ async def generate_minutes(transcript: str, meta: dict, api_key: str) -> dict:
 
     client = genai.Client(api_key=api_key)
     prompt = MINUTES_PROMPT_TEMPLATE.format(transcript=transcript[:60000])
-    response = await client.aio.models.generate_content(
-        model=MEETING_MODEL,
-        contents=[prompt],
-        config={
-            "response_mime_type": "application/json",
-            "response_schema": MINUTES_RESPONSE_SCHEMA,
-        },
-    )
+
+    response = None
+    for attempt in range(1, MINUTES_GENERATION_MAX_ATTEMPTS + 1):
+        try:
+            response = await client.aio.models.generate_content(
+                model=MEETING_MODEL,
+                contents=[prompt],
+                config={
+                    "response_mime_type": "application/json",
+                    "response_schema": MINUTES_RESPONSE_SCHEMA,
+                },
+            )
+            break
+        except GenaiServerError:
+            if attempt == MINUTES_GENERATION_MAX_ATTEMPTS:
+                raise
+            await asyncio.sleep(MINUTES_GENERATION_RETRY_BASE_SECONDS * attempt)
+
     parsed = _parse_json_object(str(getattr(response, "text", "") or ""))
 
     return {

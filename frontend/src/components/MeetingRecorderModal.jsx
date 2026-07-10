@@ -15,7 +15,9 @@ function formatSeconds(totalSeconds) {
     return `${minutes}:${String(seconds).padStart(2, '0')}`;
 }
 
-export function MeetingRecorderModal({ apiUrl, geminiApiKey, onClose, onGenerated }) {
+// groqApiKey is set from the Meeting Records page, not here — this modal only
+// reads it (to send with the request and to disable submit when it's missing).
+export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose, onGenerated }) {
     const [mode, setMode] = useState('upload');
     const [selectedFile, setSelectedFile] = useState(null);
     const [recordedBlob, setRecordedBlob] = useState(null);
@@ -113,13 +115,15 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, onClose, onGenerate
         formData.append('attendees', attendees);
         formData.append('apologies', apologies);
         if (geminiApiKey) formData.append('gemini_api_key', geminiApiKey);
+        formData.append('groq_api_key', (groqApiKey || '').trim());
         return formData;
     };
 
     const hasAudio = mode === 'upload' ? !!selectedFile : !!recordedBlob;
+    const hasGroqKey = !!(groqApiKey || '').trim();
 
     const handleSubmit = async () => {
-        if (!hasAudio || isSubmitting) return;
+        if (!hasAudio || !hasGroqKey || isSubmitting) return;
         setIsSubmitting(true);
         setErrorMessage('');
         setErrorDetails('');
@@ -188,6 +192,12 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, onClose, onGenerate
                         </button>
                     </div>
                     <p className="text-sm text-[#767676] mb-4">Upload a recording or record now, then I'll turn it into a structured meeting minutes document.</p>
+
+                    {!groqApiKey?.trim() && (
+                        <p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
+                            Set your Groq API Key (via the API Keys button in the header) before generating minutes.
+                        </p>
+                    )}
 
                     {/* Mode tabs */}
                     <div className="flex gap-2 mb-4">
@@ -320,7 +330,7 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, onClose, onGenerate
                     <button
                         type="button"
                         onClick={handleSubmit}
-                        disabled={!hasAudio || isSubmitting}
+                        disabled={!hasAudio || !hasGroqKey || isSubmitting}
                         className="px-4 py-2 text-sm font-medium text-white bg-[#0058A3] hover:bg-[#004F93] rounded-lg transition-colors disabled:opacity-50 flex items-center gap-2"
                     >
                         {isSubmitting && <Loader2 className="w-4 h-4 animate-spin" />}

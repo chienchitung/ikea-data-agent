@@ -1,21 +1,21 @@
 import { useState, useRef, useEffect, useLayoutEffect } from 'react';
 import axios from 'axios';
 import { ChatMessage } from './components/ChatMessage';
-import { ArrowUp, Loader2, Sparkles, FileText, ChevronDown, ChevronLeft, ChevronRight, Plus, Check, Edit2, Trash2, User, MessageSquare, PenSquare, Search, Mic, Square, X, Bug, Pin, MoreHorizontal, KeyRound, Eye, EyeOff, CheckSquare, FileAudio, Download } from 'lucide-react';
+import { ArrowUp, Loader2, Sparkles, FileText, ChevronDown, ChevronLeft, ChevronRight, Plus, Check, Edit2, Trash2, User, MessageSquare, PenSquare, Search, Mic, Square, X, Bug, Pin, MoreHorizontal, KeyRound, Eye, EyeOff, CheckSquare, FileAudio } from 'lucide-react';
 import bearAvatar from './assets/img/ikea-bear.png';
 import dogAvatar from './assets/img/ikea-dog.png';
 import monkeyAvatar from './assets/img/ikea-monkey.png';
 import sharkAvatar from './assets/img/ikea-shark.png';
 import teddyAvatar from './assets/img/ikea-teddy.png';
 import { readSseStream } from './utils/sse';
-import { MeetingRecorderModal } from './components/MeetingRecorderModal';
-import { MeetingMinutesView } from './components/MeetingMinutesView';
+import { MeetingRecordsPage } from './components/MeetingRecordsPage';
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 const SHOW_AI_DEBUG = import.meta.env.DEV && import.meta.env.VITE_DEBUG_AI === 'true';
 const STORAGE_KEY = 'ikea_agent_conversations';
 const CURRENT_ID_KEY = 'ikea_agent_current_id';
 const GEMINI_KEY_STORAGE = 'ikea_agent_gemini_key';
+const GROQ_KEY_STORAGE = 'ikea_agent_groq_key';
 const ACTIVE_DOCS_STORAGE = 'ikea_agent_active_docs';
 
 const AVATARS = [
@@ -300,10 +300,7 @@ function App() {
         try { return new Set(JSON.parse(localStorage.getItem(ACTIVE_DOCS_STORAGE) || '[]')); }
         catch { return new Set(); }
     });
-    const [meetings, setMeetings] = useState([]);
-    const [isMeetingsExpanded, setIsMeetingsExpanded] = useState(true);
-    const [showMeetingModal, setShowMeetingModal] = useState(false);
-    const [activeMeetingId, setActiveMeetingId] = useState(null);
+    const [showMeetingsPage, setShowMeetingsPage] = useState(false);
     const [loadingConvIds, setLoadingConvIds] = useState(new Set());
     const [convStatuses, setConvStatuses] = useState({});
     const [clarifyingConvId, setClarifyingConvId] = useState(null);
@@ -333,8 +330,6 @@ function App() {
     const [selectedConvIds, setSelectedConvIds] = useState(new Set());
     const [isSelectingDocs, setIsSelectingDocs] = useState(false);
     const [selectedDocIdsForDelete, setSelectedDocIdsForDelete] = useState(new Set());
-    const [isSelectingMeetings, setIsSelectingMeetings] = useState(false);
-    const [selectedMeetingIds, setSelectedMeetingIds] = useState(new Set());
     const [openMenuConvId, setOpenMenuConvId] = useState(null);
     const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0 });
     const [userAvatar, setUserAvatar] = useState(bearAvatar);
@@ -344,6 +339,9 @@ function App() {
     const [apiKeyInput, setApiKeyInput] = useState('');
     const [apiKeyVisible, setApiKeyVisible] = useState(false);
     const [geminiApiKey, setGeminiApiKey] = useState(() => localStorage.getItem(GEMINI_KEY_STORAGE) || '');
+    const [groqApiKeyInput, setGroqApiKeyInput] = useState('');
+    const [groqApiKeyVisible, setGroqApiKeyVisible] = useState(false);
+    const [groqApiKey, setGroqApiKey] = useState(() => localStorage.getItem(GROQ_KEY_STORAGE) || '');
     const messagesEndRef = useRef(null);
     const fileInputRef = useRef(null);
     const abortControllersRef = useRef(new Map());
@@ -357,6 +355,7 @@ function App() {
     const speechInterimRef = useRef("");
     const speechErrorRef = useRef(false);
     const speechDiscardRef = useRef(false);
+    const isListeningRef = useRef(false);
     const pendingScrollBehaviorRef = useRef("auto");
     const isCurrentConvLoading = loadingConvIds.has(currentConvId);
     const isClarifyingCurrentConv = clarifyingConvId === currentConvId;
@@ -368,6 +367,10 @@ function App() {
     useEffect(() => {
         currentConvIdRef.current = currentConvId;
     }, [currentConvId]);
+
+    useEffect(() => {
+        isListeningRef.current = isListening;
+    }, [isListening]);
 
     useEffect(() => {
         conversationsRef.current = conversations;
@@ -485,93 +488,6 @@ function App() {
         }
     };
 
-    const fetchMeetings = async () => {
-        try {
-            const response = await axios.get(`${API_URL}/meetings`);
-            setMeetings(response.data.meetings || []);
-        } catch (error) {
-            console.error("Failed to fetch meetings:", error);
-        }
-    };
-
-    const deleteMeeting = async (meetingId) => {
-        if (!confirm("Are you sure you want to delete this meeting record?")) return;
-        setMeetings(prev => prev.filter(m => m.meeting_id !== meetingId));
-        try {
-            await axios.delete(`${API_URL}/meetings/${encodeURIComponent(meetingId)}`);
-        } catch (error) {
-            console.error("Failed to delete meeting:", error);
-            await fetchMeetings();
-        }
-    };
-
-    const toggleMeetingsSelectMode = () => {
-        setIsSelectingMeetings(prev => !prev);
-        setSelectedMeetingIds(new Set());
-    };
-
-    const toggleMeetingIdForDelete = (meetingId) => {
-        setSelectedMeetingIds(prev => {
-            const n = new Set(prev);
-            if (n.has(meetingId)) n.delete(meetingId); else n.add(meetingId);
-            return n;
-        });
-    };
-
-    const toggleSelectAllMeetings = () => {
-        setSelectedMeetingIds(prev =>
-            prev.size === meetings.length && meetings.length > 0
-                ? new Set()
-                : new Set(meetings.map(m => m.meeting_id))
-        );
-    };
-
-    const deleteSelectedMeetings = async () => {
-        if (selectedMeetingIds.size === 0) return;
-        if (!confirm(`Are you sure you want to delete ${selectedMeetingIds.size} meeting(s)?`)) return;
-
-        const toDelete = [...selectedMeetingIds];
-
-        setMeetings(prev => prev.filter(m => !toDelete.includes(m.meeting_id)));
-        setSelectedMeetingIds(new Set());
-        setIsSelectingMeetings(false);
-
-        for (const meetingId of toDelete) {
-            try {
-                await axios.delete(`${API_URL}/meetings/${encodeURIComponent(meetingId)}`);
-            } catch (error) {
-                console.error("Failed to delete meeting:", error);
-            }
-        }
-
-        await fetchMeetings();
-    };
-
-    const downloadMeetingDocx = async (meetingId, meetingTitle) => {
-        try {
-            const response = await axios.get(`${API_URL}/meetings/${encodeURIComponent(meetingId)}/download`, {
-                responseType: 'blob',
-            });
-            const url = URL.createObjectURL(response.data);
-            const link = document.createElement('a');
-            link.href = url;
-            link.download = `${meetingTitle || 'Meeting Notes'}.docx`;
-            document.body.appendChild(link);
-            link.click();
-            link.remove();
-            URL.revokeObjectURL(url);
-        } catch (error) {
-            console.error("Failed to download meeting minutes:", error);
-            alert("Could not download the document. Please try again.");
-        }
-    };
-
-    const handleMeetingGenerated = (payload) => {
-        setShowMeetingModal(false);
-        fetchMeetings();
-        if (payload?.meeting_id) setActiveMeetingId(payload.meeting_id);
-    };
-
     useLayoutEffect(() => {
         if (messages.length === 0 && !isCurrentConvLoading) return;
 
@@ -582,7 +498,6 @@ function App() {
 
     useEffect(() => {
         fetchDocuments();
-        fetchMeetings();
     }, []);
 
     useEffect(() => {
@@ -631,6 +546,14 @@ function App() {
         };
 
         recognition.onerror = (event) => {
+            // Only treat permission/device errors as fatal. `no-speech` fires
+            // routinely during an ordinary thinking pause in continuous
+            // dictation, and `network`/`aborted` are often transient — none
+            // of those should discard everything already transcribed.
+            // `onend` (which always fires after `onerror`) handles recovery.
+            const isFatal = event.error === 'not-allowed' || event.error === 'service-not-allowed' || event.error === 'audio-capture';
+            if (!isFatal) return;
+
             speechErrorRef.current = true;
             setIsListening(false);
             if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
@@ -650,6 +573,23 @@ function App() {
                 }
             }
             speechInterimRef.current = "";
+
+            // Chrome silently ends recognition on its own after a brief pause
+            // even with continuous=true (typically preceded by a `no-speech`
+            // error). Restart automatically as long as the user hasn't
+            // stopped/cancelled/confirmed — speechTranscriptRef keeps
+            // accumulating across restarts, so this is what actually makes
+            // "continuous" dictation continuous instead of truncating at the
+            // first pause.
+            if (!speechErrorRef.current && !speechDiscardRef.current && isListeningRef.current) {
+                try {
+                    recognition.start();
+                    return;
+                } catch (error) {
+                    console.error("Speech recognition restart failed:", error);
+                }
+            }
+
             speechErrorRef.current = false;
             speechDiscardRef.current = false;
             setIsListening(false);
@@ -682,6 +622,7 @@ function App() {
         messagesRef.current = [];
         setCurrentConvId(newId);
         setMessages([]);
+        setShowMeetingsPage(false);
     };
 
     const switchConversation = (conv) => {
@@ -699,6 +640,34 @@ function App() {
         messagesRef.current = conv.messages;
         setCurrentConvId(conv.id);
         setMessages(conv.messages);
+        setShowMeetingsPage(false);
+    };
+
+    // Shared by the header's key button and MeetingRecordsPage's proactive
+    // prompt (opened when someone tries to record without a Groq key set),
+    // so both entry points open the modal pre-filled with the current keys.
+    const openApiKeysModal = () => {
+        setApiKeyInput(geminiApiKey);
+        setGroqApiKeyInput(groqApiKey);
+        setShowApiKeyModal(true);
+    };
+
+    // Saves whichever of the two API key drafts is non-empty and closes the
+    // modal — shared by the Save button and pressing Enter in either field.
+    const commitApiKeys = () => {
+        const geminiTrimmed = apiKeyInput.trim();
+        if (geminiTrimmed) {
+            localStorage.setItem(GEMINI_KEY_STORAGE, geminiTrimmed);
+            setGeminiApiKey(geminiTrimmed);
+        }
+        const groqTrimmed = groqApiKeyInput.trim();
+        if (groqTrimmed) {
+            localStorage.setItem(GROQ_KEY_STORAGE, groqTrimmed);
+            setGroqApiKey(groqTrimmed);
+        }
+        setShowApiKeyModal(false);
+        setApiKeyVisible(false);
+        setGroqApiKeyVisible(false);
     };
 
     // Shared by single-conversation delete (three-dot menu) and bulk delete
@@ -1574,116 +1543,6 @@ function App() {
                         )}
                     </div>
 
-                    {/* Divider */}
-                    <div className="mx-4 border-t border-[#DFDFDF] my-2" />
-
-                    {/* ── Meetings Section ── */}
-                    <div className="px-4">
-                        <div className="flex items-center justify-between py-2">
-                            <span className="text-xs font-semibold text-[#767676] tracking-widest uppercase">Meetings</span>
-                            <div className="flex items-center gap-1">
-                                {meetings.length > 0 && (
-                                    <button
-                                        onClick={toggleMeetingsSelectMode}
-                                        className={`p-1 rounded transition-colors ${isSelectingMeetings ? 'bg-[#0058A3] text-white' : 'text-[#767676] hover:bg-[#DFDFDF]'}`}
-                                        title={isSelectingMeetings ? 'Exit select mode' : 'Select meetings to delete'}
-                                    >
-                                        <CheckSquare className="w-3.5 h-3.5" />
-                                    </button>
-                                )}
-                                <button
-                                    onClick={() => setIsMeetingsExpanded(!isMeetingsExpanded)}
-                                    className="p-1 hover:bg-[#DFDFDF] rounded transition-colors"
-                                >
-                                    <ChevronDown className={`w-3.5 h-3.5 text-[#767676] transition-transform ${isMeetingsExpanded ? '' : '-rotate-90'}`} />
-                                </button>
-                            </div>
-                        </div>
-
-                        <button
-                            onClick={() => setShowMeetingModal(true)}
-                            className="w-full flex items-center justify-center gap-2 px-4 py-2 border border-[#DFDFDF] rounded-lg hover:bg-white transition-colors text-sm font-medium text-[#484848] mb-2"
-                        >
-                            <Plus className="w-3.5 h-3.5" />
-                            Add Meeting Recording
-                        </button>
-
-                        {isMeetingsExpanded && (
-                            <div className="space-y-0.5">
-                                {meetings.length === 0 ? (
-                                    <p className="text-sm text-[#767676] text-center py-4">No meeting minutes yet</p>
-                                ) : (
-                                    <>
-                                        {isSelectingMeetings && (
-                                            <div className="flex items-center justify-between mb-1 px-2">
-                                                <button
-                                                    onClick={toggleSelectAllMeetings}
-                                                    className="flex items-center gap-2 hover:bg-white rounded py-1 transition-colors"
-                                                >
-                                                    <div className={`w-3.5 h-3.5 rounded border-2 flex-shrink-0 ${selectedMeetingIds.size === meetings.length && meetings.length > 0 ? 'border-[#0058A3] bg-[#0058A3]' : 'border-[#CCCCCC]'} flex items-center justify-center`}>
-                                                        {selectedMeetingIds.size === meetings.length && meetings.length > 0 && <Check className="w-2.5 h-2.5 text-white" />}
-                                                    </div>
-                                                    <span className="text-xs text-[#767676]">
-                                                        {selectedMeetingIds.size === 0 ? 'Select all' : `${selectedMeetingIds.size} / ${meetings.length} selected`}
-                                                    </span>
-                                                </button>
-                                                <div className="flex items-center gap-1">
-                                                    <button
-                                                        onClick={deleteSelectedMeetings}
-                                                        disabled={selectedMeetingIds.size === 0}
-                                                        className="p-1 hover:bg-red-100 rounded disabled:opacity-40 disabled:hover:bg-transparent transition-colors"
-                                                        title="Delete selected"
-                                                    >
-                                                        <Trash2 className="w-3.5 h-3.5 text-red-500" />
-                                                    </button>
-                                                    <button
-                                                        onClick={toggleMeetingsSelectMode}
-                                                        className="p-1 hover:bg-[#DFDFDF] rounded transition-colors"
-                                                        title="Cancel"
-                                                    >
-                                                        <X className="w-3.5 h-3.5 text-[#767676]" />
-                                                    </button>
-                                                </div>
-                                            </div>
-                                        )}
-                                        {meetings.map((meeting) => {
-                                            const isSelectedForDelete = selectedMeetingIds.has(meeting.meeting_id);
-                                            return (
-                                                <div
-                                                    key={meeting.meeting_id}
-                                                    onClick={() => isSelectingMeetings ? toggleMeetingIdForDelete(meeting.meeting_id) : setActiveMeetingId(meeting.meeting_id)}
-                                                    className="flex items-center gap-2 p-2 rounded-lg hover:bg-white transition-colors group cursor-pointer"
-                                                >
-                                                    {isSelectingMeetings && (
-                                                        <div className={`w-4 h-4 rounded border-2 flex-shrink-0 ${isSelectedForDelete ? 'border-[#0058A3] bg-[#0058A3]' : 'border-[#CCCCCC]'} flex items-center justify-center transition-colors`}>
-                                                            {isSelectedForDelete && <Check className="w-2.5 h-2.5 text-white" />}
-                                                        </div>
-                                                    )}
-                                                    <div className="flex items-center gap-1.5 flex-1 min-w-0" title={meeting.meeting_title || 'Meeting Notes'}>
-                                                        <FileAudio className="w-3.5 h-3.5 flex-shrink-0 text-[#0058A3]" />
-                                                        <span className="flex-1 min-w-0">
-                                                            <span className="block text-sm truncate text-[#111111]">{meeting.meeting_title || 'Meeting Notes'}</span>
-                                                            <span className="block text-xs text-[#767676]">{meeting.date || formatRelativeTime(new Date(meeting.created_at).getTime())}</span>
-                                                        </span>
-                                                    </div>
-                                                    {!isSelectingMeetings && (
-                                                        <div className="flex-shrink-0 flex gap-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
-                                                            <button onClick={(e) => { e.stopPropagation(); downloadMeetingDocx(meeting.meeting_id, meeting.meeting_title); }} className="p-1 hover:bg-[#DFDFDF] rounded" title="Download .docx">
-                                                                <Download className="w-3 h-3 text-[#484848]" />
-                                                            </button>
-                                                            <button onClick={(e) => { e.stopPropagation(); deleteMeeting(meeting.meeting_id); }} className="p-1 hover:bg-red-100 rounded" title="Delete">
-                                                                <Trash2 className="w-3 h-3 text-red-500" />
-                                                            </button>
-                                                        </div>
-                                                    )}
-                                                </div>
-                                            );
-                                        })}
-                                    </>
-                                )}
-                            </div>
-                        )}
-                    </div>
                 </div>
 
                 <div className="p-3 border-t border-[#DFDFDF] flex-shrink-0">
@@ -1742,6 +1601,15 @@ function App() {
                                     <Bug className="w-5 h-5 text-[#111111]" />
                                 </button>
                             )}
+                            {/* Meeting Records page entry */}
+                            <button
+                                onClick={() => setShowMeetingsPage((v) => !v)}
+                                className={`p-2 rounded-full transition-colors ${showMeetingsPage ? 'bg-[#F5F5F5]' : 'hover:bg-[#F5F5F5]'}`}
+                                title="Meeting Records"
+                                aria-pressed={showMeetingsPage}
+                            >
+                                <FileAudio className="w-5 h-5 text-[#111111]" />
+                            </button>
                             {/* Clear / New chat button */}
                             {messages.length > 0 && (
                                 <button
@@ -1753,12 +1621,12 @@ function App() {
                                 </button>
                             )}
                             <button
-                                onClick={() => { setApiKeyInput(geminiApiKey); setShowApiKeyModal(true); }}
-                                className={`p-2 rounded-full transition-colors relative ${geminiApiKey ? 'hover:bg-[#F5F5F5]' : 'hover:bg-[#F5F5F5]'}`}
-                                title={geminiApiKey ? "API Key configured" : "Set Gemini API Key"}
+                                onClick={openApiKeysModal}
+                                className="p-2 rounded-full transition-colors relative hover:bg-[#F5F5F5]"
+                                title={(geminiApiKey && groqApiKey) ? "API Keys configured" : "Set API Keys"}
                             >
                                 <KeyRound className={`w-5 h-5 ${geminiApiKey ? 'text-[#0058A3]' : 'text-[#111111]'}`} />
-                                {!geminiApiKey && (
+                                {!(geminiApiKey && groqApiKey) && (
                                     <span className="absolute top-1 right-1 w-2 h-2 bg-amber-400 rounded-full" />
                                 )}
                             </button>
@@ -1773,6 +1641,10 @@ function App() {
                     </div>
                 </header>
 
+                {showMeetingsPage ? (
+                    <MeetingRecordsPage apiUrl={API_URL} geminiApiKey={geminiApiKey} groqApiKey={groqApiKey} onOpenApiKeys={openApiKeysModal} />
+                ) : (
+                <>
                 {/* Chat Area */}
                 <main className="flex-1 overflow-y-auto p-3 sm:p-6 bg-white">
                     {messages.length === 0 ? (
@@ -1987,6 +1859,8 @@ function App() {
                         <p className="text-[10px] text-[#767676] font-medium">AI can make mistakes. Please verify important information.</p>
                     </div>
                 </footer>
+                </>
+                )}
             </div>
 
             {/* ── Rename Conversation Modal ── */}
@@ -2085,11 +1959,11 @@ function App() {
                 );
             })()}
 
-            {/* ── API Key Modal ── */}
+            {/* ── API Keys Modal ── */}
             {showApiKeyModal && (
                 <div
                     className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4"
-                    onClick={() => { setShowApiKeyModal(false); setApiKeyVisible(false); }}
+                    onClick={() => { setShowApiKeyModal(false); setApiKeyVisible(false); setGroqApiKeyVisible(false); }}
                 >
                     <div
                         className="bg-white rounded-2xl shadow-2xl w-full max-w-md"
@@ -2101,101 +1975,145 @@ function App() {
                                     <KeyRound className="w-5 h-5 text-[#0058A3]" />
                                 </div>
                                 <div>
-                                    <h2 className="text-lg font-semibold text-[#111111]">Gemini API Key</h2>
+                                    <h2 className="text-lg font-semibold text-[#111111]">API Keys</h2>
                                     <p className="text-xs text-[#767676]">Stored locally in your browser</p>
                                 </div>
                             </div>
-                            <p className="text-sm text-[#484848] mt-4 mb-5 leading-relaxed">
-                                Enter your Gemini API Key to enable AI responses. The key is saved only in this browser and is never sent to our servers beyond your own requests.
-                            </p>
-                            <div className="relative">
-                                <input
-                                    type={apiKeyVisible ? 'text' : 'password'}
-                                    value={apiKeyInput}
-                                    onChange={e => setApiKeyInput(e.target.value)}
-                                    onKeyDown={e => {
-                                        if (e.key === 'Enter') {
-                                            const trimmed = apiKeyInput.trim();
-                                            if (trimmed) {
-                                                localStorage.setItem(GEMINI_KEY_STORAGE, trimmed);
-                                                setGeminiApiKey(trimmed);
-                                            }
-                                            setShowApiKeyModal(false);
-                                            setApiKeyVisible(false);
-                                        }
-                                        if (e.key === 'Escape') { setShowApiKeyModal(false); setApiKeyVisible(false); }
-                                    }}
-                                    placeholder="Enter your API Key"
-                                    className="w-full px-3 py-2.5 text-sm border border-[#DFDFDF] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#0058A3] focus:border-transparent font-mono pr-20 text-[#111111]"
-                                    autoFocus
-                                />
-                                <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-0.5">
-                                    <button
-                                        type="button"
-                                        onClick={() => setApiKeyVisible(v => !v)}
-                                        className="p-1 hover:bg-[#F5F5F5] rounded text-[#767676]"
-                                        title={apiKeyVisible ? 'Hide key' : 'Show key'}
-                                    >
-                                        {apiKeyVisible ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                                    </button>
-                                    {apiKeyInput && (
+
+                            {/* Gemini */}
+                            <div className="mt-5">
+                                <label className="text-xs font-semibold text-[#767676] uppercase tracking-wide">Gemini API Key</label>
+                                <p className="text-xs text-[#767676] mt-1 mb-2">Enables AI chat responses.</p>
+                                <div className="relative">
+                                    <input
+                                        type={apiKeyVisible ? 'text' : 'password'}
+                                        value={apiKeyInput}
+                                        onChange={e => setApiKeyInput(e.target.value)}
+                                        onKeyDown={e => {
+                                            if (e.key === 'Enter') commitApiKeys();
+                                            if (e.key === 'Escape') { setShowApiKeyModal(false); setApiKeyVisible(false); setGroqApiKeyVisible(false); }
+                                        }}
+                                        placeholder="Enter your API Key"
+                                        className="w-full px-3 py-2.5 text-sm border border-[#DFDFDF] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#0058A3] focus:border-transparent font-mono pr-20 text-[#111111]"
+                                        autoFocus
+                                    />
+                                    <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-0.5">
                                         <button
                                             type="button"
-                                            onClick={() => setApiKeyInput('')}
+                                            onClick={() => setApiKeyVisible(v => !v)}
                                             className="p-1 hover:bg-[#F5F5F5] rounded text-[#767676]"
-                                            title="Clear"
+                                            title={apiKeyVisible ? 'Hide key' : 'Show key'}
                                         >
-                                            <X className="w-4 h-4" />
+                                            {apiKeyVisible ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                                         </button>
-                                    )}
+                                        {apiKeyInput && (
+                                            <button
+                                                type="button"
+                                                onClick={() => setApiKeyInput('')}
+                                                className="p-1 hover:bg-[#F5F5F5] rounded text-[#767676]"
+                                                title="Clear"
+                                            >
+                                                <X className="w-4 h-4" />
+                                            </button>
+                                        )}
+                                    </div>
                                 </div>
+                                {geminiApiKey && (
+                                    <div className="flex items-center justify-between mt-2">
+                                        <p className="text-xs text-[#0058A3] flex items-center gap-1">
+                                            <Check className="w-3 h-3" />
+                                            API key is configured
+                                        </p>
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                localStorage.removeItem(GEMINI_KEY_STORAGE);
+                                                setGeminiApiKey('');
+                                                setApiKeyInput('');
+                                            }}
+                                            className="text-xs font-medium text-red-500 hover:text-red-600 transition-colors"
+                                        >
+                                            Remove
+                                        </button>
+                                    </div>
+                                )}
                             </div>
-                            {geminiApiKey && (
-                                <p className="text-xs text-[#0058A3] mt-2 flex items-center gap-1">
-                                    <Check className="w-3 h-3" />
-                                    API key is configured
-                                </p>
-                            )}
+
+                            <div className="my-5 border-t border-[#DFDFDF]" />
+
+                            {/* Groq */}
+                            <div>
+                                <label className="text-xs font-semibold text-[#767676] uppercase tracking-wide">Groq API Key</label>
+                                <p className="text-xs text-[#767676] mt-1 mb-2">Transcribes meeting recordings. Sent per-request — the backend never stores it.</p>
+                                <div className="relative">
+                                    <input
+                                        type={groqApiKeyVisible ? 'text' : 'password'}
+                                        value={groqApiKeyInput}
+                                        onChange={e => setGroqApiKeyInput(e.target.value)}
+                                        onKeyDown={e => {
+                                            if (e.key === 'Enter') commitApiKeys();
+                                            if (e.key === 'Escape') { setShowApiKeyModal(false); setApiKeyVisible(false); setGroqApiKeyVisible(false); }
+                                        }}
+                                        placeholder="gsk_..."
+                                        className="w-full px-3 py-2.5 text-sm border border-[#DFDFDF] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#0058A3] focus:border-transparent font-mono pr-20 text-[#111111]"
+                                    />
+                                    <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-0.5">
+                                        <button
+                                            type="button"
+                                            onClick={() => setGroqApiKeyVisible(v => !v)}
+                                            className="p-1 hover:bg-[#F5F5F5] rounded text-[#767676]"
+                                            title={groqApiKeyVisible ? 'Hide key' : 'Show key'}
+                                        >
+                                            {groqApiKeyVisible ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                                        </button>
+                                        {groqApiKeyInput && (
+                                            <button
+                                                type="button"
+                                                onClick={() => setGroqApiKeyInput('')}
+                                                className="p-1 hover:bg-[#F5F5F5] rounded text-[#767676]"
+                                                title="Clear"
+                                            >
+                                                <X className="w-4 h-4" />
+                                            </button>
+                                        )}
+                                    </div>
+                                </div>
+                                {groqApiKey && (
+                                    <div className="flex items-center justify-between mt-2">
+                                        <p className="text-xs text-orange-500 flex items-center gap-1">
+                                            <Check className="w-3 h-3" />
+                                            API key is configured
+                                        </p>
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                localStorage.removeItem(GROQ_KEY_STORAGE);
+                                                setGroqApiKey('');
+                                                setGroqApiKeyInput('');
+                                            }}
+                                            className="text-xs font-medium text-red-500 hover:text-red-600 transition-colors"
+                                        >
+                                            Remove
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
                         </div>
-                        <div className="px-6 pb-6 flex items-center justify-between gap-3">
-                            {geminiApiKey && (
-                                <button
-                                    type="button"
-                                    onClick={() => {
-                                        localStorage.removeItem(GEMINI_KEY_STORAGE);
-                                        setGeminiApiKey('');
-                                        setApiKeyInput('');
-                                        setShowApiKeyModal(false);
-                                    }}
-                                    className="text-sm font-medium text-red-500 hover:text-red-600 transition-colors"
-                                >
-                                    Remove key
-                                </button>
-                            )}
-                            <div className="flex gap-2 ml-auto">
-                                <button
-                                    type="button"
-                                    onClick={() => { setShowApiKeyModal(false); setApiKeyVisible(false); }}
-                                    className="px-4 py-2 text-sm font-medium text-[#111111] hover:bg-[#F5F5F5] rounded-lg transition-colors"
-                                >
-                                    Cancel
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={() => {
-                                        const trimmed = apiKeyInput.trim();
-                                        if (trimmed) {
-                                            localStorage.setItem(GEMINI_KEY_STORAGE, trimmed);
-                                            setGeminiApiKey(trimmed);
-                                        }
-                                        setShowApiKeyModal(false);
-                                        setApiKeyVisible(false);
-                                    }}
-                                    className="px-4 py-2 text-sm font-medium text-white bg-[#0058A3] hover:bg-[#004F93] rounded-lg transition-colors"
-                                >
-                                    Save
-                                </button>
-                            </div>
+                        <div className="px-6 pb-6 flex items-center justify-end gap-2">
+                            <button
+                                type="button"
+                                onClick={() => { setShowApiKeyModal(false); setApiKeyVisible(false); setGroqApiKeyVisible(false); }}
+                                className="px-4 py-2 text-sm font-medium text-[#111111] hover:bg-[#F5F5F5] rounded-lg transition-colors"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                onClick={commitApiKeys}
+                                className="px-4 py-2 text-sm font-medium text-white bg-[#0058A3] hover:bg-[#004F93] rounded-lg transition-colors"
+                            >
+                                Save
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -2228,24 +2146,6 @@ function App() {
                 </>
             )}
 
-            {/* ── Meeting Recorder Modal ── */}
-            {showMeetingModal && (
-                <MeetingRecorderModal
-                    apiUrl={API_URL}
-                    geminiApiKey={geminiApiKey}
-                    onClose={() => setShowMeetingModal(false)}
-                    onGenerated={handleMeetingGenerated}
-                />
-            )}
-
-            {/* ── Meeting Minutes Viewer ── */}
-            {activeMeetingId && (
-                <MeetingMinutesView
-                    apiUrl={API_URL}
-                    meetingId={activeMeetingId}
-                    onClose={() => setActiveMeetingId(null)}
-                />
-            )}
         </div>
     );
 }

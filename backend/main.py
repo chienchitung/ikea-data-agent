@@ -100,6 +100,14 @@ def localized_product_error(code: str, language: str, details=None) -> dict:
             ["確認 GOOGLE_API_KEY / GEMINI_API_KEY 已設定", "稍後再試一次"] if zh else ["Check that GOOGLE_API_KEY / GEMINI_API_KEY is configured", "Try again later"],
             details,
         )
+    if code == "transcription_provider_unavailable":
+        return product_error(
+            code,
+            "尚未提供 Groq API Key" if zh else "No Groq API Key provided",
+            "轉譯錄音需要 Groq API Key，但這次請求沒有帶上，後端也不會保存這組金鑰。" if zh else "Transcribing this recording requires a Groq API Key, but none was sent with this request, and the backend does not store one.",
+            ["在會議錄製視窗輸入你的 Groq API Key", "稍後再試一次"] if zh else ["Enter your Groq API Key in the meeting recorder window", "Try again later"],
+            details,
+        )
     if code == "pdf_not_ready":
         return product_error(
             code,
@@ -634,6 +642,12 @@ def _effective_gemini_api_key(provided: Optional[str]) -> Optional[str]:
     return provided or os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
 
 
+def _effective_groq_api_key(provided: Optional[str]) -> Optional[str]:
+    # Deliberately client-supplied only, with no server-side env var fallback
+    # (unlike Gemini's key above): the backend must never retain a Groq key.
+    return (provided or "").strip() or None
+
+
 def _meeting_not_found_error(action: str) -> dict:
     return product_error(
         "meeting_not_found",
@@ -653,8 +667,10 @@ async def generate_meeting_minutes_stream(
     attendees: str = Form(""),
     apologies: str = Form(""),
     gemini_api_key: Optional[str] = Form(None),
+    groq_api_key: Optional[str] = Form(None),
 ):
     api_key = _effective_gemini_api_key(gemini_api_key)
+    groq_api_key = _effective_groq_api_key(groq_api_key)
     meeting_id = new_meeting_id()
 
     ext = os.path.splitext(audio.filename or "")[1] or ".bin"
@@ -682,12 +698,15 @@ async def generate_meeting_minutes_stream(
                 if not api_key:
                     await queue.put(("error", localized_product_error("ai_provider_unavailable", "en")))
                     return
+                if not groq_api_key:
+                    await queue.put(("error", localized_product_error("transcription_provider_unavailable", "en")))
+                    return
 
                 await queue.put(("progress", {"phase": "normalizing_audio", "label": "Preparing audio"}))
                 normalized_path = await asyncio.to_thread(normalize_audio, str(audio_path))
 
                 await queue.put(("progress", {"phase": "transcribing", "label": "Transcribing audio"}))
-                transcription = await transcribe_audio(normalized_path, api_key)
+                transcription = await transcribe_audio(normalized_path, groq_api_key)
                 transcript = transcription["text"]
                 segments = transcription["segments"]
 
