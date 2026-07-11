@@ -22,6 +22,7 @@ function formatRelativeTime(ts) {
 export function MeetingRecordsPage({ apiUrl, geminiApiKey, groqApiKey, onOpenApiKeys }) {
     const [meetings, setMeetings] = useState([]);
     const [isLoading, setIsLoading] = useState(true);
+    const [loadError, setLoadError] = useState(false);
     const [activeMeetingId, setActiveMeetingId] = useState(null);
     const [showRecorderModal, setShowRecorderModal] = useState(false);
     const [isSelecting, setIsSelecting] = useState(false);
@@ -32,11 +33,16 @@ export function MeetingRecordsPage({ apiUrl, geminiApiKey, groqApiKey, onOpenApi
 
     const fetchMeetings = useCallback(async () => {
         setIsLoading(true);
+        setLoadError(false);
         try {
-            const response = await axios.get(`${apiUrl}/meetings`);
+            // Without a timeout, a stalled request (e.g. one queued behind a
+            // long-running chat stream to the same origin) left this spinner
+            // running forever with no way to recover short of a page reload.
+            const response = await axios.get(`${apiUrl}/meetings`, { timeout: 15000 });
             setMeetings(response.data.meetings || []);
         } catch (error) {
             console.error('Failed to fetch meetings:', error);
+            setLoadError(true);
         } finally {
             setIsLoading(false);
         }
@@ -206,6 +212,16 @@ export function MeetingRecordsPage({ apiUrl, geminiApiKey, groqApiKey, onOpenApi
                 {isLoading ? (
                     <div className="flex justify-center py-10">
                         <Loader2 className="w-6 h-6 animate-spin text-[#0058A3]" />
+                    </div>
+                ) : loadError ? (
+                    <div className="text-center py-14 border border-dashed border-[#DFDFDF] rounded-xl">
+                        <p className="text-sm text-[#767676] mb-3">Could not load meeting records.</p>
+                        <button
+                            onClick={fetchMeetings}
+                            className="text-sm text-[#0058A3] font-medium hover:underline"
+                        >
+                            Try again
+                        </button>
                     </div>
                 ) : meetings.length === 0 ? (
                     <div className="text-center py-14 border border-dashed border-[#DFDFDF] rounded-xl">

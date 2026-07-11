@@ -34,6 +34,15 @@ _BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 _kb_init_lock = asyncio.Lock()
 
 
+def _load_stored_conversation_state(conversation_id: Optional[str]):
+    return (
+        load_conversation_messages(conversation_id),
+        load_tool_context(conversation_id),
+        load_tool_results(conversation_id),
+        load_memory_summary(conversation_id),
+    )
+
+
 async def _ensure_kb_initialized(api_key: str) -> None:
     """Load KB from the on-disk FAISS cache if it was not loaded at startup."""
     if _doc_module.vector_db is not None:
@@ -653,7 +662,7 @@ async def process_chat_detailed(
 
             elapsed_ms = round((time.perf_counter() - started_at) * 1000)
             document_context_text = str(document_result.get("document_context") or "")
-            save_agent_trace(conversation_id, {
+            await asyncio.to_thread(save_agent_trace, conversation_id, {
                 "user_query": clean_message,
                 "turn_context": turn_context or {},
                 "tool_outputs": [{
@@ -679,10 +688,16 @@ async def process_chat_detailed(
                 },
             }
 
-        stored_messages = load_conversation_messages(conversation_id)
-        stored_tool_context = load_tool_context(conversation_id)
-        stored_tool_results = load_tool_results(conversation_id)
-        stored_memory_summary = load_memory_summary(conversation_id)
+        # Dispatched together onto a worker thread: these are synchronous disk
+        # reads, and calling them directly on the event loop would block every
+        # other in-flight request (e.g. a concurrent GET /meetings) for however
+        # long the read takes.
+        (
+            stored_messages,
+            stored_tool_context,
+            stored_tool_results,
+            stored_memory_summary,
+        ) = await asyncio.to_thread(_load_stored_conversation_state, conversation_id)
         conversation_history = chat_history if chat_history else stored_messages
 
         if not turn_context:
@@ -773,7 +788,7 @@ async def process_chat_detailed(
             + [HumanMessage(content=message), AIMessage(content=agent_response)]
             + _tool_messages(response_state["messages"])
         )
-        save_conversation_messages(conversation_id, save_messages)
+        await asyncio.to_thread(save_conversation_messages, conversation_id, save_messages)
 
         tool_results = _structured_tool_metadata(response_state["messages"])
         if not tool_results:
@@ -807,7 +822,7 @@ async def process_chat_detailed(
                 "content": raw_content[:12000],
                 "truncated": len(raw_content) > 12000,
             })
-        save_agent_trace(conversation_id, {
+        await asyncio.to_thread(save_agent_trace, conversation_id, {
             "user_query": clean_message,
             "turn_context": turn_context or {},
             "tool_outputs": raw_tool_outputs,

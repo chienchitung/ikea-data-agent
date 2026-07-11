@@ -734,7 +734,7 @@ async def generate_meeting_minutes_stream(
                     "segments": segments,
                     "meeting_data": minutes,
                 }
-                save_meeting_record(record)
+                await asyncio.to_thread(save_meeting_record, record)
 
                 await queue.put(("final", {
                     "meeting_id": meeting_id,
@@ -779,12 +779,18 @@ async def generate_meeting_minutes_stream(
 
 @app.get("/meetings")
 async def get_meetings():
-    return {"meetings": list_meeting_records()}
+    # list_meeting_records() reads and fully JSON-parses every stored meeting
+    # file, transcript included (tens of thousands of characters for a long
+    # meeting) just to build a short summary list. Run it on a worker thread
+    # so it can't stall the event loop -- and every other in-flight request,
+    # including an unrelated chat turn -- for however long that takes.
+    meetings = await asyncio.to_thread(list_meeting_records)
+    return {"meetings": meetings}
 
 
 @app.get("/meetings/{meeting_id}")
 async def get_meeting(meeting_id: str):
-    record = load_meeting_record(meeting_id)
+    record = await asyncio.to_thread(load_meeting_record, meeting_id)
     if record is None:
         raise HTTPException(status_code=404, detail=_meeting_not_found_error("view"))
     return record
@@ -792,7 +798,7 @@ async def get_meeting(meeting_id: str):
 
 @app.put("/meetings/{meeting_id}")
 async def update_meeting(meeting_id: str, payload: MeetingDataUpdate):
-    record = update_meeting_record(meeting_id, payload.meeting_data)
+    record = await asyncio.to_thread(update_meeting_record, meeting_id, payload.meeting_data)
     if record is None:
         raise HTTPException(status_code=404, detail=_meeting_not_found_error("update"))
     return record
@@ -800,7 +806,7 @@ async def update_meeting(meeting_id: str, payload: MeetingDataUpdate):
 
 @app.get("/meetings/{meeting_id}/download")
 async def download_meeting(meeting_id: str):
-    record = load_meeting_record(meeting_id)
+    record = await asyncio.to_thread(load_meeting_record, meeting_id)
     if record is None:
         raise HTTPException(status_code=404, detail=_meeting_not_found_error("download"))
 
@@ -831,7 +837,7 @@ AUDIO_MEDIA_TYPES = {
 
 @app.get("/meetings/{meeting_id}/audio")
 async def get_meeting_audio(meeting_id: str):
-    record = load_meeting_record(meeting_id)
+    record = await asyncio.to_thread(load_meeting_record, meeting_id)
     if record is None:
         raise HTTPException(status_code=404, detail=_meeting_not_found_error("play"))
 
@@ -847,7 +853,7 @@ async def get_meeting_audio(meeting_id: str):
 
 @app.delete("/meetings/{meeting_id}")
 async def delete_meeting(meeting_id: str):
-    deleted = delete_meeting_record(meeting_id)
+    deleted = await asyncio.to_thread(delete_meeting_record, meeting_id)
     if not deleted:
         raise HTTPException(status_code=404, detail=_meeting_not_found_error("delete"))
     return {"message": f"Meeting {meeting_id} deleted successfully"}
