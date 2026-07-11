@@ -1,7 +1,7 @@
 # IKEA Data Agent (Data Machi) 專屬數據助手
 
 ## 📌 專案介紹 (Project Overview)
-本專案為開發給「IKEA Data Team」使用的內部專屬 AI 助理系統——**Data Machi**。這是一個基於大型語言模型（LLM，目前預設使用 Gemini 2.5 Flash）結合 LangChain 工具生態圈打造的多智能體（Multi-Agent System）架構。它被賦予了嚴格的系統身份與邊界，專注於解決團隊內部的數據處理、專案進度追蹤以及知識庫檢索問題。系統同時包含方便使用者互動的 Web 前端介面設計與穩定提供服務的 Python 後端。
+本專案為開發給「IKEA Data Team」使用的內部專屬 AI 助理系統——**Data Machi**。這是一個基於大型語言模型（LLM）結合 LangGraph 打造的多智能體（Multi-Agent System）架構。系統採用雙模型設計：最終回答與使用者實際互動使用 `GEMINI_MODEL`（預設 `gemini-3.5-flash`），對話脈絡判斷、澄清問題設計、回答查核等內部、非使用者可見的步驟則改用較快的 `GEMINI_FAST_MODEL`（預設 `gemini-2.5-flash`），兩者皆可透過環境變數調整。它被賦予了嚴格的系統身份與邊界，專注於解決團隊內部的數據處理、專案進度追蹤以及知識庫檢索問題。系統同時包含方便使用者互動的 Web 前端介面設計與穩定提供服務的 Python 後端。
 
 ## 🎯 核心開發目的 (Core Purpose)
 1. **專注業務範圍**：確保 AI 助理只協助回答 IKEA 內部的數據、Trello 專案進度、Confluence 文件以及團隊知識庫的問題。針對無關的閒聊（如天氣、食譜、通用百科等），將會進行阻擋並回覆標準答案，避免模型提供非業務範圍的資訊。
@@ -15,8 +15,8 @@
 ## 🛠 系統架構與技術棧 (Tech Stack)
 - **前端 (Frontend)**：React.js + Vite + TailwindCSS (建構於 Node.js 環境)
 - **後端 (Backend)**：Python + FastAPI (提供 RESTful API)
-- **AI / 核心邏輯**：LangChain + Google Generative AI (Gemini)
-- **其他整合**：Trello API / Confluence 文件檢索 / 向量資料庫（Vector DB）等
+- **AI / 核心邏輯**：LangGraph（StateGraph 狀態機，見 [`LangChain_vs_LangGraph.md`](./LangChain_vs_LangGraph.md) 說明遷移原因）+ Google Generative AI (Gemini)，透過 `langchain-google-genai` 串接
+- **其他整合**：Trello API / Confluence 文件檢索 / 向量資料庫（Vector DB）/ Groq Whisper（會議錄音轉逐字稿）等
 
 ---
 
@@ -87,6 +87,10 @@ python main.py
 # Google Gemini API
 GOOGLE_API_KEY=your_google_api_key
 
+# 選填：分別指定「最終回答」與「內部判斷步驟」使用的模型，不設定則用預設值
+GEMINI_MODEL=gemini-3.5-flash
+GEMINI_FAST_MODEL=gemini-2.5-flash
+
 # Trello API 設定
 TRELLO_BOARD_ID=your_trello_board_id
 TRELLO_API_KEY=your_trello_api_key
@@ -101,10 +105,14 @@ CONFLUENCE_API_TOKEN=your_confluence_api_token
 GOOGLE_SHEET_KEY=your_sheet_key_id
 ```
 
-如果要使用 Google Sheets / Analyst Agent，還需要把 Google Cloud service account 的 `.json` 憑證放在 `backend/` 目錄下，例如：
+如果要使用 Google Sheets / Analyst Agent，還需要提供 Google Cloud service account 憑證。**請勿把 `.json` 金鑰檔提交到 git**（`backend/*.json` 已加入 `.gitignore`）。有兩種方式擇一：
 
-```text
-backend/cedar-unison-XXXX.json
+- **正式環境／建議做法**：把整份 `.json` 金鑰內容貼進 `GOOGLE_SERVICE_ACCOUNT_JSON` 環境變數（單行字串即可，程式會自動解析）。
+- **本機開發**：把 `.json` 檔案放在 `backend/` 目錄下即可（例如 `backend/your-project-XXXX.json`），程式會自動偵測——但僅限本機使用，不要提交到 git。
+
+```env
+# 擇一設定即可；若兩者都沒有，Analyst Agent 會回報找不到憑證
+GOOGLE_SERVICE_ACCOUNT_JSON={"type":"service_account","project_id":"...", ...}
 ```
 
 #### PDF OCR / 視覺解析依賴
@@ -136,6 +144,10 @@ PDF_VISUAL_PAGE_LIMIT=30
 ```bash
 brew install ffmpeg
 ```
+
+轉逐字稿本身使用 Groq 的 Whisper API（`whisper-large-v3-turbo`，速度遠快於直接把音檔丟給 Gemini）。
+Groq API Key **不是**放在 `backend/.env`——後端刻意不保存這組金鑰，使用者需要在前端「會議錄製」視窗裡自行輸入，
+每次請求才會隨著呼叫一起帶上。
 
 ### 2️⃣ 前端啟動方式 (Frontend)
 
@@ -288,8 +300,9 @@ VITE_API_URL=http://127.0.0.1:8000
 
 後端語法與上下文路由 smoke test：
 ```bash
-python -m py_compile backend/agent_logic.py backend/agents/coordinator.py backend/main.py backend/conversation_store.py backend/tests/context_routing_smoke.py
+python -m py_compile backend/agent_logic.py backend/agents/coordinator.py backend/main.py backend/conversation_store.py backend/tests/context_routing_smoke.py backend/tests/meeting_docx_smoke.py
 GOOGLE_API_KEY=dummy python backend/tests/context_routing_smoke.py
+python backend/tests/meeting_docx_smoke.py
 ```
 
 前端 lint 與 production build：
@@ -310,7 +323,7 @@ npm run build
 1. 註冊並登入 [Render](https://render.com/)，在 Dashboard 選擇 **Blueprints** 並綁定你的 GitHub 專案。
 2. Render 會自動讀取 `render.yaml` 建立名為 `ikea-data-agent-backend` 的服務。
    - *(備註：若你不是使用 Blueprint，而是手動建立 Web Service，請確保填寫 Build Command 為 `cd backend && pip install -r requirements.txt`，Start Command 為 `cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT`)*
-3. 在 Render 控制台把所有的環境變數 (Environment Variables，如 `GOOGLE_API_KEY`、`.json` 的金鑰內容等) 填寫完成。
+3. 在 Render 控制台把所有的環境變數 (Environment Variables) 填寫完成，包含 `GOOGLE_API_KEY`、Trello / Confluence 相關設定，以及 `GOOGLE_SERVICE_ACCOUNT_JSON`（把 Google service account 的 `.json` 金鑰內容整份貼進去，不要用檔案上傳的方式）。
 4. 部署完成後，會得到一串網址（如：`https://ikea-data-agent-backend.onrender.com`），請把這串網址複製備用。
 
 ### 步驟二：部署前端 (Vercel)
@@ -331,4 +344,5 @@ npm run build
 * 前端聊天目前會優先使用 `/chat/stream` 接收後端進度事件；若後端服務沒有啟動，畫面會顯示連線失敗提示。
 * `frontend/.env.local` 只放本機開發設定，不要提交真實 API key 或正式環境敏感資訊。
 * 後端會在本機產生對話與 PDF 索引快取，例如 `backend/.conversation_store/`、`backend/faiss_index/`、`backend/document_chunks.json`；部署或清理環境時要留意這些資料是否需要保留。
-* `render.yaml` 目前仍指定 Render 使用 Python 3.9.6；正式部署前建議評估更新到 Python 3.10+，避免 Google / LangChain 相關套件之後停止支援。
+* `render.yaml` 已指定 Render 使用 Python `3.11.15`（repo 根目錄的 `.python-version` 也是同一版本，作為 Render 沒有正確套用該環境變數時的備援）；本機開發請確認用的也是 Python 3.10+，不要用 macOS 內建的 3.9.6。
+* Google service account 憑證請用 `GOOGLE_SERVICE_ACCOUNT_JSON` 環境變數提供；`backend/*.json` 已加入 `.gitignore`，切勿把金鑰檔提交到 git（若不確定舊的憑證檔是否曾經被提交過，請檢查 git 歷史紀錄並到 Google Cloud Console 旋轉金鑰）。

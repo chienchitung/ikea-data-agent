@@ -104,24 +104,43 @@ def _clean_filter_value(value: str) -> str:
             cleaned = cleaned.split(marker, 1)[0].strip()
     return cleaned.strip().strip('"\'「」')
 
+_SERVICE_ACCOUNT_SCOPE = [
+    'https://spreadsheets.google.com/feeds',
+    'https://www.googleapis.com/auth/drive',
+]
+
+
+def _load_service_account_credentials():
+    """
+    Prefer GOOGLE_SERVICE_ACCOUNT_JSON (the key file's raw JSON content, set
+    as a secret env var) so production never needs the key committed to the
+    repo or sitting on disk. Falls back to a local *.json keyfile, which
+    remains convenient for local dev but must never be committed -- see
+    .gitignore.
+    """
+    env_value = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+    if env_value:
+        return ServiceAccountCredentials.from_json_keyfile_dict(
+            json.loads(env_value), _SERVICE_ACCOUNT_SCOPE
+        )
+
+    keyfiles = glob.glob("*.json") + glob.glob("backend/*.json")
+    keyfiles = [f for f in keyfiles if "package" not in f and "lock" not in f]
+    if not keyfiles:
+        raise FileNotFoundError(
+            "找不到 Google Service Account 憑證。"
+            "請設定 GOOGLE_SERVICE_ACCOUNT_JSON 環境變數，"
+            "或在本機 backend/ 目錄放一份 keyfile.json（僅限本機開發，切勿提交到 git）。"
+        )
+    return ServiceAccountCredentials.from_json_keyfile_name(keyfiles[0], _SERVICE_ACCOUNT_SCOPE)
+
+
 def get_gspread_client():
     """
     建立 gspread 客戶端連線
     每次呼叫時都重新初始化（與 notebook 行為一致）
     """
-    # Look for json keyfile
-    keyfiles = glob.glob("*.json") + glob.glob("backend/*.json")
-    # Filter out package*.json
-    keyfiles = [f for f in keyfiles if "package" not in f and "lock" not in f]
-
-    if not keyfiles:
-        raise FileNotFoundError("找不到 Google Service Account JSON 金鑰檔案")
-
-    json_keyfile = keyfiles[0]
-
-    scope = ['https://spreadsheets.google.com/feeds',
-             'https://www.googleapis.com/auth/drive']
-    creds = ServiceAccountCredentials.from_json_keyfile_name(json_keyfile, scope)
+    creds = _load_service_account_credentials()
     gc = gspread.authorize(creds)
     return gc
 
@@ -160,13 +179,17 @@ def _load_worksheet_dataframe(worksheet_name: str) -> tuple[pd.DataFrame, int]:
 
 # 嘗試預先檢查憑證是否存在 (for logs)
 try:
-    _keyfiles = glob.glob("*.json") + glob.glob("backend/*.json")
-    _keyfiles = [f for f in _keyfiles if "package" not in f and "lock" not in f]
-    if _keyfiles:
-        print(f"\n✅ Analyst 憑證已找到: {_keyfiles[0]}")
+    if os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"):
+        print("\n✅ Analyst 憑證已從 GOOGLE_SERVICE_ACCOUNT_JSON 環境變數載入")
         print(f"   Spreadsheet Key: {SPREADSHEET_KEY}")
     else:
-        print("Warning: Analyst Agent JSON keyfile not found.")
+        _keyfiles = glob.glob("*.json") + glob.glob("backend/*.json")
+        _keyfiles = [f for f in _keyfiles if "package" not in f and "lock" not in f]
+        if _keyfiles:
+            print(f"\n✅ Analyst 憑證已找到: {_keyfiles[0]}")
+            print(f"   Spreadsheet Key: {SPREADSHEET_KEY}")
+        else:
+            print("Warning: Analyst Agent JSON keyfile not found.")
 except Exception:
     pass
 

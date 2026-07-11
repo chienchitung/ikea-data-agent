@@ -12,6 +12,10 @@ venv/
 .env
 .pytest_cache/
 
+# Google service account credentials (see GOOGLE_SERVICE_ACCOUNT_JSON in
+# README.md / render.yaml -- never commit a real keyfile)
+backend/*.json
+
 # System
 .DS_Store
 
