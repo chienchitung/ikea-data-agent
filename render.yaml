@@ -7,11 +7,13 @@ services:
     startCommand: "cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT"
     envVars:
       - key: PYTHON_VERSION
-        value: 3.9.6
+        value: 3.11.15
       - key: GOOGLE_API_KEY
         sync: false
       - key: GEMINI_MODEL
         value: gemini-3.5-flash
+      - key: GEMINI_FAST_MODEL
+        value: gemini-2.5-flash
       - key: TRELLO_BOARD_ID
         sync: false
       - key: TRELLO_API_KEY

@@ -1,5 +1,6 @@
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.prebuilt import create_react_agent
+from google.api_core.exceptions import GoogleAPIError
 from dotenv import load_dotenv
 import os
 from datetime import datetime
@@ -13,7 +14,31 @@ from .analyst import analyst_tools
 load_dotenv()
 
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
+# Used for internal JSON classification/verification steps (turn-context
+# routing, intent guardrail, clarification detection, response fact-check)
+# that run once or twice per turn but never generate the text the user
+# reads. gemini-3.5-flash has been observed taking 90s+ per call under heavy
+# load vs. gemini-2.5-flash's ~7s for the same kind of schema-only request
+# (see backend/agents/meeting.py), and with 2-3 of these internal calls
+# stacked sequentially before/after the user-facing answer, that difference
+# was the main driver of 100s+ replies. Keep GEMINI_MODEL (3.5-flash) only
+# for the final answer generation, where output quality is user-visible.
+GEMINI_FAST_MODEL = os.getenv("GEMINI_FAST_MODEL", "gemini-2.5-flash")
 _env_api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+
+# langchain_google_genai retries ResourceExhausted(429)/ServiceUnavailable(503)/
+# GoogleAPIError automatically, but its default (max_retries=6, exponential
+# backoff up to 60s, no timeout) is tuned for offline/batch jobs, not a
+# synchronous chat turn a user is staring at. Left at the default, a single
+# "high demand" 503 streak on GEMINI_MODEL can turn one turn into a 90s+ wait
+# (matches the 90s+ figures noted above and in backend/agents/meeting.py)
+# before the library even finishes retrying. Retry a couple of times quickly
+# instead, bounded by a timeout per attempt; with_fallbacks() (see
+# _effective_llm_with_fallback / _effective_llm_with_tools_and_fallback below)
+# hands the turn to GEMINI_FAST_MODEL if GEMINI_MODEL still hasn't recovered.
+MODEL_MAX_RETRIES = int(os.getenv("GEMINI_MAX_RETRIES", "2"))
+MODEL_TIMEOUT_SECONDS = float(os.getenv("GEMINI_TIMEOUT_SECONDS", "25"))
+
 # include_thoughts=False: without this, the Gemini API may return an extra
 # type="thinking" content part alongside the final type="text" part. Nothing
 # in this codebase's content-joining code distinguished the two, so a
@@ -26,6 +51,17 @@ llm = ChatGoogleGenerativeAI(
     temperature=0,
     google_api_key=_env_api_key,
     include_thoughts=False,
+    max_retries=MODEL_MAX_RETRIES,
+    timeout=MODEL_TIMEOUT_SECONDS,
+) if _env_api_key else None
+
+fast_llm = ChatGoogleGenerativeAI(
+    model=GEMINI_FAST_MODEL,
+    temperature=0,
+    google_api_key=_env_api_key,
+    include_thoughts=False,
+    max_retries=MODEL_MAX_RETRIES,
+    timeout=MODEL_TIMEOUT_SECONDS,
 ) if _env_api_key else None
 
 # Define coordinator tools wrapper
@@ -148,6 +184,11 @@ _INTERIM_RESPONSE_MARKERS = [
     "i will check", "i will look", "one moment", "just a moment",
 ]
 
+# See _is_interim_response(): only messages that are short overall, with the
+# marker phrase right at the start, are treated as placeholders.
+_INTERIM_RESPONSE_MAX_LEN = 60
+_INTERIM_RESPONSE_MARKER_WINDOW = 15
+
 _MAX_INTERIM_RETRIES = 2
 
 _DEFAULT_INTENT = {
@@ -248,10 +289,54 @@ def reset_api_key(token) -> None:
 def _effective_llm():
     api_key = _api_key_var.get()
     if api_key:
-        return ChatGoogleGenerativeAI(model=GEMINI_MODEL, temperature=0, google_api_key=api_key, include_thoughts=False)
+        return ChatGoogleGenerativeAI(
+            model=GEMINI_MODEL,
+            temperature=0,
+            google_api_key=api_key,
+            include_thoughts=False,
+            max_retries=MODEL_MAX_RETRIES,
+            timeout=MODEL_TIMEOUT_SECONDS,
+        )
     if llm is not None:
         return llm
     raise ValueError("No Gemini API key configured. Please set your API key in the app settings.")
+
+
+def _fast_llm():
+    """LLM for internal JSON-only classification/verification steps. See
+    GEMINI_FAST_MODEL comment above for why this is a separate, faster model
+    from the one used for user-facing answer generation."""
+    api_key = _api_key_var.get()
+    if api_key:
+        return ChatGoogleGenerativeAI(
+            model=GEMINI_FAST_MODEL,
+            temperature=0,
+            google_api_key=api_key,
+            include_thoughts=False,
+            max_retries=MODEL_MAX_RETRIES,
+            timeout=MODEL_TIMEOUT_SECONDS,
+        )
+    if fast_llm is not None:
+        return fast_llm
+    raise ValueError("No Gemini API key configured. Please set your API key in the app settings.")
+
+
+def _effective_llm_with_fallback():
+    """GEMINI_MODEL for non-tool, user-facing answer generation, falling
+    back to GEMINI_FAST_MODEL if GEMINI_MODEL is still failing (e.g. a "high
+    demand" 503 streak) after MODEL_MAX_RETRIES quick retries. See the
+    MODEL_MAX_RETRIES/MODEL_TIMEOUT_SECONDS comment above."""
+    return _effective_llm().with_fallbacks([_fast_llm()], exceptions_to_handle=(GoogleAPIError,))
+
+
+def _effective_llm_with_tools_and_fallback(tools):
+    """Same intent as _effective_llm_with_fallback(), for calls that bind
+    tools. bind_tools() must happen before with_fallbacks(): the resulting
+    RunnableWithFallbacks has no bind_tools() method of its own, so each
+    candidate model needs tools bound before being wrapped."""
+    primary = _effective_llm().bind_tools(tools)
+    fallback = _fast_llm().bind_tools(tools)
+    return primary.with_fallbacks([fallback], exceptions_to_handle=(GoogleAPIError,))
 
 
 async def emit_progress(phase: str, label: str, **extra) -> None:
@@ -279,8 +364,19 @@ def _has_tool_calls(message) -> bool:
 def _is_interim_response(content) -> bool:
     if not isinstance(content, str):
         return False
-    normalized = content.lower()
-    return any(marker.lower() in normalized for marker in _INTERIM_RESPONSE_MARKERS)
+    normalized = content.strip().lower()
+    # A genuine "still working" placeholder is short and opens with the
+    # marker phrase (e.g. "讓我查一下狀態，請稍等"). A completed answer can
+    # innocently contain the same prefix in past tense — "我幫你查到了！以下是
+    # 19 個欄位..." contains "我幫你查" but is a real, structured answer, not a
+    # placeholder. Bounding both the marker's position and the overall
+    # length keeps the former case flagged (forces a real tool call) without
+    # misclassifying the latter (which previously got discarded and replaced
+    # with an empty reply — see the interim-retry branch in agent_node).
+    if not normalized or len(normalized) > _INTERIM_RESPONSE_MAX_LEN:
+        return False
+    head = normalized[:_INTERIM_RESPONSE_MARKER_WINDOW]
+    return any(marker.lower() in head for marker in _INTERIM_RESPONSE_MARKERS)
 
 
 def _extract_user_query_for_guardrail(content) -> str:
@@ -413,7 +509,7 @@ async def _answer_from_context(messages: list[BaseMessage], user_query: str) -> 
     else:
         direct_messages = messages + [direct_instruction]
 
-    response = await _effective_llm().ainvoke(direct_messages)
+    response = await _effective_llm_with_fallback().ainvoke(direct_messages)
     return AIMessage(content=_content_to_text(response.content).strip())
 
 
@@ -475,7 +571,7 @@ has_prior_tool_context: {str(bool(has_prior_tool_context)).lower()}
 """
     try:
         await emit_progress("understanding", "Checking context")
-        response = await _effective_llm().ainvoke([HumanMessage(content=router_prompt)])
+        response = await _fast_llm().ainvoke([HumanMessage(content=router_prompt)])
         parsed = _parse_json_object(_content_to_text(response.content))
         if not parsed:
             return dict(_DEFAULT_TURN_CONTEXT)
@@ -712,7 +808,7 @@ async def _classify_user_intent(user_query: str) -> dict:
 {user_query}
 """
     try:
-        response = await _effective_llm().ainvoke([HumanMessage(content=classifier_prompt)])
+        response = await _fast_llm().ainvoke([HumanMessage(content=classifier_prompt)])
         parsed = _parse_json_object(_content_to_text(response.content))
         if not parsed:
             return dict(_DEFAULT_INTENT)
@@ -805,7 +901,7 @@ async def suggest_clarifications(user_query: str, history_text: str = "", active
 {user_query}
 """
     try:
-        response = await _effective_llm().ainvoke([HumanMessage(content=clarification_prompt)])
+        response = await _fast_llm().ainvoke([HumanMessage(content=clarification_prompt)])
         parsed = _parse_json_object(_content_to_text(response.content))
         if not parsed:
             return with_turn_context(_fallback_clarification(user_query))
@@ -967,7 +1063,7 @@ async def agent_node(state: AgentState):
     else:
         await emit_progress("thinking", "Choosing the right tool")
 
-    response = await _effective_llm().bind_tools(all_tools).ainvoke(messages)
+    response = await _effective_llm_with_tools_and_fallback(all_tools).ainvoke(messages)
 
     if _has_tool_calls(response):
         await emit_progress("tool", "Preparing data lookup", status="queued")

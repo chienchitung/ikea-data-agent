@@ -11,7 +11,8 @@ from typing import Optional
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
 from agents.coordinator import (
     coordinator_executor,
-    _effective_llm,
+    _effective_llm_with_fallback,
+    _fast_llm,
     classify_turn_context,
     reset_progress_handler,
     set_progress_handler,
@@ -417,7 +418,7 @@ async def _verify_response_against_sources(
     ]
 
     try:
-        verifier_response = await _effective_llm().ainvoke(verification_prompt)
+        verifier_response = await _fast_llm().ainvoke(verification_prompt)
         parsed = _parse_json_object(_message_text(verifier_response.content))
         status = str(parsed.get("status", "pass")).lower()
         issues = parsed.get("issues", [])
@@ -593,7 +594,7 @@ async def _answer_from_document_base(message: str) -> Optional[dict]:
         return {"response": document_context, "document_context": document_context, "skip_verification": True}
 
     reply_language = _detect_reply_language(clean_message)
-    response = await _effective_llm().ainvoke([
+    response = await _effective_llm_with_fallback().ainvoke([
         SystemMessage(content=(
             "你是 IKEA Data Team 的 PDF 文件問答助理。"
             "請只根據提供的 PDF 內容回答；若內容不足以回答，請明確說文件內容不足。"
