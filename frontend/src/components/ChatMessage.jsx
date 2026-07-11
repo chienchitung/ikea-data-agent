@@ -249,8 +249,9 @@ function InteractiveChart({ code }) {
                     const x = padding.left + idx * (barWidth + gap);
                     const y = padding.top + chartHeight - barHeight;
                     const fill = isSequential ? seqColor : palette[idx % palette.length];
+                    const anchor = { ...item, x: x + barWidth / 2, y };
                     return (
-                        <g key={item.label} onMouseEnter={() => setHovered(item)} onMouseLeave={() => setHovered(null)}>
+                        <g key={item.label} onMouseEnter={() => setHovered(anchor)} onMouseLeave={() => setHovered(null)}>
                             <rect x={x} y={y} width={barWidth} height={barHeight} rx="3" fill={fill} className="chart-bar" />
                             <text x={x + barWidth / 2} y={y - 6} textAnchor="middle" className="chart-value">{item.value}</text>
                             <text x={x + barWidth / 2} y={padding.top + chartHeight + 18} textAnchor="middle" className="chart-label">
@@ -309,6 +310,12 @@ function InteractiveChart({ code }) {
             <svg viewBox={`0 0 ${width} ${height}`} className="chart-svg chart-pie-svg" role="img" aria-label={spec.title}>
                 {spec.data.map((item, idx) => {
                     const slice = total > 0 ? (item.value / total) * 360 : 0;
+                    const midAngle = angle + slice / 2;
+                    const anchor = {
+                        ...item,
+                        x: cx + radius * 0.65 * Math.cos((Math.PI / 180) * midAngle),
+                        y: cy + radius * 0.65 * Math.sin((Math.PI / 180) * midAngle),
+                    };
                     const path = describeArc(angle, angle + slice, radius);
                     angle += slice;
                     return (
@@ -317,7 +324,7 @@ function InteractiveChart({ code }) {
                             d={path}
                             fill={palette[idx % palette.length]}
                             className="chart-slice"
-                            onMouseEnter={() => setHovered(item)}
+                            onMouseEnter={() => setHovered(anchor)}
                             onMouseLeave={() => setHovered(null)}
                         />
                     );
@@ -342,15 +349,25 @@ function InteractiveChart({ code }) {
                 </div>
             </div>
             <div className="chart-body">
-                {selectedType === 'bar' && renderBarChart()}
-                {selectedType === 'line' && renderLineChart()}
-                {selectedType === 'pie' && renderPieChart()}
-                {hovered && (
-                    <div className="chart-tooltip">
-                        <strong>{hovered.label}</strong>
-                        <span>{hovered.value}</span>
+                <div className="chart-plot">
+                    <div className="chart-scroll-x">
+                        {selectedType === 'bar' && renderBarChart()}
+                        {selectedType === 'line' && renderLineChart()}
+                        {selectedType === 'pie' && renderPieChart()}
                     </div>
-                )}
+                    {hovered && (
+                        <div
+                            className="chart-tooltip"
+                            style={{
+                                left: `${Math.min(94, Math.max(6, (hovered.x / width) * 100))}%`,
+                                top: `${(hovered.y / height) * 100}%`,
+                            }}
+                        >
+                            <strong>{hovered.label}</strong>
+                            <span>{hovered.value}</span>
+                        </div>
+                    )}
+                </div>
             </div>
             {!isSequential && (
                 <div className="chart-legend">

@@ -314,9 +314,17 @@
 }
 
 .chart-body {
-    overflow-x: auto;
     padding: 12px 12px 0;
     position: relative;
+}
+
+.chart-plot {
+    position: relative;
+}
+
+.chart-scroll-x {
+    overflow-x: auto;
+    overflow-y: hidden;
 }
 
 .chart-svg {
@@ -379,12 +387,11 @@
     color: #fff;
     display: flex;
     gap: 10px;
-    left: 18px;
-    max-width: calc(100% - 36px);
     padding: 7px 9px;
     pointer-events: none;
     position: absolute;
-    top: 18px;
+    transform: translate(-50%, calc(-100% - 12px));
+    white-space: nowrap;
     z-index: 1;
 }
 
