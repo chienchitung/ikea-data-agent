@@ -361,8 +361,22 @@ def _has_tool_calls(message) -> bool:
     return hasattr(message, "tool_calls") and bool(message.tool_calls)
 
 
+def _has_source_citation(content: str) -> bool:
+    return "來源" in content or "Source:" in content
+
+
 def _is_interim_response(content) -> bool:
     if not isinstance(content, str):
+        return False
+    # Every real, tool-grounded answer is required to end with a source
+    # citation (Zero Hallucination Policy in workflow_policy.md); an interim
+    # "still working" placeholder never has one, since no tool has run yet.
+    # This catches short real answers that a length/position check alone
+    # would still misclassify — e.g. "處理中的工單有 3 筆。[來源: Request 工作表]"
+    # legitimately opens with "處理中" (a status value in this app's domain,
+    # not just a "let me process this" placeholder phrase) and is well under
+    # the length cutoff below.
+    if _has_source_citation(content):
         return False
     normalized = content.strip().lower()
     # A genuine "still working" placeholder is short and opens with the

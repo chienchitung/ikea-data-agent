@@ -489,12 +489,18 @@ function App() {
     };
 
     useLayoutEffect(() => {
+        // Meeting Records is rendered instead of (not alongside) the chat
+        // <main>, so returning to chat remounts it at a fresh scroll
+        // position. messages/isCurrentConvLoading don't change on that
+        // transition, so this effect needs showMeetingsPage in its deps too,
+        // or the remounted view is silently left scrolled to the top.
+        if (showMeetingsPage) return;
         if (messages.length === 0 && !isCurrentConvLoading) return;
 
         const behavior = pendingScrollBehaviorRef.current;
         scrollToBottom(behavior);
         pendingScrollBehaviorRef.current = "smooth";
-    }, [messages, isCurrentConvLoading]);
+    }, [messages, isCurrentConvLoading, showMeetingsPage]);
 
     useEffect(() => {
         fetchDocuments();
@@ -1603,7 +1609,13 @@ function App() {
                             )}
                             {/* Meeting Records page entry */}
                             <button
-                                onClick={() => setShowMeetingsPage((v) => !v)}
+                                onClick={() => {
+                                    // Jump straight to the bottom (no animated scroll)
+                                    // when coming back to chat, matching the "auto"
+                                    // behavior used elsewhere for a freshly mounted view.
+                                    if (showMeetingsPage) pendingScrollBehaviorRef.current = "auto";
+                                    setShowMeetingsPage((v) => !v);
+                                }}
                                 className={`p-2 rounded-full transition-colors ${showMeetingsPage ? 'bg-[#F5F5F5]' : 'hover:bg-[#F5F5F5]'}`}
                                 title="Meeting Records"
                                 aria-pressed={showMeetingsPage}
