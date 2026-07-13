@@ -361,6 +361,11 @@ function App() {
     const isListeningRef = useRef(false);
     const pendingScrollBehaviorRef = useRef("auto");
     const isCurrentConvLoading = loadingConvIds.has(currentConvId);
+    // 串流中的答案已經開始顯示（Phase 3 的 streaming 佔位訊息存在）。
+    // 泡泡的渲染條件要排除這個狀態：答案逐字浮現時，底部不該再掛著
+    // 轉圈泡泡；interim 重試清空佔位訊息時，條件自動翻回、泡泡自動回來。
+    const lastMessage = messages[messages.length - 1];
+    const isStreamingAnswerVisible = Boolean(lastMessage?.streaming && lastMessage?.role === 'assistant');
     const isClarifyingCurrentConv = clarifyingConvId === currentConvId;
     const currentStatus = convStatuses[currentConvId] || {};
     const responsePhase = currentStatus.phase || 'idle';
@@ -1040,23 +1045,10 @@ function App() {
             prev.length && prev[prev.length - 1].streaming ? prev.slice(0, -1) : prev;
 
         let streamedText = '';
-        let statusHidden = false;
         const handleDelta = (data) => {
             if (data?.reset) streamedText = '';
             if (data?.text) streamedText += data.text;
             const contentNow = streamedText;
-            if (contentNow && !statusHidden) {
-                // 答案開始逐字顯示後就收掉狀態泡泡——生成中的內容下方
-                // 還卡著一顆轉圈泡泡（含後續的驗證階段）觀感很怪；
-                // 驗證本來就是在使用者閱讀答案時於背景進行。
-                endResponseStatus(activeConvId);
-                statusHidden = true;
-            } else if (!contentNow && statusHidden) {
-                // interim 重試把已串流的文字清空了：把泡泡叫回來，
-                // 避免使用者面對一片空白。
-                beginResponseStatus(activeConvId, "composing");
-                statusHidden = false;
-            }
             updateConversationMessages(activeConvId, prev => {
                 const last = prev[prev.length - 1];
                 if (last && last.role === 'assistant' && last.streaming) {
@@ -1738,7 +1730,7 @@ function App() {
                                     onCopy={(content) => navigator.clipboard.writeText(content)}
                                 />
                             ))}
-                            {isCurrentConvLoading && (
+                            {isCurrentConvLoading && !isStreamingAnswerVisible && (
                                 <div className="flex justify-start">
                                     <div className="typing-indicator" role="status" aria-live="polite">
                                         <div className="typing-dots" aria-hidden="true">
