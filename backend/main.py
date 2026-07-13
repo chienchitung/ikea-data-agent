@@ -191,16 +191,23 @@ def message_with_clarifications(request: ChatRequest) -> str:
     if not request.clarifications:
         return request.message
 
-    selected_lines = [
-        f"- {item.question}: {item.label}（{item.value}）"
-        for item in request.clarifications
-    ]
+    # value 是內部查詢用的欄位值（Status、Market、Data Source…），模型需要它
+    # 來下正確的工具條件，但它不該回聲到使用者看得到的回覆裡——之前的格式
+    # 「By Status（Status）」會誘導模型照抄括號裡的參數名。
+    selected_lines = []
+    for item in request.clarifications:
+        line = f"- {item.question}: {item.label}"
+        if item.value and item.value != item.label:
+            line += f"｜internal query value: {item.value}"
+        selected_lines.append(line)
     return (
         f"使用者原始問題：{request.message}\n\n"
-        "使用者在釐清題選擇的條件：\n"
+        "使用者在釐清題選擇的條件（internal metadata）：\n"
         + "\n".join(selected_lines)
         + "\n\n請回答原始問題，並把上述選擇視為查詢條件或輸出格式約束。"
         "不要只回覆釐清選項，也不要在最終回答中重複描述這段 metadata。"
+        "回覆中若需提及這些條件，請用使用者語言的自然敘述（例如「依狀態分析」），"
+        "絕對不要輸出 internal query value、選項代號或參數名稱本身。"
     )
 
 

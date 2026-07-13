@@ -1098,25 +1098,29 @@ function App() {
     };
 
     const buildClarificationSelections = () => {
-        return (clarification?.questions || []).map((question) => {
-            const selectedValue = clarificationAnswers[question.id];
-            if (selectedValue === '__custom__') {
-                const customValue = (clarificationCustomAnswers[question.id] || '').trim();
-                if (!customValue) return null;
+        // 複選：一題可以有多個選取值，每個值各自變成一筆 selection，
+        // 後端會把它們並列成多個查詢條件（例如同時依狀態＋依市場分析）。
+        return (clarification?.questions || []).flatMap((question) => {
+            const selectedValues = clarificationAnswers[question.id] || [];
+            return selectedValues.map((selectedValue) => {
+                if (selectedValue === '__custom__') {
+                    const customValue = (clarificationCustomAnswers[question.id] || '').trim();
+                    if (!customValue) return null;
+                    return {
+                        question: question.question,
+                        label: 'Custom',
+                        value: customValue,
+                    };
+                }
+                const selectedOption = question.options.find(option => option.value === selectedValue);
+                if (!selectedOption) return null;
                 return {
                     question: question.question,
-                    label: 'Custom',
-                    value: customValue,
+                    label: selectedOption.label,
+                    value: selectedOption.value,
                 };
-            }
-            const selectedOption = question.options.find(option => option.value === selectedValue);
-            if (!selectedOption) return null;
-            return {
-                question: question.question,
-                label: selectedOption.label,
-                value: selectedOption.value,
-            };
-        }).filter(Boolean);
+            }).filter(Boolean);
+        });
     };
 
     const clearClarification = () => {
@@ -1207,9 +1211,10 @@ function App() {
                 // let the chat continue in the background without clarification.
                 if (currentConvIdRef.current === activeConvId) {
                     const nextClarification = clarificationResponse.data;
+                    // 複選：每題的答案是 value 陣列，預設勾選第一個選項。
                     const defaultAnswers = {};
                     nextClarification.questions.forEach((question) => {
-                        if (question.options?.[0]) defaultAnswers[question.id] = question.options[0].value;
+                        if (question.options?.[0]) defaultAnswers[question.id] = [question.options[0].value];
                     });
                     setPendingMessage(messageContent);
                     setPendingHistorySnapshot(historySnapshot);
@@ -1773,13 +1778,20 @@ function App() {
                                             )}
                                             <div className="clarification-options">
                                                 {options.map((option) => {
-                                                    const isSelected = clarificationAnswers[questionId] === option.value;
+                                                    const selectedValues = clarificationAnswers[questionId] || [];
+                                                    const isSelected = selectedValues.includes(option.value);
                                                     return (
                                                         <div key={`${questionId}-${option.value}`} className={`clarification-option-wrap ${isSelected ? 'selected' : ''}`}>
                                                             <button
                                                                 type="button"
                                                                 className={`clarification-option ${isSelected ? 'selected' : ''}`}
-                                                                onClick={() => setClarificationAnswers(prev => ({ ...prev, [questionId]: option.value }))}
+                                                                onClick={() => setClarificationAnswers(prev => {
+                                                                    const current = prev[questionId] || [];
+                                                                    const next = current.includes(option.value)
+                                                                        ? current.filter((value) => value !== option.value)
+                                                                        : [...current, option.value];
+                                                                    return { ...prev, [questionId]: next };
+                                                                })}
                                                             >
                                                                 <span className="clarification-check">{isSelected ? '✓' : ''}</span>
                                                                 <span>

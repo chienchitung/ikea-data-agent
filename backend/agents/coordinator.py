@@ -8,11 +8,14 @@ from dotenv import load_dotenv
 # google.api_core.exceptions.GoogleAPIError. with_fallbacks() matched only
 # GoogleAPIError, so a 504 DEADLINE_EXCEEDED / 503 from the new SDK bypassed
 # the fast-model fallback entirely and surfaced to the user as an error.
+# TimeoutError（Python 3.11 起同 asyncio.TimeoutError）：模型呼叫超過
+# per-attempt timeout 時 langchain 丟出的就是它。不攔的話，主模型生成過久
+# 會直接以 "Chat Error [TimeoutError]" 中斷回覆，而不是降級到快速模型。
 try:
     from google.genai.errors import ServerError as GenaiServerError
-    _FALLBACK_EXCEPTIONS = (GoogleAPIError, GenaiServerError)
+    _FALLBACK_EXCEPTIONS = (GoogleAPIError, GenaiServerError, TimeoutError)
 except ImportError:
-    _FALLBACK_EXCEPTIONS = (GoogleAPIError,)
+    _FALLBACK_EXCEPTIONS = (GoogleAPIError, TimeoutError)
 
 # backend/ 是應用程式的啟動目錄（uvicorn main:app），永遠在 sys.path 上，
 # 所以 agents/ 底下可以直接 import 根目錄的共用模組。
@@ -53,6 +56,11 @@ _env_api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
 # hands the turn to GEMINI_FAST_MODEL if GEMINI_MODEL still hasn't recovered.
 MODEL_MAX_RETRIES = int(os.getenv("GEMINI_MAX_RETRIES", "2"))
 MODEL_TIMEOUT_SECONDS = float(os.getenv("GEMINI_TIMEOUT_SECONDS", "25"))
+# 使用者可見的最終生成（半年份分析報告這類長輸出）合法地需要遠超過 25 秒。
+# 25 秒是為 router/釐清/驗證這些內部 JSON 步驟調的；把它套在主生成上，
+# 會讓「請提供上半年所有工單的分析報告」這種請求在生成到一半時被硬切成
+# TimeoutError。生成路徑改用這個寬鬆得多的上限。
+GENERATION_TIMEOUT_SECONDS = float(os.getenv("GEMINI_GENERATION_TIMEOUT_SECONDS", "120"))
 
 # include_thoughts=False: without this, the Gemini API may return an extra
 # type="thinking" content part alongside the final type="text" part. Nothing
@@ -67,7 +75,7 @@ llm = ChatGoogleGenerativeAI(
     google_api_key=_env_api_key,
     include_thoughts=False,
     max_retries=MODEL_MAX_RETRIES,
-    timeout=MODEL_TIMEOUT_SECONDS,
+    timeout=GENERATION_TIMEOUT_SECONDS,
 ) if _env_api_key else None
 
 fast_llm = ChatGoogleGenerativeAI(
@@ -77,6 +85,17 @@ fast_llm = ChatGoogleGenerativeAI(
     include_thoughts=False,
     max_retries=MODEL_MAX_RETRIES,
     timeout=MODEL_TIMEOUT_SECONDS,
+) if _env_api_key else None
+
+# 快速模型作為「主生成 fallback」時的實例：模型一樣，但 timeout 要用生成級
+# 的上限——長報告就算降級到快速模型，25 秒一樣不夠寫完。
+fast_generation_llm = ChatGoogleGenerativeAI(
+    model=GEMINI_FAST_MODEL,
+    temperature=0,
+    google_api_key=_env_api_key,
+    include_thoughts=False,
+    max_retries=MODEL_MAX_RETRIES,
+    timeout=GENERATION_TIMEOUT_SECONDS,
 ) if _env_api_key else None
 
 # Define coordinator tools wrapper
@@ -313,17 +332,21 @@ def _effective_llm():
             google_api_key=api_key,
             include_thoughts=False,
             max_retries=MODEL_MAX_RETRIES,
-            timeout=MODEL_TIMEOUT_SECONDS,
+            timeout=GENERATION_TIMEOUT_SECONDS,
         )
     if llm is not None:
         return llm
     raise ValueError("No Gemini API key configured. Please set your API key in the app settings.")
 
 
-def _fast_llm():
+def _fast_llm(for_generation: bool = False):
     """LLM for internal JSON-only classification/verification steps. See
     GEMINI_FAST_MODEL comment above for why this is a separate, faster model
-    from the one used for user-facing answer generation."""
+    from the one used for user-facing answer generation.
+
+    for_generation=True 時給生成級 timeout —— 用在主模型的 fallback，
+    長輸出降級後也要有足夠時間寫完。"""
+    timeout_seconds = GENERATION_TIMEOUT_SECONDS if for_generation else MODEL_TIMEOUT_SECONDS
     api_key = _api_key_var.get()
     if api_key:
         return ChatGoogleGenerativeAI(
@@ -332,19 +355,22 @@ def _fast_llm():
             google_api_key=api_key,
             include_thoughts=False,
             max_retries=MODEL_MAX_RETRIES,
-            timeout=MODEL_TIMEOUT_SECONDS,
+            timeout=timeout_seconds,
         )
-    if fast_llm is not None:
-        return fast_llm
+    env_instance = fast_generation_llm if for_generation else fast_llm
+    if env_instance is not None:
+        return env_instance
     raise ValueError("No Gemini API key configured. Please set your API key in the app settings.")
 
 
 def _effective_llm_with_fallback():
     """GEMINI_MODEL for non-tool, user-facing answer generation, falling
     back to GEMINI_FAST_MODEL if GEMINI_MODEL is still failing (e.g. a "high
-    demand" 503 streak) after MODEL_MAX_RETRIES quick retries. See the
-    MODEL_MAX_RETRIES/MODEL_TIMEOUT_SECONDS comment above."""
-    return _effective_llm().with_fallbacks([_fast_llm()], exceptions_to_handle=_FALLBACK_EXCEPTIONS)
+    demand" 503 streak or a generation timeout) after MODEL_MAX_RETRIES quick
+    retries. See the MODEL_MAX_RETRIES/GENERATION_TIMEOUT_SECONDS comments."""
+    return _effective_llm().with_fallbacks(
+        [_fast_llm(for_generation=True)], exceptions_to_handle=_FALLBACK_EXCEPTIONS
+    )
 
 
 def _effective_llm_with_tools_and_fallback(tools):
@@ -353,7 +379,7 @@ def _effective_llm_with_tools_and_fallback(tools):
     RunnableWithFallbacks has no bind_tools() method of its own, so each
     candidate model needs tools bound before being wrapped."""
     primary = _effective_llm().bind_tools(tools)
-    fallback = _fast_llm().bind_tools(tools)
+    fallback = _fast_llm(for_generation=True).bind_tools(tools)
     return primary.with_fallbacks([fallback], exceptions_to_handle=_FALLBACK_EXCEPTIONS)
 
 
