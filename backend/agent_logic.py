@@ -8,7 +8,7 @@ import time
 from datetime import datetime
 from typing import Optional
 
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage, AIMessageChunk
 from agents.coordinator import (
     coordinator_executor,
     _effective_llm_with_fallback,
@@ -163,6 +163,19 @@ async def _emit_progress(progress_callback, phase: str, label: str, **extra) -> 
         "label": label,
         **extra,
     }
+    result = progress_callback(payload)
+    if inspect.isawaitable(result):
+        await result
+
+
+async def _emit_delta(progress_callback, text: str, reset: bool = False) -> None:
+    """把最終回答的 token 增量往 SSE 推。reset=True 表示前面串流的文字
+    屬於被放棄的訊息（例如 interim 重試），前端應清空重來。"""
+    if not progress_callback:
+        return
+    payload = {"phase": "delta", "text": text}
+    if reset:
+        payload["reset"] = True
     result = progress_callback(payload)
     if inspect.isawaitable(result):
         await result
@@ -763,12 +776,50 @@ async def process_chat_detailed(
             + [HumanMessage(content=current_message)]
         )
 
-        # Use ainvoke to support async parallel tool execution
+        # astream 同時取兩種串流：
+        # - "values"：每個 super-step 後的完整 state，最後一份就是原本
+        #   ainvoke 會回傳的 response_state，後續邏輯不變。
+        # - "messages"：agent 節點內每次 LLM 呼叫的 token 增量，逐字轉發給
+        #   前端（SSE delta 事件），使用者不用等驗證/存檔全部跑完才看到答案。
+        #   final 事件仍帶驗證與後處理完的全文，前端以 final 為準覆蓋。
         token = set_progress_handler(progress_callback)
+        response_state = None
+        streamed_message_id = None
         try:
-            response_state = await coordinator_executor.ainvoke({
-                "messages": messages
-            })
+            async for mode, chunk in coordinator_executor.astream(
+                {"messages": messages},
+                stream_mode=["messages", "values"],
+            ):
+                if mode == "values":
+                    response_state = chunk
+                    continue
+
+                message_chunk, chunk_metadata = chunk
+                # 只轉發 agent 節點的 AI 文字增量：tool 節點（"action"）的
+                # ToolMessage 與帶 tool_call 的 chunk 都不是給使用者看的。
+                if chunk_metadata.get("langgraph_node") != "agent":
+                    continue
+                if not isinstance(message_chunk, AIMessageChunk):
+                    continue
+                if getattr(message_chunk, "tool_call_chunks", None):
+                    continue
+                delta_text = _message_text(message_chunk.content)
+                if not delta_text:
+                    continue
+
+                chunk_id = getattr(message_chunk, "id", None)
+                if streamed_message_id is not None and chunk_id != streamed_message_id:
+                    # 新的 AI 訊息開始：前一則是被放棄的 interim（例如模型說
+                    # 「我來查詢」但沒呼叫工具而觸發 retry），要求前端清空。
+                    await _emit_delta(progress_callback, "", reset=True)
+                streamed_message_id = chunk_id
+                await _emit_delta(progress_callback, delta_text)
+
+            if response_state is None:
+                # astream 沒吐出 values（理論上不會發生）時退回原本的路徑。
+                response_state = await coordinator_executor.ainvoke({
+                    "messages": messages
+                })
         finally:
             reset_progress_handler(token)
         

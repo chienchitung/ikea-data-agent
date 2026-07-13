@@ -247,7 +247,7 @@ function buildRequestErrorMessage(error, context = 'chat', userMessage = '') {
     );
 }
 
-async function streamChat(payload, signal, onProgress, geminiApiKey) {
+async function streamChat(payload, signal, onProgress, geminiApiKey, onDelta) {
     const body = geminiApiKey ? { ...payload, gemini_api_key: geminiApiKey } : payload;
     const response = await fetch(`${API_URL}/chat/stream`, {
         method: 'POST',
@@ -269,6 +269,9 @@ async function streamChat(payload, signal, onProgress, geminiApiKey) {
     await readSseStream(response, (event, data) => {
         if (event === 'progress') {
             onProgress(data || {});
+        } else if (event === 'delta') {
+            // 最終回答的逐字增量；final 事件到達時會以完整全文覆蓋。
+            onDelta?.(data || {});
         } else if (event === 'final') {
             finalPayload = data || {};
         } else if (event === 'error') {
@@ -1031,6 +1034,27 @@ function App() {
         const controller = new AbortController();
         abortControllersRef.current.set(activeConvId, controller);
 
+        // 逐字串流：delta 事件先把生成中的文字即時顯示成一則 streaming 佔位
+        // 訊息，final 事件到達時以驗證/後處理完的全文取代它。
+        const dropStreamingPlaceholder = (prev) =>
+            prev.length && prev[prev.length - 1].streaming ? prev.slice(0, -1) : prev;
+
+        let streamedText = '';
+        const handleDelta = (data) => {
+            if (data?.reset) streamedText = '';
+            if (data?.text) streamedText += data.text;
+            const contentNow = streamedText;
+            updateConversationMessages(activeConvId, prev => {
+                const last = prev[prev.length - 1];
+                if (last && last.role === 'assistant' && last.streaming) {
+                    if (!contentNow) return prev.slice(0, -1);
+                    return [...prev.slice(0, -1), { ...last, content: contentNow }];
+                }
+                if (!contentNow) return prev;
+                return [...prev, { role: 'assistant', content: contentNow, streaming: true }];
+            });
+        };
+
         try {
             const response = await streamChat({
                 message: messageContent,
@@ -1039,17 +1063,30 @@ function App() {
                 clarifications,
                 turn_context: turnContext,
                 active_documents: [...selectedDocuments],
-            }, controller.signal, makeProgressHandler(activeConvId), geminiApiKey || undefined);
-            updateConversationMessages(activeConvId, prev => [...prev, {
+            }, controller.signal, makeProgressHandler(activeConvId), geminiApiKey || undefined, handleDelta);
+            updateConversationMessages(activeConvId, prev => [...dropStreamingPlaceholder(prev), {
                 role: 'assistant',
                 content: response.response,
                 metadata: response.metadata || {},
                 errorCode: response.error_code || null,
             }]);
         } catch (error) {
-            if (axios.isCancel(error) || error.code === 'ERR_CANCELED' || error.name === 'AbortError') return;
+            if (axios.isCancel(error) || error.code === 'ERR_CANCELED' || error.name === 'AbortError') {
+                // 使用者手動停止：保留已串流的部分文字，但拿掉 streaming 標記，
+                // 之後的輪次才不會把它誤認成進行中的佔位訊息。
+                updateConversationMessages(activeConvId, prev => {
+                    const last = prev[prev.length - 1];
+                    if (last && last.streaming) {
+                        const kept = prev.slice(0, -1);
+                        if (last.content) kept.push({ role: 'assistant', content: last.content });
+                        return kept;
+                    }
+                    return prev;
+                });
+                return;
+            }
             console.error("Error:", error);
-            updateConversationMessages(activeConvId, prev => [...prev, {
+            updateConversationMessages(activeConvId, prev => [...dropStreamingPlaceholder(prev), {
                 role: 'assistant',
                 content: buildRequestErrorMessage(error, statusPhase === "regenerating" ? 'regenerate' : 'chat', messageContent)
             }]);
