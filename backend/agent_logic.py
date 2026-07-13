@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Optional
 
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage, AIMessageChunk
+from reply_language import detect_reply_language_text, normalize_reply_language
 from agents.coordinator import (
     coordinator_executor,
     _effective_llm_with_fallback,
@@ -122,19 +123,16 @@ def _clean_user_query(message: str) -> str:
 
 
 def _detect_reply_language(user_query: str) -> str:
-    text = _clean_user_query(str(user_query or "")).strip()
-    if not text:
-        return "Traditional Chinese"
+    return detect_reply_language_text(_clean_user_query(str(user_query or "")).strip())
 
-    cjk_count = len(re.findall(r"[\u3400-\u9fff]", text))
-    english_words = re.findall(r"[A-Za-z]{2,}", text)
-    english_chars = sum(len(word) for word in english_words)
 
-    if cjk_count == 0 and english_chars > 0:
-        return "English"
-    if english_chars == 0 and cjk_count > 0:
-        return "Traditional Chinese"
-    return "English" if english_chars > cjk_count * 1.5 else "Traditional Chinese"
+def _effective_reply_language(turn_context, user_query: str) -> str:
+    """LLM \u5728 turn_context \u5224\u5b9a\u7684 reply_language \u512a\u5148\uff0c\u7f3a\u503c\u6216\u975e\u6cd5\u6642
+    \u9000\u56de\u555f\u767c\u5f0f\u3002\u8ddf coordinator._language_instruction_for \u7684\u512a\u5148\u5e8f\u4e00\u81f4\uff0c
+    \u78ba\u4fdd\u751f\u6210\u7aef\u8207\u5f8c\u8655\u7406\u7aef\uff08\u4f86\u6e90\u9023\u7d50\u7b49\uff09\u7528\u540c\u4e00\u7a2e\u8a9e\u8a00\u3002"""
+    return normalize_reply_language(
+        (turn_context or {}).get("reply_language")
+    ) or _detect_reply_language(user_query)
 
 
 def _is_visible_chat_message(message) -> bool:
@@ -864,7 +862,7 @@ async def process_chat_detailed(
         agent_response = _ensure_confluence_source_links(
             agent_response,
             confluence_links,
-            _detect_reply_language(clean_message),
+            _effective_reply_language(turn_context, clean_message),
         )
         verification_context = _verification_source_context(
             response_state["messages"],
@@ -894,7 +892,7 @@ async def process_chat_detailed(
         agent_response = _ensure_confluence_source_links(
             agent_response,
             confluence_links,
-            _detect_reply_language(clean_message),
+            _effective_reply_language(turn_context, clean_message),
         )
         await _emit_progress(progress_callback, "composing", "Finalizing the response")
 

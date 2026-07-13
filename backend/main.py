@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.messages import HumanMessage, AIMessage
 from agent_logic import process_chat_detailed
+from reply_language import detect_reply_language_text
 from agents.coordinator import suggest_clarifications, set_api_key, reset_api_key
 from agents.document import set_active_documents, reset_active_documents
 import uvicorn
@@ -62,14 +63,9 @@ class ClarificationResponse(BaseModel):
     turn_context: Dict[str, Any] = Field(default_factory=dict)
 
 def detect_reply_language(text: str) -> str:
-    value = str(text or "")
-    cjk_count = len(re.findall(r"[\u3400-\u9fff]", value))
-    english_chars = sum(len(word) for word in re.findall(r"[A-Za-z]{2,}", value))
-    if cjk_count == 0 and english_chars > 0:
-        return "en"
-    if english_chars == 0 and cjk_count > 0:
-        return "zh"
-    return "en" if english_chars > cjk_count * 1.5 else "zh"
+    """\u932f\u8aa4\u8a0a\u606f\u7528\u7684\u8a9e\u8a00\u5224\u65b7\uff08zh/en\uff09\uff0c\u8d70\u5171\u7528\u7684\u4e2d\u6587\u504f\u7f6e\u6838\u5fc3\uff0c
+    \u907f\u514d\u300c\u4e2d\u6587\u63d0\u554f\u593e\u82f1\u6587\u540d\u8a5e\u300d\u6642\u932f\u8aa4\u8a0a\u606f\u4e5f\u8b8a\u82f1\u6587\u3002"""
+    return "zh" if detect_reply_language_text(str(text or "")) == "Traditional Chinese" else "en"
 
 
 def product_error(code: str, title: str, message: str, next_steps: Optional[List[str]] = None, details=None):

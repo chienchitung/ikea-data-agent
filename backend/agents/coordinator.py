@@ -13,6 +13,10 @@ try:
     _FALLBACK_EXCEPTIONS = (GoogleAPIError, GenaiServerError)
 except ImportError:
     _FALLBACK_EXCEPTIONS = (GoogleAPIError,)
+
+# backend/ 是應用程式的啟動目錄（uvicorn main:app），永遠在 sys.path 上，
+# 所以 agents/ 底下可以直接 import 根目錄的共用模組。
+from reply_language import detect_reply_language_text, normalize_reply_language
 import os
 from datetime import datetime
 
@@ -265,6 +269,9 @@ _DEFAULT_TURN_CONTEXT = {
     "domain_hint": "none",
     "confidence": 0.0,
     "reason": "",
+    # LLM 判定的回覆語言（"Traditional Chinese" / "English"）。
+    # 空字串表示未判定，下游退回 detect_reply_language_text 啟發式。
+    "reply_language": "",
 }
 
 _TOOL_PROGRESS_LABELS = {
@@ -445,28 +452,24 @@ def _content_to_text(content: Any) -> str:
 
 
 def _detect_reply_language(user_query: str) -> str:
-    text = _extract_user_query_for_guardrail(str(user_query or "")).strip()
-    if not text:
-        return "Traditional Chinese"
-
-    cjk_count = len(re.findall(r"[\u3400-\u9fff]", text))
-    english_words = re.findall(r"[A-Za-z]{2,}", text)
-    english_chars = sum(len(word) for word in english_words)
-
-    if cjk_count == 0 and english_chars > 0:
-        return "English"
-    if english_chars == 0 and cjk_count > 0:
-        return "Traditional Chinese"
-
-    # For mixed messages, bias toward the language carrying the question text.
-    return "English" if english_chars > cjk_count * 1.5 else "Traditional Chinese"
+    return detect_reply_language_text(
+        _extract_user_query_for_guardrail(str(user_query or "")).strip()
+    )
 
 
-def _language_instruction_for(user_query: str) -> SystemMessage:
-    language = _detect_reply_language(user_query)
+def _language_instruction_for(user_query: str, turn_context: dict = None) -> SystemMessage:
+    # LLM \u5728 turn_context \u5224\u5b9a\u7684 reply_language \u512a\u5148\uff08\u5b83\u770b\u5f97\u61c2\u300c\u4e2d\u6587\u63d0\u554f
+    # \u593e\u82f1\u6587\u5206\u985e\u540d\u300d\u9019\u7a2e\u6df7\u5408\u8a0a\u606f\u7684\u8a9e\u610f\uff09\uff1b\u7f3a\u503c\u6216\u975e\u6cd5\u6642\u9000\u56de\u555f\u767c\u5f0f\u3002
+    language = normalize_reply_language((turn_context or {}).get("reply_language"))
+    if not language:
+        language = _detect_reply_language(user_query)
     return SystemMessage(content=(
         "## Response Language\n\n"
         f"Answer the user in {language}. Match the latest user's language for the final assistant response. "
+        "All narrative, explanations, headings, and analysis you write must be in that language. "
+        "Data values retrieved by tools (ticket subjects, field names, status values, page titles) may stay "
+        "in their original language \u2014 do not translate them. "
+        "English category names or field names quoted inside the user's message do NOT change this rule. "
         "Do not use this rule for frontend UI labels; UI labels must remain English."
     ))
 
@@ -517,9 +520,12 @@ def _has_answerable_context_before_latest_human(messages: list[BaseMessage]) -> 
 
 
 async def _answer_from_context(messages: list[BaseMessage], user_query: str) -> AIMessage:
+    reply_language = normalize_reply_language(
+        _extract_turn_context(messages).get("reply_language")
+    ) or _detect_reply_language(user_query)
     direct_instruction = SystemMessage(content=(
         "## Contextual Follow-up Handling\n\n"
-        f"Answer in {_detect_reply_language(user_query)} based on the latest user message. "
+        f"Answer in {reply_language} based on the latest user message. "
         "最新使用者問題是在延續、追問、擴寫、改寫或重新組織前文，不是獨立的新問題。"
         "請直接根據近期對話、Conversation Memory、Turn Context Decision 與 Prior Tool Context 回答。"
         "不要呼叫工具，也不要把最新問題當成搜尋關鍵字。"
@@ -570,6 +576,8 @@ relation 請選一個：
 - 如果前文已有足夠答案或工具結果，且最新訊息只是延續/整理/擴寫，should_answer_from_context=true。
 - 如果需要使用先前工具結果才能自然延續，且 has_prior_tool_context=true，should_include_prior_tool_context=true。
 - 如果是延續前文，should_skip_clarification=true，避免問已能從上下文推斷的引導題。
+- reply_language：判斷最新訊息「提問本身」的語言，以句子結構為準——夾雜的英文名詞、
+  分類名、欄位名不代表使用者在說英文；整句都是英文才回 en。
 
 可用 domain_hint：
 analyst, trello, confluence, document, none, unknown
@@ -583,7 +591,8 @@ analyst, trello, confluence, document, none, unknown
   "should_skip_clarification": true/false,
   "domain_hint": "analyst" | "trello" | "confluence" | "document" | "none" | "unknown",
   "confidence": 0.0,
-  "reason": "一句很短的判斷理由"
+  "reason": "一句很短的判斷理由",
+  "reply_language": "zh-TW" | "en"
 }}
 
 has_prior_tool_context: {str(bool(has_prior_tool_context)).lower()}
@@ -631,6 +640,7 @@ def _sanitize_turn_context(parsed: dict) -> dict:
         "domain_hint": domain_hint,
         "confidence": max(0.0, min(1.0, confidence)),
         "reason": str(parsed.get("reason", ""))[:240],
+        "reply_language": normalize_reply_language(parsed.get("reply_language")),
     }
 
 
@@ -692,7 +702,9 @@ def _prepare_messages_for_model(messages: list[BaseMessage]) -> list[BaseMessage
 
     language_systems = []
     if latest_user_query:
-        language_systems.append(_language_instruction_for(latest_user_query))
+        language_systems.append(
+            _language_instruction_for(latest_user_query, _extract_turn_context(messages))
+        )
 
     return [primary_system] + context_systems + language_systems + dialogue_messages
 
@@ -921,6 +933,10 @@ relation 請選一個：
 - 如果需要使用先前工具結果才能自然延續，且 has_prior_tool_context=true，should_include_prior_tool_context=true。
 - 如果是延續前文，should_skip_clarification=true，避免問已能從上下文推斷的引導題。
 - 如果「近期對話」是空的，relation 固定為 standalone，所有 should_* 為 false。
+- reply_language：判斷最新訊息「提問本身」使用的語言。以句子結構與敘述語言為準——
+  訊息裡夾雜的英文名詞、分類名、欄位名、系統名稱不代表使用者在說英文。
+  例如「請將工單分類：1. Dashboard Development 2. Other support」是中文提問（zh-TW）。
+  整句都是英文才回 en。無論近期對話是否為空，都要判斷 reply_language。
 
 可用 domain_hint：analyst, trello, confluence, document, none, unknown
 
@@ -958,7 +974,8 @@ relation 請選一個：
     "should_skip_clarification": true/false,
     "domain_hint": "analyst" | "trello" | "confluence" | "document" | "none" | "unknown",
     "confidence": 0.0,
-    "reason": "一句很短的判斷理由"
+    "reason": "一句很短的判斷理由",
+    "reply_language": "zh-TW" | "en"
   }},
   "needs_clarification": true/false,
   "reason": "A short reason in English",
@@ -1001,10 +1018,15 @@ has_prior_tool_context: {str(has_history).lower()}
             return with_turn_context(_fallback_clarification(user_query), dict(_DEFAULT_TURN_CONTEXT))
 
         # 空對話沒有脈絡可判斷，維持與 classify_turn_context 相同的確定性行為。
+        # 但 reply_language 是對「最新訊息本身」的語言判定，第一則訊息也需要
+        # （截圖回報的誤判正是發生在對話的第一則），所以單獨保留這個欄位。
         if has_history:
             turn_context = _sanitize_turn_context(parsed.get("turn_context") or {})
         else:
             turn_context = dict(_DEFAULT_TURN_CONTEXT)
+            turn_context["reply_language"] = normalize_reply_language(
+                (parsed.get("turn_context") or {}).get("reply_language")
+            )
 
         if turn_context.get("should_skip_clarification") or not parsed.get("needs_clarification"):
             return with_turn_context(_DEFAULT_CLARIFICATION, turn_context)
