@@ -34,6 +34,13 @@ from conversation_store import (
 _BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 _kb_init_lock = asyncio.Lock()
 
+# 驗證階段（全年稽核＋LLM 查核）的總時長上限。逐字串流上線後，驗證是在
+# 使用者「已經看到完整答案」之後才跑的——它拖多久，「Verifying the response」
+# 的泡泡就轉多久。答案都看完了還要盯著轉圈 40~50 秒，體感上就是卡住。
+# 超過預算就放行已串流的答案（驗證標記 timed_out），不讓查核無限期
+# 擋住 final 事件。
+VERIFICATION_TIME_BUDGET_SECONDS = float(os.getenv("VERIFICATION_TIME_BUDGET_SECONDS", "30"))
+
 
 def _load_stored_conversation_state(conversation_id: Optional[str]):
     return (
@@ -313,15 +320,20 @@ def _verification_source_context(messages: list, stored_tool_context: str, turn_
 
 
 def _query_targets_specific_months(query: str) -> bool:
-    """True when the user already scoped the ticket query to specific months or
-    quarters (e.g. 「今年4,5,6月」, "Q2", 「第二季」). A January-to-December span
-    still counts as a full-year ask, not a month-scoped one."""
+    """True when the user already scoped the ticket query to a sub-year range:
+    specific months (「今年4,5,6月」), quarters ("Q2", 「第二季」), or half-years
+    (「上半年」, "H1"). A January-to-December span still counts as a full-year
+    ask, not a scoped one."""
     compact = re.sub(r"\s+", "", query)
     if re.search(r"1\s*月\s*(?:到|至|-|~|～)\s*12\s*月", compact):
         return False
     # Strip year tokens like 2026年 so their digits don't read as months.
     without_years = re.sub(r"20\d{2}\s*年?", "", compact)
     if re.search(r"(?<![\d.])(?:1[0-2]|0?[1-9])\s*月", without_years):
+        return True
+    if re.search(r"[上下前後]半年", compact):
+        return True
+    if re.search(r"(?<![A-Za-z0-9])[Hh][12](?![0-9])", compact):
         return True
     return bool(re.search(r"[qQ][1-4]|第\s*[一二三四1-4]\s*季", compact))
 
@@ -462,6 +474,26 @@ def _needs_llm_verification(response: str, source_context: str) -> bool:
     if re.search(r"^\s*\|.+\|\s*$", text, re.MULTILINE):
         return True
     return bool(re.search(r"\d", text))
+
+
+async def _run_llm_verification(
+    clean_message: str,
+    agent_response: str,
+    verification_context: str,
+) -> tuple[str, dict]:
+    """全年稽核＋LLM 查核的組合步驟，抽成單一 coroutine 以便外層用
+    asyncio.wait_for 套總時長預算（見 VERIFICATION_TIME_BUDGET_SECONDS）。"""
+    verification_context, full_year_audit_metadata = await _augment_year_ticket_verification_context(
+        clean_message,
+        verification_context,
+    )
+    response, metadata = await _verify_response_against_sources(
+        clean_message,
+        agent_response,
+        verification_context,
+    )
+    metadata["full_year_audit"] = full_year_audit_metadata
+    return response, metadata
 
 
 async def _verify_response_against_sources(
@@ -871,16 +903,21 @@ async def process_chat_detailed(
         )
         if _needs_llm_verification(agent_response, verification_context):
             await _emit_progress(progress_callback, "composing", "Verifying the response")
-            verification_context, full_year_audit_metadata = await _augment_year_ticket_verification_context(
-                clean_message,
-                verification_context,
-            )
-            agent_response, verification_metadata = await _verify_response_against_sources(
-                clean_message,
-                agent_response,
-                verification_context,
-            )
-            verification_metadata["full_year_audit"] = full_year_audit_metadata
+            try:
+                agent_response, verification_metadata = await asyncio.wait_for(
+                    _run_llm_verification(clean_message, agent_response, verification_context),
+                    timeout=VERIFICATION_TIME_BUDGET_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                # 答案已經串流給使用者了，查核超時就放行原答案，
+                # 不讓 final 事件被無限期擋住。
+                print(f"⚠️ Verification exceeded {VERIFICATION_TIME_BUDGET_SECONDS}s budget; shipping streamed answer as-is")
+                verification_metadata = {
+                    "checked": False,
+                    "status": "timed_out",
+                    "budget_seconds": VERIFICATION_TIME_BUDGET_SECONDS,
+                    "full_year_audit": {"ran": False, "reason": "verification_timed_out"},
+                }
         else:
             verification_metadata = {
                 "checked": False,

@@ -39,6 +39,12 @@ def test_year_audit_trigger():
         ("列出全年工單", this_year),
         ("今年10月的ticket", None),
         ("天氣如何", None),
+        # 半年/H1H2 也是子年度範圍，不該觸發全年稽核。
+        ("請提供一份2026年上半年所有需求工單的分析報告", None),
+        ("2025年下半年的工單統計", None),
+        ("今年 H1 的需求工單", None),
+        # HFB05 這種產品代號裡的 H 不能被誤認成 H1/H2。
+        ("今年 NHS HFB05 相關的需求工單", this_year),
     ]
     for query, expected in cases:
         got = agent_logic._requested_year_for_ticket_query(query)
