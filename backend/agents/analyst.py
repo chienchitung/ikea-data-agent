@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import time
 import gspread
 import pandas as pd
 from typing import Optional
@@ -17,6 +18,15 @@ _cached_data = {}
 
 # Hardcoded sheet key from notebook
 SPREADSHEET_KEY = os.getenv("GOOGLE_SHEET_KEY", "1bnqghULmnxgZdu4ALDZ2FGUzBxwamD27qYZVGMq1uEo")
+
+# 明細表輸出上限（列數）。詳見 query_worksheet_data 的 Data Details 分支。
+_DETAIL_ROW_LIMIT = 150
+
+# 整表抓取的短 TTL 快取：一輪對話裡同一張工作表常被抓 2~3 次（多次工具呼叫、
+# 全年稽核），每次都是完整的 Sheets API 往返。60 秒內共用同一份結果即可，
+# 資料新鮮度幾乎不受影響（工單表不會秒級變動），延遲卻能省下整段往返。
+SHEETS_CACHE_TTL_SECONDS = float(os.getenv("SHEETS_CACHE_TTL_SECONDS", "60"))
+_worksheet_fetch_cache: dict[str, tuple[float, list]] = {}
 
 # ── 欄位別名對映表 ────────────────────────────────────────────────────────────
 # 對應實際欄位：ID, Ticket No., Creation Date, Name, Email, Department,
@@ -165,12 +175,25 @@ def get_all_records_safe(worksheet) -> list:
     return records
 
 
-def _load_worksheet_dataframe(worksheet_name: str) -> tuple[pd.DataFrame, int]:
+def _fetch_worksheet_records(worksheet_name: str) -> list:
+    """整表抓取，帶短 TTL 快取（見 SHEETS_CACHE_TTL_SECONDS 的說明）。
+    快取過期或未命中時才真的打 Sheets API。WorksheetNotFound 照常拋出。"""
+    now = time.monotonic()
+    cached = _worksheet_fetch_cache.get(worksheet_name)
+    if cached is not None and now - cached[0] < SHEETS_CACHE_TTL_SECONDS:
+        return cached[1]
+
     gc = get_gspread_client()
     spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
     worksheet = spreadsheet.worksheet(worksheet_name)
     all_records = get_all_records_safe(worksheet)
+    _worksheet_fetch_cache[worksheet_name] = (now, all_records)
     _cached_data[worksheet_name] = all_records
+    return all_records
+
+
+def _load_worksheet_dataframe(worksheet_name: str) -> tuple[pd.DataFrame, int]:
+    all_records = _fetch_worksheet_records(worksheet_name)
     if not all_records:
         return pd.DataFrame(), 0
     df = _drop_empty_columns(pd.DataFrame(all_records))
@@ -217,13 +240,8 @@ def get_worksheet_structure(worksheet_name: str) -> str:
     - worksheet_name: 工作表的名稱
     """
     try:
-        gc = get_gspread_client()
-        spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
-        worksheet = spreadsheet.worksheet(worksheet_name)
-        
-        all_records = get_all_records_safe(worksheet)
-        _cached_data[worksheet_name] = all_records  # 緩存數據
-        
+        all_records = _fetch_worksheet_records(worksheet_name)
+
         if not all_records:
             return f"Worksheet '{worksheet_name}' is empty."
         
@@ -837,13 +855,9 @@ def query_worksheet_data(
       )
     """
     try:
-        # Always fetch the worksheet for analysis queries so answers reflect the
-        # current Google Sheet instead of a stale in-memory cache.
-        gc = get_gspread_client()
-        spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
-        worksheet = spreadsheet.worksheet(worksheet_name)
-        all_records = get_all_records_safe(worksheet)
-        _cached_data[worksheet_name] = all_records
+        # 走短 TTL 快取抓整表：同一輪對話的多次呼叫共用一次 Sheets API 往返，
+        # TTL 過期後自然重抓，答案仍然反映近期的 Google Sheet 內容。
+        all_records = _fetch_worksheet_records(worksheet_name)
 
         if not all_records:
             return f"Worksheet '{worksheet_name}' has no data." + _format_source_footer(worksheet_name, 0)
@@ -1074,9 +1088,17 @@ def query_worksheet_data(
             result += f"{len(df)} rows were summarized and a chart was generated from the filters. Ask for details if you need row-level data.\n"
             return result + _format_source_footer(worksheet_name, total_rows)
 
-        # 資料表格
+        # 資料表格。上限 150 筆：不設限時，大範圍查詢（例如一季的全部工單）
+        # 會把整包明細塞進 LLM prompt，生成時間暴增，甚至觸發 Gemini 端的
+        # 504 DEADLINE_EXCEEDED。
+        detail_df = df.head(_DETAIL_ROW_LIMIT)
         result += f"### Data Details ({len(df)} rows)\n\n"
-        result += _to_markdown_table(df)
+        result += _to_markdown_table(detail_df)
+        if len(df) > _DETAIL_ROW_LIMIT:
+            result += (
+                f"\n\n(showing first {_DETAIL_ROW_LIMIT} of {len(df)} rows — "
+                "narrow the date range or filters to see the rest)"
+            )
 
         return result + _format_source_footer(worksheet_name, total_rows)
 

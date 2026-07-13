@@ -301,12 +301,32 @@ def _verification_source_context(messages: list, stored_tool_context: str, turn_
     return ""
 
 
+def _query_targets_specific_months(query: str) -> bool:
+    """True when the user already scoped the ticket query to specific months or
+    quarters (e.g. 「今年4,5,6月」, "Q2", 「第二季」). A January-to-December span
+    still counts as a full-year ask, not a month-scoped one."""
+    compact = re.sub(r"\s+", "", query)
+    if re.search(r"1\s*月\s*(?:到|至|-|~|～)\s*12\s*月", compact):
+        return False
+    # Strip year tokens like 2026年 so their digits don't read as months.
+    without_years = re.sub(r"20\d{2}\s*年?", "", compact)
+    if re.search(r"(?<![\d.])(?:1[0-2]|0?[1-9])\s*月", without_years):
+        return True
+    return bool(re.search(r"[qQ][1-4]|第\s*[一二三四1-4]\s*季", compact))
+
+
 def _requested_year_for_ticket_query(user_query: str) -> Optional[int]:
     query = str(user_query or "")
     lowered = query.lower()
     compact = re.sub(r"\s+", "", lowered)
     ticket_terms = ["工單", "ticket", "tickets", "request", "requests", "需求"]
     if not any(term in lowered or term in compact for term in ticket_terms):
+        return None
+
+    # A query already scoped to specific months/quarters is not a year-level
+    # ask; auditing the whole year would fetch data the user never requested
+    # (e.g. 「今年4,5,6月」 previously triggered a full Jan-Dec audit query).
+    if _query_targets_specific_months(query):
         return None
 
     explicit_year = re.search(r"\b(20\d{2})\b|(?:^|[^\d])(20\d{2})\s*年", query)

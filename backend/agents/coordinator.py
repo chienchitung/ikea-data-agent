@@ -2,6 +2,17 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.prebuilt import create_react_agent
 from google.api_core.exceptions import GoogleAPIError
 from dotenv import load_dotenv
+
+# langchain-google-genai >= 4.x calls Gemini through the google-genai SDK,
+# whose 5xx failures raise google.genai.errors.ServerError — NOT a subclass of
+# google.api_core.exceptions.GoogleAPIError. with_fallbacks() matched only
+# GoogleAPIError, so a 504 DEADLINE_EXCEEDED / 503 from the new SDK bypassed
+# the fast-model fallback entirely and surfaced to the user as an error.
+try:
+    from google.genai.errors import ServerError as GenaiServerError
+    _FALLBACK_EXCEPTIONS = (GoogleAPIError, GenaiServerError)
+except ImportError:
+    _FALLBACK_EXCEPTIONS = (GoogleAPIError,)
 import os
 from datetime import datetime
 
@@ -326,7 +337,7 @@ def _effective_llm_with_fallback():
     back to GEMINI_FAST_MODEL if GEMINI_MODEL is still failing (e.g. a "high
     demand" 503 streak) after MODEL_MAX_RETRIES quick retries. See the
     MODEL_MAX_RETRIES/MODEL_TIMEOUT_SECONDS comment above."""
-    return _effective_llm().with_fallbacks([_fast_llm()], exceptions_to_handle=(GoogleAPIError,))
+    return _effective_llm().with_fallbacks([_fast_llm()], exceptions_to_handle=_FALLBACK_EXCEPTIONS)
 
 
 def _effective_llm_with_tools_and_fallback(tools):
@@ -336,7 +347,7 @@ def _effective_llm_with_tools_and_fallback(tools):
     candidate model needs tools bound before being wrapped."""
     primary = _effective_llm().bind_tools(tools)
     fallback = _fast_llm().bind_tools(tools)
-    return primary.with_fallbacks([fallback], exceptions_to_handle=(GoogleAPIError,))
+    return primary.with_fallbacks([fallback], exceptions_to_handle=_FALLBACK_EXCEPTIONS)
 
 
 async def emit_progress(phase: str, label: str, **extra) -> None:
