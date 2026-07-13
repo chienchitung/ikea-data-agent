@@ -297,6 +297,7 @@ _TOOL_PROGRESS_LABELS = {
     "list_worksheets": "Reading worksheet list",
     "get_worksheet_structure": "Checking worksheet fields",
     "query_worksheet_data": "Querying worksheet data",
+    "query_request_tickets_structured": "Analyzing request tickets",
     "search_confluence_pages": "Searching Data Team Toolbox",
     "get_confluence_page_content": "Reading Data Team Toolbox",
     "get_all_pages": "Browsing Data Team Toolbox",
@@ -305,6 +306,16 @@ _TOOL_PROGRESS_LABELS = {
     "get_card_details": "Reading Trello card",
     "get_card_details_by_name": "Searching Trello card",
 }
+
+
+def _tool_progress_label(tool_name: str) -> str:
+    """進度泡泡顯示的工具描述。對照表沒登記的工具（未來新增時容易忘）
+    退回「底線換空格」的人話描述，任何情況下都不把內部工具識別字
+    （query_request_tickets_structured 這類）原樣端給使用者。"""
+    label = _TOOL_PROGRESS_LABELS.get(tool_name)
+    if label:
+        return label
+    return f"Working on {str(tool_name or 'the request').replace('_', ' ')}"
 
 
 def set_progress_handler(handler):
@@ -1084,7 +1095,7 @@ async def parallel_tool_node(state: AgentState):
         started_at = time.perf_counter()
         await emit_progress(
             "tool",
-            _TOOL_PROGRESS_LABELS.get(tool_name, f"Querying {tool_name}"),
+            _tool_progress_label(tool_name),
             tool=tool_name,
             status="started",
         )
@@ -1106,7 +1117,7 @@ async def parallel_tool_node(state: AgentState):
             result = await asyncio.to_thread(t.invoke, tc["args"])
             await emit_progress(
                 "tool",
-                f"{_TOOL_PROGRESS_LABELS.get(tool_name, tool_name)} completed",
+                f"{_tool_progress_label(tool_name)} completed",
                 tool=tool_name,
                 status="completed",
                 elapsed_ms=round((time.perf_counter() - started_at) * 1000),
@@ -1119,7 +1130,7 @@ async def parallel_tool_node(state: AgentState):
         except Exception as e:
             await emit_progress(
                 "tool",
-                f"{_TOOL_PROGRESS_LABELS.get(tool_name, tool_name)} failed",
+                f"{_tool_progress_label(tool_name)} failed",
                 tool=tool_name,
                 status="failed",
                 elapsed_ms=round((time.perf_counter() - started_at) * 1000),
