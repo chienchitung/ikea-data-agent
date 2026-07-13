@@ -601,32 +601,37 @@ has_prior_tool_context: {str(bool(has_prior_tool_context)).lower()}
         if not parsed:
             return dict(_DEFAULT_TURN_CONTEXT)
 
-        relation = str(parsed.get("relation", "standalone"))
-        if relation not in {"standalone", "context_follow_up", "context_refinement", "fresh_tool_request", "ambiguous"}:
-            relation = "standalone"
-
-        domain_hint = str(parsed.get("domain_hint", "unknown"))
-        if domain_hint not in {"analyst", "trello", "confluence", "document", "none", "unknown"}:
-            domain_hint = "unknown"
-
-        try:
-            confidence = float(parsed.get("confidence", 0.0))
-        except (TypeError, ValueError):
-            confidence = 0.0
-
-        return {
-            "relation": relation,
-            "should_answer_from_context": bool(parsed.get("should_answer_from_context", False)),
-            "should_include_prior_tool_context": bool(parsed.get("should_include_prior_tool_context", False)),
-            "should_force_fresh_tool": bool(parsed.get("should_force_fresh_tool", False)),
-            "should_skip_clarification": bool(parsed.get("should_skip_clarification", False)),
-            "domain_hint": domain_hint,
-            "confidence": max(0.0, min(1.0, confidence)),
-            "reason": str(parsed.get("reason", ""))[:240],
-        }
+        return _sanitize_turn_context(parsed)
     except Exception as e:
         print(f"\n⚠️ [TurnContext] classifier failed: {e}")
         return dict(_DEFAULT_TURN_CONTEXT)
+
+
+def _sanitize_turn_context(parsed: dict) -> dict:
+    """Validate/normalize a model-produced turn-context JSON object."""
+    relation = str(parsed.get("relation", "standalone"))
+    if relation not in {"standalone", "context_follow_up", "context_refinement", "fresh_tool_request", "ambiguous"}:
+        relation = "standalone"
+
+    domain_hint = str(parsed.get("domain_hint", "unknown"))
+    if domain_hint not in {"analyst", "trello", "confluence", "document", "none", "unknown"}:
+        domain_hint = "unknown"
+
+    try:
+        confidence = float(parsed.get("confidence", 0.0))
+    except (TypeError, ValueError):
+        confidence = 0.0
+
+    return {
+        "relation": relation,
+        "should_answer_from_context": bool(parsed.get("should_answer_from_context", False)),
+        "should_include_prior_tool_context": bool(parsed.get("should_include_prior_tool_context", False)),
+        "should_force_fresh_tool": bool(parsed.get("should_force_fresh_tool", False)),
+        "should_skip_clarification": bool(parsed.get("should_skip_clarification", False)),
+        "domain_hint": domain_hint,
+        "confidence": max(0.0, min(1.0, confidence)),
+        "reason": str(parsed.get("reason", ""))[:240],
+    }
 
 
 def _extract_turn_context(messages: list[BaseMessage]) -> dict:
@@ -853,30 +858,77 @@ async def _classify_user_intent(user_query: str) -> dict:
         return dict(_DEFAULT_INTENT)
 
 
+def _sanitize_clarification_questions(parsed: dict) -> list:
+    questions = []
+    for question in parsed.get("questions", [])[:1]:
+        options = []
+        for option in question.get("options", [])[:5]:
+            label = str(option.get("label", "")).strip()
+            value = str(option.get("value", label)).strip()
+            if label and value:
+                options.append({
+                    "label": label,
+                    "value": value,
+                    "description": str(option.get("description", "")).strip(),
+                })
+        if str(question.get("id", "")) == "chart_dimension":
+            allowed_values = {option["value"] for option in _CHART_DIMENSION_OPTIONS}
+            options = [option for option in options if option["value"] in allowed_values]
+            if len(options) < 2:
+                options = list(_CHART_DIMENSION_OPTIONS)
+        if question.get("question") and options:
+            questions.append({
+                "id": str(question.get("id", f"q{len(questions) + 1}")),
+                "question": str(question.get("question")),
+                "type": "single",
+                "options": options,
+            })
+    return questions
+
+
 async def suggest_clarifications(user_query: str, history_text: str = "", active_documents: list = None) -> dict:
     """
     Decide whether the UI should ask a short clarification before running tools.
     This powers the floating option panel above the input box.
+
+    對話脈絡判斷（turn_context）與釐清題設計在同一次 fast-LLM 呼叫完成。
+    先前是 classify_turn_context() → 釐清 prompt 兩次串行呼叫，而且這兩次
+    都擋在 /chat/stream 開始之前，等於每則訊息都先付兩次 LLM 往返的入場費；
+    合併後入場費減半。classify_turn_context() 本身保留給 /chat/stream 在
+    前端沒帶 turn_context 時的後援路徑。
     """
-    turn_context = await classify_turn_context(
-        user_query,
-        history_text,
-        has_prior_tool_context=bool(history_text.strip()),
-    )
+    has_history = bool(str(history_text or "").strip())
 
-    def with_turn_context(result: dict) -> dict:
-        payload = dict(result)
-        payload["turn_context"] = turn_context
-        return payload
+    combined_prompt = f"""
+你是 Data Machi 的「對話脈絡判斷器」兼「需求釐清設計器」，只輸出 JSON，不要回答使用者問題。
+你要在同一份 JSON 裡完成兩件事：A. 判斷這輪對話脈絡（turn_context）；B. 判斷是否需要在執行工具前向使用者釐清。
 
-    if turn_context.get("should_skip_clarification"):
-        return with_turn_context(_DEFAULT_CLARIFICATION)
+## A. 對話脈絡判斷（turn_context）
 
-    clarification_prompt = f"""
-你是 Data Machi 的需求釐清設計器。請先理解使用者問題，再判斷是否需要在執行工具前向使用者釐清。
+relation 請選一個：
+- standalone: 最新訊息是獨立新問題，主要不依賴前文。
+- context_follow_up: 最新訊息是在追問前文、代名詞指代、比較、補充或延續同一主題。
+- context_refinement: 最新訊息是在要求改寫、擴寫、整理、格式轉換、變更呈現方式或更有條理地重組前文答案。
+- fresh_tool_request: 最新訊息明確要求重新查詢、最新資料、全部資料、新的篩選條件，或前文不足以回答。
+- ambiguous: 可能有關聯但脈絡不足，需要釐清。
+
+判斷原則：
+- 人類對話中，短句常依賴前文。例如「那可以整理成表格嗎」「可以更完整嗎」「那 Kelly 呢」「這些代表什麼」都通常是 context_follow_up 或 context_refinement。
+- 如果最新訊息只是在改變輸出形式、深度、語氣、結構、比較方式，通常不需要重新查工具。
+- 如果最新訊息新增了資料範圍、時間、對象、欄位、條件，且需要資料才能回答，可能需要 fresh_tool_request。
+- 如果使用者明確說最新、重新查、全部、目前狀態、再跑一次資料，should_force_fresh_tool=true。
+- 如果前文已有足夠答案或工具結果，且最新訊息只是延續/整理/擴寫，should_answer_from_context=true。
+- 如果需要使用先前工具結果才能自然延續，且 has_prior_tool_context=true，should_include_prior_tool_context=true。
+- 如果是延續前文，should_skip_clarification=true，避免問已能從上下文推斷的引導題。
+- 如果「近期對話」是空的，relation 固定為 standalone，所有 should_* 為 false。
+
+可用 domain_hint：analyst, trello, confluence, document, none, unknown
+
+## B. 釐清題判斷
 
 只在「缺少的選擇會明顯影響工具、查詢條件或圖表呈現」時才 needs_clarification=true。
 如果問題已經足夠明確，請 needs_clarification=false。
+如果 A 判斷為延續前文（should_skip_clarification=true），needs_clarification 必須為 false。
 
 重要語言規則：
 - 所有會顯示在前端 UI 的欄位都必須使用英文：reason、question、label、description。
@@ -895,8 +947,19 @@ async def suggest_clarifications(user_query: str, history_text: str = "", active
 請只提出 1 個最關鍵的問題，每題 2-5 個選項。選項要短、具體、互斥。不要問已經可從問題或上下文推斷的事。
 如果有多個缺口，優先詢問「最會影響工具查詢結果」的問題；其他缺口留到下一輪再問，不要一次塞進同一個提示框。
 
-回傳 JSON schema：
+## 回傳 JSON schema
+
 {{
+  "turn_context": {{
+    "relation": "standalone" | "context_follow_up" | "context_refinement" | "fresh_tool_request" | "ambiguous",
+    "should_answer_from_context": true/false,
+    "should_include_prior_tool_context": true/false,
+    "should_force_fresh_tool": true/false,
+    "should_skip_clarification": true/false,
+    "domain_hint": "analyst" | "trello" | "confluence" | "document" | "none" | "unknown",
+    "confidence": 0.0,
+    "reason": "一句很短的判斷理由"
+  }},
   "needs_clarification": true/false,
   "reason": "A short reason in English",
   "questions": [
@@ -914,61 +977,50 @@ async def suggest_clarifications(user_query: str, history_text: str = "", active
   ]
 }}
 
-近期對話摘要：
-{history_text[-3000:]}
+has_prior_tool_context: {str(has_history).lower()}
 
-對話脈絡判斷：
-{json.dumps(turn_context, ensure_ascii=False)}
+近期對話：
+{history_text[-6000:] if has_history else "(空)"}
 
 {'目前使用者已勾選的 PDF 文件：' + ', '.join(active_documents) if active_documents else '目前未勾選任何 PDF 文件'}
 
-使用者問題：
+最新使用者訊息：
 {user_query}
 """
+
+    def with_turn_context(result: dict, turn_context: dict) -> dict:
+        payload = dict(result)
+        payload["turn_context"] = turn_context
+        return payload
+
     try:
-        response = await _fast_llm().ainvoke([HumanMessage(content=clarification_prompt)])
+        await emit_progress("understanding", "Checking context")
+        response = await _fast_llm().ainvoke([HumanMessage(content=combined_prompt)])
         parsed = _parse_json_object(_content_to_text(response.content))
         if not parsed:
-            return with_turn_context(_fallback_clarification(user_query))
-        if not parsed.get("needs_clarification"):
-            return with_turn_context(_DEFAULT_CLARIFICATION)
+            return with_turn_context(_fallback_clarification(user_query), dict(_DEFAULT_TURN_CONTEXT))
 
-        questions = []
-        for question in parsed.get("questions", [])[:1]:
-            options = []
-            for option in question.get("options", [])[:5]:
-                label = str(option.get("label", "")).strip()
-                value = str(option.get("value", label)).strip()
-                if label and value:
-                    options.append({
-                        "label": label,
-                        "value": value,
-                        "description": str(option.get("description", "")).strip(),
-                    })
-            if str(question.get("id", "")) == "chart_dimension":
-                allowed_values = {option["value"] for option in _CHART_DIMENSION_OPTIONS}
-                options = [option for option in options if option["value"] in allowed_values]
-                if len(options) < 2:
-                    options = list(_CHART_DIMENSION_OPTIONS)
-            if question.get("question") and options:
-                questions.append({
-                    "id": str(question.get("id", f"q{len(questions) + 1}")),
-                    "question": str(question.get("question")),
-                    "type": "single",
-                    "options": options,
-                })
+        # 空對話沒有脈絡可判斷，維持與 classify_turn_context 相同的確定性行為。
+        if has_history:
+            turn_context = _sanitize_turn_context(parsed.get("turn_context") or {})
+        else:
+            turn_context = dict(_DEFAULT_TURN_CONTEXT)
 
+        if turn_context.get("should_skip_clarification") or not parsed.get("needs_clarification"):
+            return with_turn_context(_DEFAULT_CLARIFICATION, turn_context)
+
+        questions = _sanitize_clarification_questions(parsed)
         if not questions:
-            return with_turn_context(_DEFAULT_CLARIFICATION)
+            return with_turn_context(_DEFAULT_CLARIFICATION, turn_context)
 
         return with_turn_context({
             "needs_clarification": True,
             "questions": questions,
             "reason": str(parsed.get("reason", ""))[:200],
-        })
+        }, turn_context)
     except Exception as e:
         print(f"\n⚠️ [Clarification] failed: {e}")
-        return with_turn_context(_fallback_clarification(user_query))
+        return with_turn_context(_fallback_clarification(user_query), dict(_DEFAULT_TURN_CONTEXT))
 
 async def parallel_tool_node(state: AgentState):
     """

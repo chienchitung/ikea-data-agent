@@ -352,7 +352,10 @@ def _source_has_full_year_filter(source_context: str, year: int) -> bool:
     return has_start and has_end
 
 
-def _compact_audit_context(audit_text: str, limit: int = 22000) -> str:
+def _compact_audit_context(audit_text: str, limit: int = 8000) -> str:
+    """稽核 context 的用途只是讓驗證器抓漏掉的月份，需要的是開頭摘要與
+    每月筆數分佈（幾百字元就夠），不需要逐筆明細。8000 已綽綽有餘；
+    先前的 22000 只是把驗證 prompt 灌大、拖慢驗證呼叫。"""
     text = str(audit_text or "")
     if len(text) <= limit:
         return text
@@ -418,6 +421,21 @@ async def _augment_year_ticket_verification_context(
             "year": year,
             "error": str(e),
         }
+
+
+def _needs_llm_verification(response: str, source_context: str) -> bool:
+    """驗證器的用途是比對回答中的數字/筆數/明細是否被工具來源支持。
+    回答裡連一個數字、表格或 chart block 都沒有（純聊天、概念說明、
+    格式改寫）時，沒有事實可查核，跑一次 fast-LLM 驗證純粹是多等
+    5~15 秒，直接跳過。"""
+    if not str(source_context or "").strip():
+        return False
+    text = str(response or "")
+    if "```chart" in text:
+        return True
+    if re.search(r"^\s*\|.+\|\s*$", text, re.MULTILINE):
+        return True
+    return bool(re.search(r"\d", text))
 
 
 async def _verify_response_against_sources(
@@ -672,6 +690,8 @@ async def process_chat_detailed(
             document_response = document_result["response"]
             if document_result.get("skip_verification"):
                 verification_metadata = {"checked": False, "status": "skipped", "reason": "system_message"}
+            elif not _needs_llm_verification(document_response, document_result["document_context"]):
+                verification_metadata = {"checked": False, "status": "skipped", "reason": "no_factual_claims"}
             else:
                 await _emit_progress(progress_callback, "composing", "Verifying the response")
                 document_response, verification_metadata = await _verify_response_against_sources(
@@ -779,22 +799,30 @@ async def process_chat_detailed(
             confluence_links,
             _detect_reply_language(clean_message),
         )
-        await _emit_progress(progress_callback, "composing", "Verifying the response")
         verification_context = _verification_source_context(
             response_state["messages"],
             stored_tool_context,
             turn_context or {},
         )
-        verification_context, full_year_audit_metadata = await _augment_year_ticket_verification_context(
-            clean_message,
-            verification_context,
-        )
-        agent_response, verification_metadata = await _verify_response_against_sources(
-            clean_message,
-            agent_response,
-            verification_context,
-        )
-        verification_metadata["full_year_audit"] = full_year_audit_metadata
+        if _needs_llm_verification(agent_response, verification_context):
+            await _emit_progress(progress_callback, "composing", "Verifying the response")
+            verification_context, full_year_audit_metadata = await _augment_year_ticket_verification_context(
+                clean_message,
+                verification_context,
+            )
+            agent_response, verification_metadata = await _verify_response_against_sources(
+                clean_message,
+                agent_response,
+                verification_context,
+            )
+            verification_metadata["full_year_audit"] = full_year_audit_metadata
+        else:
+            verification_metadata = {
+                "checked": False,
+                "status": "skipped",
+                "reason": "no_factual_claims",
+                "full_year_audit": {"ran": False, "reason": "verification_skipped"},
+            }
         agent_response = _fix_chart_code_blocks(agent_response)
         agent_response = _ensure_confluence_source_links(
             agent_response,
