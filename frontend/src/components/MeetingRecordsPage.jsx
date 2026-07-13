@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import axios from 'axios';
 import { FileAudio, Plus, Download, Trash2, Edit2, Check, CheckSquare, Loader2 } from 'lucide-react';
 import { MeetingRecorderModal } from './MeetingRecorderModal';
@@ -23,6 +23,7 @@ export function MeetingRecordsPage({ apiUrl, geminiApiKey, groqApiKey, onOpenApi
     const [meetings, setMeetings] = useState([]);
     const [isLoading, setIsLoading] = useState(true);
     const [loadError, setLoadError] = useState(false);
+    const [isWakingServer, setIsWakingServer] = useState(false);
     const [activeMeetingId, setActiveMeetingId] = useState(null);
     const [showRecorderModal, setShowRecorderModal] = useState(false);
     const [isSelecting, setIsSelecting] = useState(false);
@@ -30,22 +31,50 @@ export function MeetingRecordsPage({ apiUrl, geminiApiKey, groqApiKey, onOpenApi
     const [renamingMeetingId, setRenamingMeetingId] = useState(null);
     const [renamingTitle, setRenamingTitle] = useState('');
     const [isRenaming, setIsRenaming] = useState(false);
+    // 遞增序號：使用者在重試迴圈進行中又按了 Try again 時，讓舊的迴圈
+    // 自行退場，避免兩個迴圈交錯更新狀態。
+    const fetchSeqRef = useRef(0);
 
     const fetchMeetings = useCallback(async () => {
+        const seq = ++fetchSeqRef.current;
         setIsLoading(true);
         setLoadError(false);
-        try {
-            // Without a timeout, a stalled request (e.g. one queued behind a
-            // long-running chat stream to the same origin) left this spinner
-            // running forever with no way to recover short of a page reload.
-            const response = await axios.get(`${apiUrl}/meetings`, { timeout: 15000 });
-            setMeetings(response.data.meetings || []);
-        } catch (error) {
-            console.error('Failed to fetch meetings:', error);
-            setLoadError(true);
-        } finally {
-            setIsLoading(false);
+        setIsWakingServer(false);
+
+        // Without a timeout, a stalled request (e.g. one queued behind a
+        // long-running chat stream to the same origin) left this spinner
+        // running forever with no way to recover short of a page reload.
+        //
+        // 第一次嘗試用短 timeout；失敗多半是後端冷啟動或部署重啟
+        // （Render 閒置喚醒常要 30~60 秒），所以改用長 timeout 自動重試
+        // 兩次，而不是 15 秒就直接對使用者說載入失敗。
+        const attempts = [
+            { timeout: 15000, delayBefore: 0 },
+            { timeout: 45000, delayBefore: 2000 },
+            { timeout: 45000, delayBefore: 3000 },
+        ];
+
+        for (let i = 0; i < attempts.length; i++) {
+            const { timeout, delayBefore } = attempts[i];
+            if (delayBefore) await new Promise((resolve) => setTimeout(resolve, delayBefore));
+            if (fetchSeqRef.current !== seq) return;
+            try {
+                const response = await axios.get(`${apiUrl}/meetings`, { timeout });
+                if (fetchSeqRef.current !== seq) return;
+                setMeetings(response.data.meetings || []);
+                setIsWakingServer(false);
+                setIsLoading(false);
+                return;
+            } catch (error) {
+                if (fetchSeqRef.current !== seq) return;
+                console.error(`Failed to fetch meetings (attempt ${i + 1}/${attempts.length}):`, error);
+                if (i < attempts.length - 1) setIsWakingServer(true);
+            }
         }
+
+        setIsWakingServer(false);
+        setLoadError(true);
+        setIsLoading(false);
     }, [apiUrl]);
 
     useEffect(() => { fetchMeetings(); }, [fetchMeetings]);
@@ -210,8 +239,11 @@ export function MeetingRecordsPage({ apiUrl, geminiApiKey, groqApiKey, onOpenApi
                 )}
 
                 {isLoading ? (
-                    <div className="flex justify-center py-10">
+                    <div className="flex flex-col items-center gap-3 py-10">
                         <Loader2 className="w-6 h-6 animate-spin text-[#0058A3]" />
+                        {isWakingServer && (
+                            <p className="text-xs text-[#767676]">Server is waking up — retrying automatically…</p>
+                        )}
                     </div>
                 ) : loadError ? (
                     <div className="text-center py-14 border border-dashed border-[#DFDFDF] rounded-xl">
