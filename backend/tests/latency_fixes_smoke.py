@@ -47,12 +47,16 @@ def test_year_audit_trigger():
 
 
 def test_verification_gate():
+    confluence_context = "[search_confluence_pages]\nCDP 是客戶資料平台，整合多來源的顧客輪廓。"
     cases = [
         ("好的，我可以幫你整理資料，請告訴我範圍。", "tool output", False),
         ("4月有 12 筆工單，5月有 8 筆。", "tool output", True),
         ("| Ticket | Status |", "tool output", True),
         ("```chart\n{}\n```", "tool output", True),
         ("4月有 12 筆工單", "", False),
+        # 知識庫（Confluence/PDF 工具）來源的敘述性回答即使沒有數字也要驗證。
+        ("CDP 是客戶資料平台，用來整合顧客輪廓。", confluence_context, True),
+        ("這份文件說明入職流程。", "[search_document_base]\n入職流程文件內容", True),
     ]
     for response, source, expected in cases:
         got = agent_logic._needs_llm_verification(response, source)

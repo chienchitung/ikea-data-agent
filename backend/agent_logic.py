@@ -436,13 +436,28 @@ async def _augment_year_ticket_verification_context(
         }
 
 
+# 知識庫類工具的來源標記（_verification_source_context 會把工具輸出組成
+# "[tool_name]\n..." 的區塊）。這類回答是敘述性事實（定義、流程、規範），
+# 可能整段沒有數字，但幻覺風險（腦補頁面裡沒有的內容）正是驗證器要抓的，
+# 所以不適用下面「沒數字就跳過」的判斷。
+_KNOWLEDGE_SOURCE_MARKERS = (
+    "[search_confluence_pages]",
+    "[get_confluence_page_content]",
+    "[get_all_pages]",
+    "[search_document_base]",
+)
+
+
 def _needs_llm_verification(response: str, source_context: str) -> bool:
-    """驗證器的用途是比對回答中的數字/筆數/明細是否被工具來源支持。
-    回答裡連一個數字、表格或 chart block 都沒有（純聊天、概念說明、
-    格式改寫）時，沒有事實可查核，跑一次 fast-LLM 驗證純粹是多等
-    5~15 秒，直接跳過。"""
-    if not str(source_context or "").strip():
+    """驗證器的用途是比對回答中的數字/筆數/明細/敘述是否被工具來源支持。
+    回答裡連一個數字、表格或 chart block 都沒有、來源也不是知識庫內容
+    （純聊天、格式改寫）時，沒有事實可查核，跑一次 fast-LLM 驗證純粹是
+    多等 5~15 秒，直接跳過。"""
+    context_text = str(source_context or "")
+    if not context_text.strip():
         return False
+    if any(marker in context_text for marker in _KNOWLEDGE_SOURCE_MARKERS):
+        return True
     text = str(response or "")
     if "```chart" in text:
         return True
@@ -703,9 +718,10 @@ async def process_chat_detailed(
             document_response = document_result["response"]
             if document_result.get("skip_verification"):
                 verification_metadata = {"checked": False, "status": "skipped", "reason": "system_message"}
-            elif not _needs_llm_verification(document_response, document_result["document_context"]):
-                verification_metadata = {"checked": False, "status": "skipped", "reason": "no_factual_claims"}
             else:
+                # 這條路徑只在文件問答時觸發，回答必然是從 PDF 內容合成的
+                # 敘述性事實——與知識庫回答同級的幻覺風險，一律驗證，
+                # 不套用 _needs_llm_verification 的「沒數字就跳過」判斷。
                 await _emit_progress(progress_callback, "composing", "Verifying the response")
                 document_response, verification_metadata = await _verify_response_against_sources(
                     clean_message,
