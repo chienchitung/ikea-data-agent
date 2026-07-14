@@ -131,6 +131,19 @@ function saveConversations(convs) {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(convs));
 }
 
+function formatBytes(bytes) {
+    if (!Number.isFinite(bytes) || bytes < 0) return '—';
+    if (bytes < 1024) return `${bytes} B`;
+    const units = ['KB', 'MB', 'GB', 'TB'];
+    let value = bytes;
+    let unitIndex = -1;
+    do {
+        value /= 1024;
+        unitIndex += 1;
+    } while (value >= 1024 && unitIndex < units.length - 1);
+    return `${value >= 100 ? Math.round(value) : value.toFixed(1)} ${units[unitIndex]}`;
+}
+
 function getResponseStatusLabel(phase, elapsedSeconds) {
     if (phase === 'understanding') {
         if (elapsedSeconds < 3) return 'Understanding your question';
@@ -321,6 +334,9 @@ function App() {
     const [pendingTurnContext, setPendingTurnContext] = useState({});
     const [pendingConversationId, setPendingConversationId] = useState(null);
     const [isSourcesExpanded, setIsSourcesExpanded] = useState(true);
+    // 瀏覽器回報的本站儲存用量/配額（navigator.storage.estimate）。
+    // 顯示在 Sources 區塊底部，提醒使用者適時清理來源與舊對話。
+    const [storageEstimate, setStorageEstimate] = useState(null);
     const [isConvsExpanded, setIsConvsExpanded] = useState(true);
     const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(
         () => typeof window !== 'undefined' && window.innerWidth < 768
@@ -415,6 +431,18 @@ function App() {
             setMessages(saved[0].messages);
         }
     }, []);
+
+    // ── 瀏覽器儲存用量：掛載時與資料變動時刷新 ─────────────
+    useEffect(() => {
+        let cancelled = false;
+        if (!navigator.storage?.estimate) return undefined;
+        navigator.storage.estimate().then(({ usage, quota }) => {
+            if (!cancelled && Number.isFinite(usage) && Number.isFinite(quota)) {
+                setStorageEstimate({ usage, quota });
+            }
+        }).catch(() => { /* 老瀏覽器或隱私模式拿不到就整塊隱藏 */ });
+        return () => { cancelled = true; };
+    }, [documents, conversations]);
 
     // ── messages 變動時自動存檔 ───────────────────────────
     useEffect(() => {
@@ -1601,6 +1629,23 @@ function App() {
                                             );
                                         })}
                                     </>
+                                )}
+                                {storageEstimate && (
+                                    <div className="pt-3 mt-2 border-t border-[#DFDFDF] px-1">
+                                        <div className="flex justify-between text-[11px] text-[#767676] mb-1">
+                                            <span>Browser storage</span>
+                                            <span>{formatBytes(storageEstimate.usage)} / {formatBytes(storageEstimate.quota)}</span>
+                                        </div>
+                                        <div className="w-full bg-[#DFDFDF] rounded-full h-1.5">
+                                            <div
+                                                className={`h-1.5 rounded-full transition-all duration-300 ${storageEstimate.quota && storageEstimate.usage / storageEstimate.quota > 0.85 ? 'bg-[#E00751]' : 'bg-[#0058A3]'}`}
+                                                style={{ width: `${storageEstimate.quota ? Math.max(2, Math.min(100, (storageEstimate.usage / storageEstimate.quota) * 100)) : 0}%` }}
+                                            />
+                                        </div>
+                                        <p className="text-[10px] text-[#AAAAAA] mt-1 leading-snug">
+                                            Delete unused sources and old conversations to free up space.
+                                        </p>
+                                    </div>
                                 )}
                             </div>
                         )}

@@ -316,6 +316,23 @@ export function MeetingMinutesView({ apiUrl, meetingId, onClose }) {
                             </section>
 
                             <section>
+                                <h3 className="text-sm font-semibold text-[#111111] mb-2">Executive Summary</h3>
+                                {isEditing ? (
+                                    <textarea
+                                        value={meetingData.executive_summary || ''}
+                                        onChange={(e) => updateField('executive_summary', e.target.value)}
+                                        rows={4}
+                                        className="w-full text-sm border border-[#DFDFDF] rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-[#0058A3] text-[#111111]"
+                                        placeholder="A short narrative summary of the meeting"
+                                    />
+                                ) : meetingData.executive_summary ? (
+                                    <p className="text-sm text-[#111111] leading-relaxed whitespace-pre-wrap">{meetingData.executive_summary}</p>
+                                ) : (
+                                    <p className="text-sm text-[#AAAAAA]">No summary recorded.</p>
+                                )}
+                            </section>
+
+                            <section>
                                 <h3 className="text-sm font-semibold text-[#111111] mb-2">Meeting Notes</h3>
                                 <EditableNotes
                                     notes={meetingData.notes || []}

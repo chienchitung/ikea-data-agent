@@ -88,9 +88,11 @@ MINUTES_PROMPT_TEMPLATE = """你是 IKEA Data Team 的會議記錄整理助理�
 
 輸出規則：
 - 只能輸出 JSON，不要輸出任何其他文字或 Markdown。
-- "agenda"、"notes"、"actions_review" 裡的文字內容，語言必須跟隨逐字稿本身使用的語言；
+- "executive_summary"、"agenda"、"notes"、"actions_review" 裡的文字內容，語言必須跟隨逐字稿本身使用的語言；
   逐字稿是英文就用英文寫，逐字稿是中文就用中文寫，中英夾雜就維持中英夾雜，不要自動翻譯成其他語言。
   寫中文時一律使用繁體中文（台灣用語習慣），不要使用簡體字。
+- "executive_summary" 是整場會議的總結摘要：用 3~6 句完整敘述先交代會議目的、主要討論脈絡、
+  達成的結論與最重要的後續方向，讓沒參加會議的人只讀這段就能掌握全貌。不要用條列式。
 - "agenda" 是這場會議實際討論到的議程項目，依討論順序列出；如果逐字稿沒有明確的時長，duration 留空字串。
 - "notes" 是這場會議的重點討論內容，用條列式整理，每一條是一個獨立重點、決議或討論細節，愈詳細愈好，
   不要只寫一句空泛的話。
@@ -100,6 +102,7 @@ MINUTES_PROMPT_TEMPLATE = """你是 IKEA Data Team 的會議記錄整理助理�
 
 輸出 JSON schema：
 {{
+  "executive_summary": "...",
   "agenda": [{{"duration": "", "item": "", "owner": ""}}],
   "notes": ["..."],
   "actions_review": [{{"no": 1, "item": "", "assigned_to": "", "deadline": ""}}]
@@ -139,11 +142,12 @@ if GENAI_AVAILABLE:
     MINUTES_RESPONSE_SCHEMA = genai_types.Schema(
         type=genai_types.Type.OBJECT,
         properties={
+            "executive_summary": genai_types.Schema(type=genai_types.Type.STRING),
             "agenda": genai_types.Schema(type=genai_types.Type.ARRAY, items=_AGENDA_ITEM_SCHEMA),
             "notes": genai_types.Schema(type=genai_types.Type.ARRAY, items=genai_types.Schema(type=genai_types.Type.STRING)),
             "actions_review": genai_types.Schema(type=genai_types.Type.ARRAY, items=_ACTION_ITEM_SCHEMA),
         },
-        required=["agenda", "notes", "actions_review"],
+        required=["executive_summary", "agenda", "notes", "actions_review"],
     )
 
 
@@ -379,6 +383,7 @@ async def generate_minutes(transcript: str, meta: dict, api_key: str) -> dict:
         # Intentionally left blank: the user fills this in by hand from the
         # previous meeting's "Actions review", same as the paper template.
         "last_time_actions": [],
+        "executive_summary": str(parsed.get("executive_summary") or "").strip(),
         "agenda": _normalize_agenda(parsed.get("agenda")),
         "notes": _normalize_notes(parsed.get("notes")),
         "actions_review": _normalize_actions(parsed.get("actions_review")),
@@ -437,6 +442,9 @@ def build_docx(meeting_data: dict) -> bytes:
     agenda = meeting_data.get("agenda") or []
     agenda_rows = [[item.get("duration", ""), item.get("item", ""), item.get("owner", "")] for item in agenda]
     _add_table(doc, ["Duration", "Agenda items", "Presenter/Owner"], agenda_rows, min_rows=3)
+
+    doc.add_heading("Executive Summary", level=2)
+    doc.add_paragraph(str(meeting_data.get("executive_summary") or ""))
 
     doc.add_heading("Meeting Notes", level=2)
     notes = meeting_data.get("notes") or []

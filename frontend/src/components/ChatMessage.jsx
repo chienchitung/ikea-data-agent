@@ -1,6 +1,10 @@
 import { lazy, Suspense, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+// CommonMark 的粗體/斜體 flanking 規則在 CJK 全形標點相鄰時會失效
+// （典型：`**標題：**內文`、`文字**「重點」**`），** 會被當一般字元
+// 原樣顯示。這個插件依 CJK 友善規則修正解析，星號不再殘留。
+import remarkCjkFriendly from 'remark-cjk-friendly';
 import clsx from 'clsx';
 import { Copy, Edit2, Check, BarChart3, LineChart, PieChart } from 'lucide-react';
 import assistantAvatar from '../assets/img/ikea-assistant.png';
@@ -559,7 +563,7 @@ export function ChatMessage({ message, userAvatar, debugMode = false, onUpdate, 
                     ) : (
                         <div className="markdown">
                             <ReactMarkdown
-                                remarkPlugins={[remarkGfm]}
+                                remarkPlugins={[remarkGfm, remarkCjkFriendly]}
                                 components={markdownComponents}
                             >
                                 {preprocessContent(message.content)}
