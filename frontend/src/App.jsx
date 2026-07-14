@@ -370,6 +370,12 @@ function App() {
     const currentStatus = convStatuses[currentConvId] || {};
     const responsePhase = currentStatus.phase || 'idle';
     const responseStatusText = currentStatus.statusText || '';
+    // 逐字文字已經全部顯示完，但後端還在背景查核／存檔（"Verifying the
+    // response" / "Finalizing the response"）——這段時間輸入框仍鎖定、
+    // 麥克風位置仍是暫停鍵，是因為真的還有工作在跑，不是卡住。用這個
+    // 旗標在原本的免責聲明位置換成說明文字，讓使用者知道原因。
+    const isFinalizingAfterStream = isCurrentConvLoading && isStreamingAnswerVisible
+        && (responseStatusText === 'Verifying the response' || responseStatusText === 'Finalizing the response');
     const responseStatusLabel = responseStatusText || getResponseStatusLabel(responsePhase, displayElapsedSeconds);
 
     useEffect(() => {
@@ -1922,7 +1928,14 @@ function App() {
                         </div>
                     </form>
                     <div className="text-center mt-2 pb-2">
-                        <p className="text-[10px] text-[#767676] font-medium">AI can make mistakes. Please verify important information.</p>
+                        {isFinalizingAfterStream ? (
+                            <p className="text-[10px] text-[#767676] font-medium inline-flex items-center gap-1.5">
+                                <span className="finalizing-dot" aria-hidden="true" />
+                                {responseStatusText}… you can keep reading, or tap stop to cancel.
+                            </p>
+                        ) : (
+                            <p className="text-[10px] text-[#767676] font-medium">AI can make mistakes. Please verify important information.</p>
+                        )}
                     </div>
                 </footer>
                 </>
