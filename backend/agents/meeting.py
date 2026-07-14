@@ -79,8 +79,7 @@ GROQ_TRANSCRIPTIONS_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 GROQ_MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
-STORE_DIR = BACKEND_DIR / ".meeting_store"
-AUDIO_DIR = BACKEND_DIR / ".meeting_uploads"
+from storage_paths import MEETING_STORE_DIR as STORE_DIR, MEETING_AUDIO_DIR as AUDIO_DIR
 
 DEFAULT_MEETING_TITLE = "Meeting Notes"
 

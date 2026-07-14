@@ -370,11 +370,17 @@ from agents.document import (
 )
 
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+# PDF 存放目錄由 DATA_DIR 環境變數控制（見 storage_paths.py）：
+# 掛了 Render Persistent Disk 後設 DATA_DIR=/var/data，PDF 就不會在
+# 重新部署時被清掉。未設定時 PDF_STORAGE_DIR == backend/，行為不變。
+from storage_paths import PDF_DIR as _PDF_DIR
+PDF_STORAGE_DIR = str(_PDF_DIR)
 
 
 def _pdf_storage_paths(filename: str) -> list[str]:
     decoded = os.path.basename(unquote(filename))
     return [
+        os.path.join(PDF_STORAGE_DIR, decoded),
         os.path.join(BACKEND_DIR, decoded),
         os.path.abspath(decoded),
     ]
@@ -383,8 +389,10 @@ def _pdf_storage_paths(filename: str) -> list[str]:
 def _list_pdf_files() -> list[str]:
     disk_files = {
         name
-        for name in os.listdir(BACKEND_DIR)
-        if name.lower().endswith(".pdf") and os.path.isfile(os.path.join(BACKEND_DIR, name))
+        for storage_dir in {PDF_STORAGE_DIR, BACKEND_DIR}
+        if os.path.isdir(storage_dir)
+        for name in os.listdir(storage_dir)
+        if name.lower().endswith(".pdf") and os.path.isfile(os.path.join(storage_dir, name))
     }
     return sorted(disk_files | set(get_loaded_files()))
 
@@ -403,8 +411,8 @@ async def upload_file(file: UploadFile = File(...), gemini_api_key: Optional[str
             )
             
         safe_filename = os.path.basename(unquote(file.filename))
-        # Always store uploaded PDFs in the backend directory, regardless of cwd.
-        file_location = os.path.join(BACKEND_DIR, safe_filename)
+        # Store uploads in the persistent PDF dir (falls back to backend/).
+        file_location = os.path.join(PDF_STORAGE_DIR, safe_filename)
             
         with open(file_location, "wb+") as buffer:
             shutil.copyfileobj(file.file, buffer)
@@ -512,13 +520,16 @@ async def delete_document(filename: str):
                 break
         
         if not deleted:
-            for existing_file in os.listdir(BACKEND_DIR):
-                if existing_file == decoded_filename:
-                    path = os.path.join(BACKEND_DIR, existing_file)
-                    os.remove(path)
-                    deleted = True
-                    print(f"✅ Deleted file via listdir match: {path}")
-                    break
+            for storage_dir in {PDF_STORAGE_DIR, BACKEND_DIR}:
+                if deleted or not os.path.isdir(storage_dir):
+                    continue
+                for existing_file in os.listdir(storage_dir):
+                    if existing_file == decoded_filename:
+                        path = os.path.join(storage_dir, existing_file)
+                        os.remove(path)
+                        deleted = True
+                        print(f"✅ Deleted file via listdir match: {path}")
+                        break
 
         if not deleted:
             print(f"❌ File not found. Checked: {attempted_paths}")

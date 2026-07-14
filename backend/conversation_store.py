@@ -8,8 +8,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.messages import messages_from_dict, messages_to_dict
 
 
-STORE_DIR = Path(__file__).resolve().parent / ".conversation_store"
-TRACE_DIR = Path(__file__).resolve().parent / ".agent_traces"
+from storage_paths import CONVERSATION_STORE_DIR as STORE_DIR, AGENT_TRACE_DIR as TRACE_DIR
 MAX_STORED_MESSAGES = 40
 MAX_TOOL_CONTEXT_CHARS = 20000
 MAX_TOOL_RESULTS = 30

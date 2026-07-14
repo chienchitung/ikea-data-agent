@@ -5,7 +5,20 @@ services:
     env: python
     buildCommand: "cd backend && pip install -r requirements.txt"
     startCommand: "cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT"
+    # ⚠️ Render 的服務檔案系統是暫時性的：每次部署都會清空本機磁碟，
+    # 上傳的 PDF、對話紀錄、會議紀錄都會消失。要讓資料保留，需要：
+    #   1. 在 Render dashboard 為此服務加一顆 Persistent Disk，
+    #      Mount Path 設為 /var/data（1GB 起，見下方 disk 區塊範例）
+    #   2. 設定環境變數 DATA_DIR=/var/data
+    # 未設定 DATA_DIR 時行為不變（資料放 backend/，部署即消失）。
+    # 啟用磁碟時取消下面三行的註解（注意：掛磁碟的服務無法零停機部署）：
+    # disk:
+    #   name: data
+    #   mountPath: /var/data
+    #   sizeGB: 1
     envVars:
+      - key: DATA_DIR
+        sync: false
       - key: PYTHON_VERSION
         value: 3.11.15
       - key: GOOGLE_API_KEY

@@ -131,17 +131,11 @@ function saveConversations(convs) {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(convs));
 }
 
-function formatBytes(bytes) {
+function formatMb(bytes) {
     if (!Number.isFinite(bytes) || bytes < 0) return '—';
-    if (bytes < 1024) return `${bytes} B`;
-    const units = ['KB', 'MB', 'GB', 'TB'];
-    let value = bytes;
-    let unitIndex = -1;
-    do {
-        value /= 1024;
-        unitIndex += 1;
-    } while (value >= 1024 && unitIndex < units.length - 1);
-    return `${value >= 100 ? Math.round(value) : value.toFixed(1)} ${units[unitIndex]}`;
+    const mb = bytes / (1024 * 1024);
+    if (mb >= 100) return `${Math.round(mb).toLocaleString()} MB`;
+    return `${mb.toFixed(1)} MB`;
 }
 
 function getResponseStatusLabel(phase, elapsedSeconds) {
@@ -1634,7 +1628,7 @@ function App() {
                                     <div className="pt-3 mt-2 border-t border-[#DFDFDF] px-1">
                                         <div className="flex justify-between text-[11px] text-[#767676] mb-1">
                                             <span>Browser storage</span>
-                                            <span>{formatBytes(storageEstimate.usage)} / {formatBytes(storageEstimate.quota)}</span>
+                                            <span>{formatMb(storageEstimate.usage)} / {formatMb(storageEstimate.quota)}</span>
                                         </div>
                                         <div className="w-full bg-[#DFDFDF] rounded-full h-1.5">
                                             <div

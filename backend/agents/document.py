@@ -44,8 +44,7 @@ def reset_active_documents(token) -> None:
 document_chunks = []
 
 # FAISS 持久化路徑（與 document.py 同層的 backend/ 目錄下）
-FAISS_INDEX_PATH = os.path.join(os.path.dirname(__file__), "..", "faiss_index")
-DOCUMENT_CHUNKS_PATH = os.path.join(os.path.dirname(__file__), "..", "document_chunks.json")
+from storage_paths import FAISS_INDEX_PATH, DOCUMENT_CHUNKS_PATH, PDF_DIR as _PDF_DIR
 DOCUMENT_PIPELINE_VERSION = "text_lazy_ocr_v1"
 PDF_VISUAL_CONTEXT_ENABLED = os.getenv("PDF_VISUAL_CONTEXT", "true").lower() not in {"0", "false", "no"}
 PDF_VISUAL_ON_INDEX = os.getenv("PDF_VISUAL_ON_INDEX", "false").lower() in {"1", "true", "yes"}
@@ -561,8 +560,20 @@ def _initialize_knowledge_base_locked(api_key: str = None):
             "message": "GOOGLE_API_KEY missing."
         }
 
-    # Look for any PDF in the backend directory or parent directory
-    pdf_files = glob.glob("*.pdf") + glob.glob("../*.pdf") + glob.glob("backend/*.pdf")
+    # Persistent PDF dir first (DATA_DIR-aware), then legacy cwd-relative
+    # locations for local dev; dedupe by basename so the same file found
+    # via two paths isn't indexed twice.
+    raw_candidates = (
+        glob.glob(str(_PDF_DIR / "*.pdf"))
+        + glob.glob("*.pdf") + glob.glob("../*.pdf") + glob.glob("backend/*.pdf")
+    )
+    seen_names = set()
+    pdf_files = []
+    for candidate in raw_candidates:
+        name = os.path.basename(candidate)
+        if name not in seen_names:
+            seen_names.add(name)
+            pdf_files.append(candidate)
 
     # 提早退出：沒有 PDF 就不需要做任何事
     if not pdf_files:
