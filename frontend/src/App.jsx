@@ -366,7 +366,11 @@ function App() {
     // 轉圈泡泡；interim 重試清空佔位訊息時，條件自動翻回、泡泡自動回來。
     const lastMessage = messages[messages.length - 1];
     const isStreamingAnswerVisible = Boolean(lastMessage?.streaming && lastMessage?.role === 'assistant');
-    const isClarifyingCurrentConv = clarifyingConvId === currentConvId;
+    // clarifyingConvId 和 currentConvId 的初始值都是 null——全新裝置
+    // （localStorage 沒有任何對話，currentConvId 不會被載入流程設值）上
+    // null === null 會把整個介面誤判成「釐清進行中」：輸入框停用、
+    // 麥克風停用、送出鍵永遠顯示成暫停鍵。必須先確認真的有釐清在跑。
+    const isClarifyingCurrentConv = clarifyingConvId !== null && clarifyingConvId === currentConvId;
     const currentStatus = convStatuses[currentConvId] || {};
     const responsePhase = currentStatus.phase || 'idle';
     const responseStatusText = currentStatus.statusText || '';
