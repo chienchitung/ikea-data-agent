@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useLayoutEffect } from 'react';
 import axios from 'axios';
 import { ChatMessage } from './components/ChatMessage';
-import { ArrowUp, Loader2, Sparkles, FileText, ChevronDown, ChevronLeft, ChevronRight, Plus, Check, Edit2, Trash2, User, MessageSquare, PenSquare, Search, Mic, Square, X, Bug, Pin, MoreHorizontal, KeyRound, Eye, EyeOff, CheckSquare, FileAudio } from 'lucide-react';
+import { ArrowUp, Loader2, Sparkles, FileText, ChevronDown, ChevronLeft, ChevronRight, Plus, Check, Edit2, Trash2, User, MessageSquare, PenSquare, Search, Mic, Square, X, Bug, Pin, MoreHorizontal, KeyRound, Eye, EyeOff, CheckSquare, FileAudio, Menu } from 'lucide-react';
 import bearAvatar from './assets/img/ikea-bear.png';
 import dogAvatar from './assets/img/ikea-dog.png';
 import monkeyAvatar from './assets/img/ikea-monkey.png';
@@ -1704,11 +1704,14 @@ function App() {
                 </div>
             </aside>
 
-            {/* Sidebar collapsed toggle — shown when sidebar is closed */}
+            {/* Sidebar collapsed toggle — desktop only. On mobile this used to float
+                fixed over the conversation (limited viewport, nothing to dock it
+                against while scrolling); mobile gets a hamburger button docked
+                inside the header instead (below), which never overlaps content. */}
             {isSidebarCollapsed && (
                 <button
                     onClick={() => setIsSidebarCollapsed(false)}
-                    className="fixed left-3 top-24 z-20 bg-white border border-[#DFDFDF] rounded-full p-2 shadow-lg hover:bg-[#F5F5F5] transition-colors"
+                    className="hidden md:inline-flex fixed left-3 top-24 z-20 bg-white border border-[#DFDFDF] rounded-full p-2 shadow-lg hover:bg-[#F5F5F5] transition-colors"
                     aria-label="Expand sidebar"
                     title="Expand sidebar"
                 >
@@ -1722,6 +1725,22 @@ function App() {
                 {/* Header */}
                 <header className="bg-white min-h-[60px] sm:min-h-[84px] flex items-center shadow-sm border-b border-[#DFDFDF] flex-shrink-0">
                     <div className="max-w-4xl mx-auto w-full px-3 sm:px-6 py-2 sm:py-3 flex items-center justify-between gap-2">
+                        {/* Mobile-only sidebar opener, docked in the header instead of
+                            floating fixed over the conversation (see the desktop-only
+                            toggle above). Only needed while the sidebar is closed —
+                            once open it's a full-screen mobile overlay with its own
+                            close button. */}
+                        {isSidebarCollapsed && (
+                            <button
+                                type="button"
+                                onClick={() => setIsSidebarCollapsed(false)}
+                                className="md:hidden flex-shrink-0 p-1.5 -ml-1 rounded-full hover:bg-[#F5F5F5] transition-colors"
+                                aria-label="Open sidebar"
+                                title="Open sidebar"
+                            >
+                                <Menu className="w-5 h-5 text-[#111111]" />
+                            </button>
+                        )}
                         <button
                             type="button"
                             onClick={startNewConversation}
