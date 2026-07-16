@@ -1720,39 +1720,42 @@ function App() {
             <div className="flex-1 flex flex-col min-w-0 bg-white">
 
                 {/* Header */}
-                <header className="bg-white min-h-[84px] flex items-center shadow-sm border-b border-[#DFDFDF] flex-shrink-0">
-                    <div className="max-w-4xl mx-auto w-full px-4 sm:px-6 py-3 flex items-center justify-between">
+                <header className="bg-white min-h-[60px] sm:min-h-[84px] flex items-center shadow-sm border-b border-[#DFDFDF] flex-shrink-0">
+                    <div className="max-w-4xl mx-auto w-full px-3 sm:px-6 py-2 sm:py-3 flex items-center justify-between gap-2">
                         <button
                             type="button"
                             onClick={startNewConversation}
-                            className="flex items-center gap-4 min-w-0 text-left"
+                            className="flex items-center gap-2 sm:gap-4 min-w-0 flex-1 text-left"
                             aria-label="Start a new conversation"
                             title="Start a new conversation"
                         >
+                            {/* h-6/max-w on mobile keeps the logo from eating the width
+                                the title and header icons need on narrow screens; it was
+                                previously a fixed 36px on every breakpoint. */}
                             <img
                                 src="https://www.inter.ikea.com/-/media/aboutikea/images/brand-default.svg?rev=23ee61ddbb1948f399b47938edeb3c11"
                                 alt="IKEA Logo"
-                                className="h-[36px] w-auto flex-shrink-0"
+                                className="h-6 sm:h-9 w-auto max-w-[72px] sm:max-w-none flex-shrink-0 object-contain"
                             />
-                            <div className="pl-4 border-l border-[#DFDFDF] min-w-0">
-                                <div className="flex items-center gap-2 min-w-0">
-                                    <h1 className="text-xl sm:text-2xl font-bold text-[#111111] leading-[1.67] truncate">Data Machi</h1>
+                            <div className="pl-2 sm:pl-4 border-l border-[#DFDFDF] min-w-0">
+                                <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
+                                    <h1 className="text-base sm:text-2xl font-bold text-[#111111] leading-tight sm:leading-[1.67] truncate">Data Machi</h1>
                                     <span className="hidden sm:inline-flex rounded-full bg-[#DFDFDF] px-2 py-0.5 text-xs font-bold text-[#111111]">
                                         Beta
                                     </span>
                                 </div>
-                                <p className="text-xs text-[#767676] font-medium tracking-wide">Ask your data partner</p>
+                                <p className="text-[10px] sm:text-xs text-[#767676] font-medium tracking-wide truncate">Ask your data partner</p>
                             </div>
                         </button>
-                        <div className="flex items-center gap-1">
+                        <div className="flex items-center gap-0.5 sm:gap-1 flex-shrink-0">
                             {SHOW_AI_DEBUG && (
                                 <button
                                     onClick={() => setDebugMode(prev => !prev)}
-                                    className={`p-2 rounded-full transition-colors ${debugMode ? 'bg-[#F5F5F5]' : 'hover:bg-[#F5F5F5]'}`}
+                                    className={`p-1.5 sm:p-2 rounded-full transition-colors ${debugMode ? 'bg-[#F5F5F5]' : 'hover:bg-[#F5F5F5]'}`}
                                     title={debugMode ? "Hide AI debug" : "Show AI debug"}
                                     aria-pressed={debugMode}
                                 >
-                                    <Bug className="w-5 h-5 text-[#111111]" />
+                                    <Bug className="w-4 h-4 sm:w-5 sm:h-5 text-[#111111]" />
                                 </button>
                             )}
                             {/* Meeting Records page entry */}
@@ -1764,38 +1767,38 @@ function App() {
                                     if (showMeetingsPage) pendingScrollBehaviorRef.current = "auto";
                                     setShowMeetingsPage((v) => !v);
                                 }}
-                                className={`p-2 rounded-full transition-colors ${showMeetingsPage ? 'bg-[#F5F5F5]' : 'hover:bg-[#F5F5F5]'}`}
+                                className={`p-1.5 sm:p-2 rounded-full transition-colors ${showMeetingsPage ? 'bg-[#F5F5F5]' : 'hover:bg-[#F5F5F5]'}`}
                                 title="Meeting Records"
                                 aria-pressed={showMeetingsPage}
                             >
-                                <FileAudio className="w-5 h-5 text-[#111111]" />
+                                <FileAudio className="w-4 h-4 sm:w-5 sm:h-5 text-[#111111]" />
                             </button>
                             {/* Clear / New chat button */}
                             {messages.length > 0 && (
                                 <button
                                     onClick={startNewConversation}
-                                    className="p-2 hover:bg-[#F5F5F5] rounded-full transition-colors"
+                                    className="p-1.5 sm:p-2 hover:bg-[#F5F5F5] rounded-full transition-colors"
                                     title="Start new conversation"
                                 >
-                                    <PenSquare className="w-5 h-5 text-[#111111]" />
+                                    <PenSquare className="w-4 h-4 sm:w-5 sm:h-5 text-[#111111]" />
                                 </button>
                             )}
                             <button
                                 onClick={openApiKeysModal}
-                                className="p-2 rounded-full transition-colors relative hover:bg-[#F5F5F5]"
+                                className="p-1.5 sm:p-2 rounded-full transition-colors relative hover:bg-[#F5F5F5]"
                                 title={(geminiApiKey && groqApiKey) ? "API Keys configured" : "Set API Keys"}
                             >
-                                <KeyRound className={`w-5 h-5 ${geminiApiKey ? 'text-[#0058A3]' : 'text-[#111111]'}`} />
+                                <KeyRound className={`w-4 h-4 sm:w-5 sm:h-5 ${geminiApiKey ? 'text-[#0058A3]' : 'text-[#111111]'}`} />
                                 {!(geminiApiKey && groqApiKey) && (
-                                    <span className="absolute top-1 right-1 w-2 h-2 bg-amber-400 rounded-full" />
+                                    <span className="absolute top-0.5 right-0.5 sm:top-1 sm:right-1 w-2 h-2 bg-amber-400 rounded-full" />
                                 )}
                             </button>
                             <button
                                 onClick={() => setShowAvatarPicker(!showAvatarPicker)}
-                                className="p-2 hover:bg-[#F5F5F5] rounded-full transition-colors"
+                                className="p-1.5 sm:p-2 hover:bg-[#F5F5F5] rounded-full transition-colors"
                                 title="Change avatar"
                             >
-                                <User className="w-5 h-5 text-[#111111]" />
+                                <User className="w-4 h-4 sm:w-5 sm:h-5 text-[#111111]" />
                             </button>
                         </div>
                     </div>
