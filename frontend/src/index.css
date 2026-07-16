@@ -752,65 +752,38 @@
     display: block;
     height: 18px;
     width: 5px;
+    /* 減少低階手機在語音重啟迴圈期間的疊加負擔：合成層提示 + 少量的
+       infinite 動畫元素（13 根減到 7 根，見 App.jsx）。 */
+    will-change: transform;
 }
 
 .voice-waveform span:nth-child(2) {
-    animation-delay: 0.08s;
-    height: 36px;
+    animation-delay: 0.1s;
+    height: 40px;
 }
 
 .voice-waveform span:nth-child(3) {
-    animation-delay: 0.16s;
+    animation-delay: 0.2s;
     height: 46px;
 }
 
 .voice-waveform span:nth-child(4) {
-    animation-delay: 0.24s;
-    height: 28px;
+    animation-delay: 0.3s;
+    height: 26px;
 }
 
 .voice-waveform span:nth-child(5) {
-    animation-delay: 0.32s;
-    height: 16px;
-}
-
-.voice-waveform span:nth-child(6) {
     animation-delay: 0.4s;
-    height: 34px;
-}
-
-.voice-waveform span:nth-child(7) {
-    animation-delay: 0.48s;
-    height: 46px;
-}
-
-.voice-waveform span:nth-child(8) {
-    animation-delay: 0.56s;
     height: 38px;
 }
 
-.voice-waveform span:nth-child(9) {
-    animation-delay: 0.64s;
-    height: 22px;
-}
-
-.voice-waveform span:nth-child(10) {
-    animation-delay: 0.72s;
+.voice-waveform span:nth-child(6) {
+    animation-delay: 0.5s;
     height: 30px;
 }
 
-.voice-waveform span:nth-child(11) {
-    animation-delay: 0.8s;
-    height: 12px;
-}
-
-.voice-waveform span:nth-child(12) {
-    animation-delay: 0.88s;
-    height: 34px;
-}
-
-.voice-waveform span:nth-child(13) {
-    animation-delay: 0.96s;
+.voice-waveform span:nth-child(7) {
+    animation-delay: 0.6s;
     height: 20px;
 }
 

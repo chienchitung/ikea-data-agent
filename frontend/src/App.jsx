@@ -369,6 +369,12 @@ function App() {
     const speechErrorRef = useRef(false);
     const speechDiscardRef = useRef(false);
     const isListeningRef = useRef(false);
+    // 手機瀏覽器（尤其 iOS Safari、以及 Android 音訊裝置搶用時）的語音辨識
+    // session 常常啟動後幾百毫秒內就自行觸發 onend，若無節流會形成
+    // start→onend→start 的緊密迴圈，佔滿主執行緒，使用者感受是「整個
+    // 網頁卡頓」。這兩個 ref 記錄短時間內的重啟次數，超過門檻就放棄。
+    const speechRestartTimestampsRef = useRef([]);
+    const speechRestartTimeoutRef = useRef(null);
     const pendingScrollBehaviorRef = useRef("auto");
     const isCurrentConvLoading = loadingConvIds.has(currentConvId);
     // 串流中的答案已經開始顯示（Phase 3 的 streaming 佔位訊息存在）。
@@ -628,14 +634,42 @@ function App() {
             // "continuous" dictation continuous instead of truncating at the
             // first pause.
             if (!speechErrorRef.current && !speechDiscardRef.current && isListeningRef.current) {
-                try {
-                    recognition.start();
+                // 節流：3 秒內重啟超過 4 次視為異常迴圈（常見於手機瀏覽器
+                // 音訊 session 反覆立即結束），放棄自動重啟、跳提示，而不是
+                // 讓 start()/onend() 緊密循環佔滿主執行緒。
+                const now = Date.now();
+                const recentRestarts = speechRestartTimestampsRef.current.filter(ts => now - ts < 3000);
+                recentRestarts.push(now);
+                speechRestartTimestampsRef.current = recentRestarts;
+
+                if (recentRestarts.length <= 4) {
+                    // 短延遲再重啟，而不是同步立即呼叫：手機上 onend 觸發時，
+                    // 音訊管線往往還沒釋放乾淨，立刻 start() 容易再次立即
+                    // onend，正是緊密迴圈的成因。
+                    speechRestartTimeoutRef.current = window.setTimeout(() => {
+                        speechRestartTimeoutRef.current = null;
+                        if (!isListeningRef.current) return;
+                        try {
+                            recognition.start();
+                        } catch (error) {
+                            console.error("Speech recognition restart failed:", error);
+                            speechErrorRef.current = false;
+                            speechDiscardRef.current = false;
+                            setIsListening(false);
+                        }
+                    }, 120);
                     return;
-                } catch (error) {
-                    console.error("Speech recognition restart failed:", error);
                 }
+
+                console.error("Speech recognition restarted too many times in a row; giving up.");
+                speechRestartTimestampsRef.current = [];
+                setMessages(prev => [...prev, {
+                    role: 'assistant',
+                    content: '⚠️ Voice input was unstable and had to stop. Please try again.'
+                }]);
             }
 
+            speechRestartTimestampsRef.current = [];
             speechErrorRef.current = false;
             speechDiscardRef.current = false;
             setIsListening(false);
@@ -644,6 +678,10 @@ function App() {
         recognitionRef.current = recognition;
 
         return () => {
+            if (speechRestartTimeoutRef.current) {
+                window.clearTimeout(speechRestartTimeoutRef.current);
+                speechRestartTimeoutRef.current = null;
+            }
             recognition.stop();
             recognitionRef.current = null;
         };
@@ -1014,10 +1052,21 @@ function App() {
     };
 
 
+    // 手動停止（切換、取消、確認）都要清掉待執行的自動重啟計時器，
+    // 否則可能在使用者已經停止聽寫後又多重啟一次。
+    const clearPendingSpeechRestart = () => {
+        if (speechRestartTimeoutRef.current) {
+            window.clearTimeout(speechRestartTimeoutRef.current);
+            speechRestartTimeoutRef.current = null;
+        }
+        speechRestartTimestampsRef.current = [];
+    };
+
     const toggleVoiceInput = () => {
         if (!speechSupported || !recognitionRef.current || isClarifyingCurrentConv) return;
 
         if (isListening) {
+            clearPendingSpeechRestart();
             recognitionRef.current.stop();
             setIsListening(false);
             return;
@@ -1028,6 +1077,7 @@ function App() {
         speechInterimRef.current = "";
         speechErrorRef.current = false;
         speechDiscardRef.current = false;
+        clearPendingSpeechRestart();
         try {
             recognitionRef.current.start();
             setIsListening(true);
@@ -1039,6 +1089,7 @@ function App() {
 
     const cancelVoiceInput = () => {
         if (!recognitionRef.current) return;
+        clearPendingSpeechRestart();
         speechDiscardRef.current = true;
         recognitionRef.current.stop();
         setIsListening(false);
@@ -1046,6 +1097,7 @@ function App() {
 
     const confirmVoiceInput = () => {
         if (!recognitionRef.current) return;
+        clearPendingSpeechRestart();
         speechDiscardRef.current = false;
         recognitionRef.current.stop();
         setIsListening(false);
@@ -1908,12 +1960,6 @@ function App() {
                         />
                         {isListening && (
                             <div className="voice-waveform" aria-hidden="true">
-                                <span />
-                                <span />
-                                <span />
-                                <span />
-                                <span />
-                                <span />
                                 <span />
                                 <span />
                                 <span />
