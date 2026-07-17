@@ -347,6 +347,10 @@ function App() {
     const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0 });
     const [userAvatar, setUserAvatar] = useState(bearAvatar);
     const [showAvatarPicker, setShowAvatarPicker] = useState(false);
+    // 面板位置由按鈕實際位置量測而來（見 avatar 按鈕 onClick），不是釘死在
+    // 視窗右邊界——header 內容置中在 max-w-4xl 欄位內，螢幕越寬，人形圖示
+    // 離視窗右邊界就越遠，寫死 right-* 會讓面板跟圖示分離、飄向真正的視窗邊緣。
+    const [avatarPanelPosition, setAvatarPanelPosition] = useState({ top: 0, left: 0 });
     const [debugMode, setDebugMode] = useState(false);
     const [showApiKeyModal, setShowApiKeyModal] = useState(false);
     const [apiKeyInput, setApiKeyInput] = useState('');
@@ -1798,7 +1802,14 @@ function App() {
                                 )}
                             </button>
                             <button
-                                onClick={() => setShowAvatarPicker(!showAvatarPicker)}
+                                onClick={(e) => {
+                                    if (showAvatarPicker) { setShowAvatarPicker(false); return; }
+                                    const rect = e.currentTarget.getBoundingClientRect();
+                                    const panelWidth = Math.min(320, window.innerWidth - 24);
+                                    const left = Math.max(8, Math.min(rect.right - panelWidth, window.innerWidth - panelWidth - 8));
+                                    setAvatarPanelPosition({ top: rect.bottom + 8, left });
+                                    setShowAvatarPicker(true);
+                                }}
                                 className="p-1.5 sm:p-2 hover:bg-[#F5F5F5] rounded-full transition-colors"
                                 title="Change avatar"
                             >
@@ -2298,7 +2309,10 @@ function App() {
             {showAvatarPicker && (
                 <>
                     <div className="fixed inset-0 z-40" onClick={() => setShowAvatarPicker(false)} />
-                    <div className="fixed top-20 right-3 sm:right-6 bg-white rounded-lg p-4 sm:p-6 w-[min(320px,calc(100vw-1.5rem))] shadow-2xl border border-[#DFDFDF] z-50">
+                    <div
+                        className="fixed bg-white rounded-lg p-4 sm:p-6 w-[min(320px,calc(100vw-1.5rem))] shadow-2xl border border-[#DFDFDF] z-50"
+                        style={{ top: avatarPanelPosition.top, left: avatarPanelPosition.left }}
+                    >
                         <h3 className="text-lg font-semibold mb-4">Choose your avatar</h3>
                         <div className="grid grid-cols-3 gap-4">
                             {AVATARS.map((avatar) => (
