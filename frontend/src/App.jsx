@@ -4,6 +4,7 @@ import { ChatMessage } from './components/ChatMessage';
 import { ArrowUp, Loader2, Sparkles, FileText, ChevronDown, ChevronLeft, Plus, Check, Edit2, Trash2, User, MessageSquare, PenSquare, Search, Mic, Square, X, Bug, Pin, MoreHorizontal, KeyRound, Eye, EyeOff, CheckSquare, FileAudio, Menu } from 'lucide-react';
 import bearAvatar from './assets/img/ikea-bear.png';
 import dogAvatar from './assets/img/ikea-dog.png';
+import elephantAvatar from './assets/img/ikea-elephant.png';
 import monkeyAvatar from './assets/img/ikea-monkey.png';
 import sharkAvatar from './assets/img/ikea-shark.png';
 import teddyAvatar from './assets/img/ikea-teddy.png';
@@ -21,6 +22,7 @@ const ACTIVE_DOCS_STORAGE = 'ikea_agent_active_docs';
 const AVATARS = [
     { id: 'bear', name: 'Bear', src: bearAvatar },
     { id: 'dog', name: 'Dog', src: dogAvatar },
+    { id: 'elephant', name: 'Elephant', src: elephantAvatar },
     { id: 'monkey', name: 'Monkey', src: monkeyAvatar },
     { id: 'shark', name: 'Shark', src: sharkAvatar },
     { id: 'teddy', name: 'Teddy', src: teddyAvatar },
