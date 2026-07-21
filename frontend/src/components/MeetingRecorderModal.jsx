@@ -50,40 +50,12 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
     const [errorMessage, setErrorMessage] = useState('');
     const [errorDetails, setErrorDetails] = useState('');
 
-    // Audio prep (upload + normalize) runs automatically the moment a file is
-    // picked or a recording finishes, instead of waiting for "Generate
-    // Meeting Minutes" — see the effect below. 'idle' | 'preparing' | 'ready' | 'error'.
-    const [prepStatus, setPrepStatus] = useState('idle');
-    const [prepMeetingId, setPrepMeetingId] = useState(null);
-    const [prepProgressLabel, setPrepProgressLabel] = useState('');
-    const [prepError, setPrepError] = useState('');
-
     const mediaRecorderRef = useRef(null);
     const streamRef = useRef(null);
     const chunksRef = useRef([]);
     const timerRef = useRef(null);
     const elapsedTimerRef = useRef(null);
     const abortControllerRef = useRef(null);
-    const prepAbortControllerRef = useRef(null);
-    // Mirrors prepMeetingId, but readable synchronously from effect cleanup /
-    // unmount (state reads there would be stale). Non-null means "this
-    // meeting_id has prepared audio on the server but no saved meeting record
-    // yet" — i.e. it's an orphan if we walk away now and must be deleted.
-    // Cleared to null (without deleting) the moment generation actually
-    // succeeds, since at that point it's a real, kept meeting record.
-    const prepMeetingIdRef = useRef(null);
-
-    // Aborts any in-flight prepare call and deletes the server-side prepared
-    // audio for a meeting_id that never made it to a saved meeting record.
-    // Safe to call repeatedly (e.g. from both an effect and unmount).
-    const cleanupOrphanedPrep = () => {
-        prepAbortControllerRef.current?.abort();
-        const orphanedId = prepMeetingIdRef.current;
-        prepMeetingIdRef.current = null;
-        if (orphanedId) {
-            fetch(`${apiUrl}/meetings/${orphanedId}`, { method: 'DELETE' }).catch(() => {});
-        }
-    };
 
     useEffect(() => {
         return () => {
@@ -92,83 +64,9 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
             streamRef.current?.getTracks().forEach((track) => track.stop());
             if (recordedUrl) URL.revokeObjectURL(recordedUrl);
             abortControllerRef.current?.abort();
-            cleanupOrphanedPrep();
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
-
-    // Kicks off audio prep (upload + normalize) automatically whenever the
-    // selected file or finished recording changes, instead of waiting for the
-    // user to click "Generate Meeting Minutes". By the time they've filled in
-    // the form and clicked it, prep has usually already finished, so that
-    // click can go straight into transcribing.
-    useEffect(() => {
-        const source = mode === 'upload' ? selectedFile : recordedBlob;
-
-        cleanupOrphanedPrep();
-        setPrepMeetingId(null);
-        setPrepStatus(source ? 'preparing' : 'idle');
-        setPrepProgressLabel('');
-        setPrepError('');
-
-        if (!source) return undefined;
-
-        const controller = new AbortController();
-        prepAbortControllerRef.current = controller;
-
-        (async () => {
-            try {
-                const formData = new FormData();
-                if (mode === 'record') {
-                    const ext = source.type?.includes('mp4') ? 'm4a' : 'webm';
-                    formData.append('audio', source, `recording.${ext}`);
-                } else {
-                    formData.append('audio', source);
-                }
-
-                const response = await fetch(`${apiUrl}/meetings/prepare-audio/stream`, {
-                    method: 'POST',
-                    body: formData,
-                    signal: controller.signal,
-                });
-
-                if (!response.ok) {
-                    const data = await response.json().catch(() => null);
-                    throw new Error(data?.detail?.message || data?.message || `Request failed with status ${response.status}`);
-                }
-
-                let finalPayload = null;
-                let errorPayload = null;
-
-                await readSseStream(response, (event, data) => {
-                    if (event === 'progress') {
-                        const percent = typeof data?.percent === 'number' ? data.percent : null;
-                        const baseLabel = PROGRESS_LABELS[data?.phase] || data?.label || 'Preparing audio…';
-                        setPrepProgressLabel(percent != null ? `${baseLabel} ${percent}%` : baseLabel);
-                    } else if (event === 'final') {
-                        finalPayload = data;
-                    } else if (event === 'error') {
-                        errorPayload = data;
-                    }
-                });
-
-                if (errorPayload) throw new Error(errorPayload.message || 'Could not prepare this recording.');
-                if (!finalPayload?.meeting_id) throw new Error('Audio preparation ended without a result.');
-
-                prepMeetingIdRef.current = finalPayload.meeting_id;
-                setPrepMeetingId(finalPayload.meeting_id);
-                setPrepStatus('ready');
-            } catch (error) {
-                if (error.name === 'AbortError') return;
-                console.error('Audio prepare failed:', error);
-                setPrepStatus('error');
-                setPrepError(error.message || 'Could not prepare this recording.');
-            }
-        })();
-
-        return () => controller.abort();
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [mode === 'upload' ? selectedFile : recordedBlob]);
 
     const discardRecording = () => {
         if (recordedUrl) URL.revokeObjectURL(recordedUrl);
@@ -217,12 +115,20 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
         clearInterval(timerRef.current);
     };
 
-    // No audio file here — /meetings/generate/stream now transcribes whatever
-    // /meetings/prepare-audio/stream already uploaded and normalized for
-    // prepMeetingId (see the effect above), identified by meeting_id alone.
-    const buildMetadataFormData = () => {
+    const buildAudioFormData = () => {
         const formData = new FormData();
-        formData.append('meeting_id', prepMeetingId);
+        if (mode === 'record' && recordedBlob) {
+            const ext = recordedBlob.type.includes('mp4') ? 'm4a' : 'webm';
+            formData.append('audio', recordedBlob, `recording.${ext}`);
+        } else if (selectedFile) {
+            formData.append('audio', selectedFile);
+        }
+        return formData;
+    };
+
+    const buildMetadataFormData = (meetingId) => {
+        const formData = new FormData();
+        formData.append('meeting_id', meetingId);
         formData.append('meeting_title', meetingTitle);
         formData.append('date', date);
         formData.append('time', time);
@@ -242,20 +148,24 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
     // request (the fetch's AbortController) if one is running, then close.
     // Aborting resolves readSseStream's await with an AbortError, which the
     // catch block below already treats as a silent, expected cancellation.
-    // Also cleans up any prepared-but-unused audio so it doesn't linger
-    // server-side with no meeting record ever attached to it.
     const handleCancel = () => {
         abortControllerRef.current?.abort();
-        cleanupOrphanedPrep();
         onClose();
     };
 
+    // One click runs the whole pipeline — upload+prepare audio, then
+    // transcribe+draft — under a single continuous progress panel. This used
+    // to be split into an automatic "prepare while you fill in the form"
+    // phase plus a separate click, on the theory that prep would usually
+    // finish before the user reached the button. In practice it just added a
+    // second, separate-feeling wait after the first one instead of shortening
+    // anything, so it's back to one click, one wait, one thing to watch.
     const handleSubmit = async () => {
-        if (!hasAudio || !hasGroqKey || isSubmitting || prepStatus !== 'ready') return;
+        if (!hasAudio || !hasGroqKey || isSubmitting) return;
         setIsSubmitting(true);
         setErrorMessage('');
         setErrorDetails('');
-        setProgressLabel('Transcribing audio…');
+        setProgressLabel('Uploading recording…');
         setProgressPercent(null);
         setElapsedSeconds(0);
         clearInterval(elapsedTimerRef.current);
@@ -264,35 +174,59 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
         const controller = new AbortController();
         abortControllerRef.current = controller;
 
+        const onSseEvent = (event, data, onFinal, onError) => {
+            if (event === 'progress') {
+                const percent = typeof data?.percent === 'number' ? data.percent : null;
+                const baseLabel = PROGRESS_LABELS[data?.phase] || data?.label || 'Processing…';
+                setProgressLabel(percent != null ? `${baseLabel} ${percent}%` : baseLabel);
+                setProgressPercent(percent);
+            } else if (event === 'final') {
+                onFinal(data);
+            } else if (event === 'error') {
+                onError(data);
+            }
+        };
+
+        // meeting_id is only assigned once prepare-audio actually succeeds —
+        // used in the catch block below to clean up a meeting that finished
+        // preparing but never made it through generate (e.g. cancelled or
+        // failed mid-transcription), so it doesn't linger server-side
+        // attached to nothing.
+        let meetingId = null;
+
         try {
-            const response = await fetch(`${apiUrl}/meetings/generate/stream`, {
+            const prepResponse = await fetch(`${apiUrl}/meetings/prepare-audio/stream`, {
                 method: 'POST',
-                body: buildMetadataFormData(),
+                body: buildAudioFormData(),
                 signal: controller.signal,
             });
+            if (!prepResponse.ok) {
+                const data = await prepResponse.json().catch(() => null);
+                throw new Error(data?.detail?.message || data?.message || `Request failed with status ${prepResponse.status}`);
+            }
 
-            if (!response.ok) {
-                const data = await response.json().catch(() => null);
-                const failure = new Error(data?.detail?.message || data?.message || `Request failed with status ${response.status}`);
+            let prepFinal = null;
+            let prepError = null;
+            await readSseStream(prepResponse, (event, data) => onSseEvent(event, data, (d) => { prepFinal = d; }, (d) => { prepError = d; }));
+            if (prepError) throw new Error(prepError.message || 'Could not prepare this recording.');
+            if (!prepFinal?.meeting_id) throw new Error('Audio preparation ended without a result.');
+            meetingId = prepFinal.meeting_id;
+
+            const genResponse = await fetch(`${apiUrl}/meetings/generate/stream`, {
+                method: 'POST',
+                body: buildMetadataFormData(meetingId),
+                signal: controller.signal,
+            });
+            if (!genResponse.ok) {
+                const data = await genResponse.json().catch(() => null);
+                const failure = new Error(data?.detail?.message || data?.message || `Request failed with status ${genResponse.status}`);
                 failure.details = data?.detail?.details || data?.details;
                 throw failure;
             }
 
             let finalPayload = null;
             let errorPayload = null;
-
-            await readSseStream(response, (event, data) => {
-                if (event === 'progress') {
-                    const percent = typeof data?.percent === 'number' ? data.percent : null;
-                    const baseLabel = PROGRESS_LABELS[data?.phase] || data?.label || 'Processing…';
-                    setProgressLabel(percent != null ? `${baseLabel} ${percent}%` : baseLabel);
-                    setProgressPercent(percent);
-                } else if (event === 'final') {
-                    finalPayload = data;
-                } else if (event === 'error') {
-                    errorPayload = data;
-                }
-            });
+            await readSseStream(genResponse, (event, data) => onSseEvent(event, data, (d) => { finalPayload = d; }, (d) => { errorPayload = d; }));
 
             if (errorPayload) {
                 const failure = new Error(errorPayload.message || 'Meeting minutes generation failed.');
@@ -342,16 +276,18 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
             // seeing their result — this meeting_id is already safely cached
             // locally at this point regardless of whether the delete succeeds.
             fetch(`${apiUrl}/meetings/${finalPayload.meeting_id}`, { method: 'DELETE' }).catch(() => {});
-
-            // This meeting_id now has a real, locally-saved meeting record —
-            // clear the orphan tracker before onGenerated() (which the parent
-            // responds to by unmounting this modal) so the unmount cleanup
-            // doesn't try to delete it via the (already-gone) backend copy.
-            prepMeetingIdRef.current = null;
             onGenerated(finalPayload);
         } catch (error) {
-            if (error.name === 'AbortError') return;
+            if (error.name === 'AbortError') {
+                // Prepare-audio finished (we have a meeting_id) but generate was
+                // cancelled or failed before ever saving a record — clean up the
+                // now-orphaned server-side prep rather than leaving it attached
+                // to nothing.
+                if (meetingId) fetch(`${apiUrl}/meetings/${meetingId}`, { method: 'DELETE' }).catch(() => {});
+                return;
+            }
             console.error('Meeting generation failed:', error);
+            if (meetingId) fetch(`${apiUrl}/meetings/${meetingId}`, { method: 'DELETE' }).catch(() => {});
             setErrorMessage(error.message || 'Something went wrong while generating meeting minutes.');
             setErrorDetails(typeof error.details === 'string' ? error.details : (error.details ? JSON.stringify(error.details) : ''));
         } finally {
@@ -451,27 +387,6 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
                         </div>
                     )}
 
-                    {/* Runs automatically as soon as a file/recording exists, well before
-                        the user reaches "Generate Meeting Minutes" — compact by design so
-                        it doesn't compete with the big progress panel that phase 2
-                        (transcribing + drafting) shows lower down. */}
-                    {prepStatus !== 'idle' && (
-                        <div className="mb-4 flex items-center gap-2 text-xs">
-                            {prepStatus === 'preparing' && (
-                                <>
-                                    <Loader2 className="w-3.5 h-3.5 animate-spin text-[#0058A3] shrink-0" />
-                                    <span className="text-[#767676]">{prepProgressLabel || 'Preparing audio…'}</span>
-                                </>
-                            )}
-                            {prepStatus === 'ready' && (
-                                <span className="text-[#0058A3] font-medium">Audio ready — fill in the details and generate whenever you're ready.</span>
-                            )}
-                            {prepStatus === 'error' && (
-                                <span className="text-red-500">{prepError || 'Could not prepare this recording.'}</span>
-                            )}
-                        </div>
-                    )}
-
                     {/* Meta fields — mirrors the paper template's header fields */}
                     <div className="grid grid-cols-2 gap-3">
                         <div className="col-span-2">
@@ -536,8 +451,8 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
                             {audioFileBytes > GROQ_CHUNKING_THRESHOLD_BYTES && (
                                 <p className="mt-2 text-xs text-[#767676]">
                                     {progressPercent != null
-                                        ? 'This is a long recording, so transcription runs in stages — it can take a few minutes. The percentage above updates as each stage finishes.'
-                                        : 'This is a long recording — preparing it can take a little while before transcription starts.'}
+                                        ? 'This is a long recording, so this runs in stages — it can take a few minutes. The percentage above updates as each stage finishes.'
+                                        : 'This is a long recording — it can take a little while before the percentage above starts moving.'}
                                 </p>
                             )}
                         </div>
@@ -572,10 +487,10 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
                         <button
                             type="button"
                             onClick={handleSubmit}
-                            disabled={!hasAudio || !hasGroqKey || prepStatus !== 'ready'}
+                            disabled={!hasAudio || !hasGroqKey}
                             className="px-4 py-2 text-sm font-medium text-white bg-[#0058A3] hover:bg-[#004F93] rounded-lg transition-colors disabled:opacity-50"
                         >
-                            {prepStatus === 'preparing' ? 'Preparing audio…' : 'Generate Meeting Minutes'}
+                            Generate Meeting Minutes
                         </button>
                     )}
                 </div>
