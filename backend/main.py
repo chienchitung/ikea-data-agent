@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,11 +18,26 @@ import uvicorn
 
 app = FastAPI()
 
-# Allow frontend to communicate
+# Wide open (allow_origins=["*"] + allow_credentials=True) used to mean any
+# website's JS could call this API cross-origin in a visitor's browser —
+# free-riding on this backend's compute/quota, or a copycat frontend
+# talking to it without our knowledge. Restricted to the actual frontend(s)
+# below; ALLOWED_ORIGINS (comma-separated) lets Render's dashboard add more
+# without a code change — e.g. a custom domain, or a temporary preview URL.
+# allow_credentials is False because nothing here uses cookies: the
+# Gemini/Groq keys are sent explicitly in each request body, not via
+# browser-managed credentials.
+_default_origins = "https://ikea-data-agent.vercel.app,http://localhost:5173"
+ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("ALLOWED_ORIGINS", _default_origins).split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -359,7 +375,6 @@ async def clarification_endpoint(request: ClarificationRequest):
 from fastapi import UploadFile, File, Form
 from fastapi.responses import JSONResponse, FileResponse
 import shutil
-import os
 from urllib.parse import unquote
 from agents.document import (
     initialize_knowledge_base,

@@ -19,6 +19,12 @@ services:
     envVars:
       - key: DATA_DIR
         sync: false
+      # 選填，逗號分隔的允許來源清單（CORS）。未設定時預設只允許
+      # https://ikea-data-agent.vercel.app 和本機開發（localhost:5173）——
+      # 見 backend/main.py 的 ALLOWED_ORIGINS。之後加自訂網域或
+      # Vercel preview 網址時，不用改程式碼，直接在這裡設定即可。
+      - key: ALLOWED_ORIGINS
+        sync: false
       - key: PYTHON_VERSION
         value: 3.11.15
       - key: GOOGLE_API_KEY
