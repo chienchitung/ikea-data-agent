@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useLayoutEffect, lazy, Suspense } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, useMemo, lazy, Suspense } from 'react';
 import axios from 'axios';
 import { ChatMessage } from './components/ChatMessage';
 import { ArrowUp, Loader2, Sparkles, FileText, ChevronDown, ChevronLeft, Plus, Check, Edit2, Trash2, User, MessageSquare, PenSquare, Search, Mic, Square, X, Bug, Pin, MoreHorizontal, KeyRound, Eye, EyeOff, CheckSquare, FileAudio, Menu } from 'lucide-react';
@@ -126,6 +126,23 @@ function formatRelativeTime(ts) {
     if (days === 1) return 'Yesterday';
     const d = new Date(ts);
     return `${d.getMonth() + 1}/${d.getDate()}`;
+}
+
+// Used by the conversation search panel: when a match comes from message
+// content rather than the title (already shown as the result's heading),
+// this gives a short "why this matched" preview centered on the hit instead
+// of just the message's first ~30 characters, which for a long reply would
+// usually not even contain the matched word.
+function buildMatchSnippet(content, query) {
+    const lower = content.toLowerCase();
+    const index = lower.indexOf(query);
+    if (index === -1) return content.slice(0, 80);
+    const start = Math.max(0, index - 30);
+    const end = Math.min(content.length, index + query.length + 30);
+    let snippet = content.slice(start, end).replace(/\s+/g, ' ').trim();
+    if (start > 0) snippet = `…${snippet}`;
+    if (end < content.length) snippet = `${snippet}…`;
+    return snippet;
 }
 
 function loadConversations() {
@@ -350,6 +367,12 @@ function App() {
     const [renamingConvTitle, setRenamingConvTitle] = useState("");
     const [isSelectingConvs, setIsSelectingConvs] = useState(false);
     const [selectedConvIds, setSelectedConvIds] = useState(new Set());
+    // Search-conversations panel — same concept as Claude's own conversation
+    // search: a command-palette-style overlay, not an inline sidebar filter.
+    const [showConvSearch, setShowConvSearch] = useState(false);
+    const [convSearchQuery, setConvSearchQuery] = useState('');
+    const [convSearchActiveIndex, setConvSearchActiveIndex] = useState(0);
+    const convSearchInputRef = useRef(null);
     const [isSelectingDocs, setIsSelectingDocs] = useState(false);
     const [selectedDocIdsForDelete, setSelectedDocIdsForDelete] = useState(new Set());
     const [openMenuConvId, setOpenMenuConvId] = useState(null);
@@ -738,6 +761,70 @@ function App() {
         setCurrentConvId(conv.id);
         setMessages(conv.messages);
         setShowMeetingsPage(false);
+    };
+
+    const openConvSearch = () => {
+        setShowConvSearch(true);
+        setConvSearchQuery('');
+        setConvSearchActiveIndex(0);
+    };
+
+    const closeConvSearch = () => {
+        setShowConvSearch(false);
+    };
+
+    const selectConvFromSearch = (conv) => {
+        switchConversation(conv);
+        closeConvSearch();
+    };
+
+    // Matches title OR any message's content (not just the title, unlike the
+    // plain sidebar list) — same pinned-then-recency ordering as the sidebar
+    // when the query is empty, so opening the panel shows something useful
+    // before typing anything, the same way Claude's search does.
+    const convSearchResults = useMemo(() => {
+        const sorted = conversations.slice().sort((a, b) => {
+            if (a.pinned && !b.pinned) return -1;
+            if (!a.pinned && b.pinned) return 1;
+            return b.createdAt - a.createdAt;
+        });
+        const query = convSearchQuery.trim().toLowerCase();
+        if (!query) return sorted.map((conv) => ({ conv, snippet: null }));
+
+        const results = [];
+        for (const conv of sorted) {
+            if ((conv.title || '').toLowerCase().includes(query)) {
+                results.push({ conv, snippet: null });
+                continue;
+            }
+            const hit = (conv.messages || []).find((m) => (m.content || '').toLowerCase().includes(query));
+            if (hit) results.push({ conv, snippet: buildMatchSnippet(hit.content, query) });
+        }
+        return results;
+    }, [conversations, convSearchQuery]);
+
+    useEffect(() => {
+        setConvSearchActiveIndex(0);
+    }, [convSearchQuery]);
+
+    useEffect(() => {
+        if (showConvSearch) convSearchInputRef.current?.focus();
+    }, [showConvSearch]);
+
+    const handleConvSearchKeyDown = (e) => {
+        if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            setConvSearchActiveIndex((i) => Math.min(i + 1, convSearchResults.length - 1));
+        } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            setConvSearchActiveIndex((i) => Math.max(i - 1, 0));
+        } else if (e.key === 'Enter') {
+            e.preventDefault();
+            const result = convSearchResults[convSearchActiveIndex];
+            if (result) selectConvFromSearch(result.conv);
+        } else if (e.key === 'Escape') {
+            closeConvSearch();
+        }
     };
 
     // Shared by the header's key button and MeetingRecordsPage's proactive
@@ -1411,6 +1498,15 @@ function App() {
                             <div className="flex items-center gap-1">
                                 {conversations.length > 0 && (
                                     <button
+                                        onClick={openConvSearch}
+                                        className="p-1 rounded text-[#767676] hover:bg-[#DFDFDF] transition-colors"
+                                        title="Search conversations"
+                                    >
+                                        <Search className="w-3.5 h-3.5" />
+                                    </button>
+                                )}
+                                {conversations.length > 0 && (
+                                    <button
                                         onClick={toggleConvSelectMode}
                                         className={`p-1 rounded transition-colors ${isSelectingConvs ? 'bg-[#0058A3] text-white' : 'text-[#767676] hover:bg-[#DFDFDF]'}`}
                                         title={isSelectingConvs ? 'Exit select mode' : 'Select conversations to delete'}
@@ -2063,6 +2159,61 @@ function App() {
                 </>
                 )}
             </div>
+
+            {/* ── Search Conversations Panel ── */}
+            {showConvSearch && (
+                <div className="fixed inset-0 bg-black/50 flex items-start justify-center z-50 pt-24 px-4" onClick={closeConvSearch}>
+                    <div
+                        className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[70vh] flex flex-col overflow-hidden"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <div className="flex items-center gap-2 px-4 py-3 border-b border-[#DFDFDF] flex-shrink-0">
+                            <Search className="w-4 h-4 text-[#767676] flex-shrink-0" />
+                            <input
+                                ref={convSearchInputRef}
+                                type="text"
+                                value={convSearchQuery}
+                                onChange={(e) => setConvSearchQuery(e.target.value)}
+                                onKeyDown={handleConvSearchKeyDown}
+                                placeholder="Search conversations…"
+                                className="flex-1 text-sm outline-none text-[#111111] placeholder:text-[#AAAAAA] bg-transparent"
+                            />
+                            <button onClick={closeConvSearch} className="p-1 hover:bg-[#F5F5F5] rounded-full transition-colors flex-shrink-0" aria-label="Close">
+                                <X className="w-4 h-4 text-[#767676]" />
+                            </button>
+                        </div>
+                        <div className="flex-1 overflow-y-auto py-2">
+                            {convSearchResults.length === 0 ? (
+                                <p className="text-sm text-[#767676] text-center py-8">
+                                    {convSearchQuery.trim() ? `No conversations found for "${convSearchQuery.trim()}"` : 'No conversations yet'}
+                                </p>
+                            ) : (
+                                convSearchResults.map(({ conv, snippet }, index) => (
+                                    <button
+                                        key={conv.id}
+                                        type="button"
+                                        onClick={() => selectConvFromSearch(conv)}
+                                        onMouseEnter={() => setConvSearchActiveIndex(index)}
+                                        className={`w-full flex items-start gap-2.5 px-4 py-2.5 text-left transition-colors ${index === convSearchActiveIndex ? 'bg-[#F5F5F5]' : 'hover:bg-[#F5F5F5]'}`}
+                                    >
+                                        {conv.pinned ? (
+                                            <Pin className="w-3.5 h-3.5 flex-shrink-0 mt-0.5 text-[#0058A3]" />
+                                        ) : (
+                                            <MessageSquare className="w-3.5 h-3.5 flex-shrink-0 mt-0.5 text-[#767676]" />
+                                        )}
+                                        <div className="flex-1 min-w-0">
+                                            <p className="text-sm font-medium text-[#111111] truncate">{conv.title}</p>
+                                            <p className="text-xs text-[#767676] mt-0.5 truncate">
+                                                {snippet || formatRelativeTime(conv.createdAt)}
+                                            </p>
+                                        </div>
+                                    </button>
+                                ))
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* ── Rename Conversation Modal ── */}
             {renamingConvId && (
