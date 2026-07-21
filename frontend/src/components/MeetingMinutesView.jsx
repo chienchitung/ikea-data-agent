@@ -262,6 +262,23 @@ export function MeetingMinutesView({ apiUrl, meetingId, onClose }) {
         }
     };
 
+    // Unlike the .docx download, the transcript is plain text already sitting
+    // in `record` (from IndexedDB) — no backend round-trip needed, just wrap
+    // it in a Blob and trigger a download the same way.
+    const handleTranscriptDownload = () => {
+        if (!record?.transcript) return;
+        const blob = new Blob([record.transcript], { type: 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        const title = record?.meeting_data?.meeting_title || 'Meeting Notes';
+        link.download = `${title} - Transcript.txt`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+    };
+
     return (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
             <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
@@ -373,14 +390,26 @@ export function MeetingMinutesView({ apiUrl, meetingId, onClose }) {
                             </section>
 
                             <section>
-                                <button
-                                    type="button"
-                                    onClick={() => setShowTranscript((v) => !v)}
-                                    className="flex items-center gap-1 text-xs font-semibold text-[#767676] hover:text-[#111111]"
-                                >
-                                    <ChevronDown className={`w-3.5 h-3.5 transition-transform ${showTranscript ? '' : '-rotate-90'}`} />
-                                    View transcript
-                                </button>
+                                <div className="flex items-center justify-between">
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowTranscript((v) => !v)}
+                                        className="flex items-center gap-1 text-xs font-semibold text-[#767676] hover:text-[#111111]"
+                                    >
+                                        <ChevronDown className={`w-3.5 h-3.5 transition-transform ${showTranscript ? '' : '-rotate-90'}`} />
+                                        View transcript
+                                    </button>
+                                    {record?.transcript && (
+                                        <button
+                                            type="button"
+                                            onClick={handleTranscriptDownload}
+                                            className="flex items-center gap-1 text-xs font-medium text-[#0058A3] hover:underline"
+                                        >
+                                            <Download className="w-3 h-3" />
+                                            Download transcript (.txt)
+                                        </button>
+                                    )}
+                                </div>
                                 {showTranscript && (
                                     <div className="mt-2">
                                         {audioUrl && <audio ref={audioRef} controls src={audioUrl} className="w-full mb-2" />}
