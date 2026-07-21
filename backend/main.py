@@ -725,7 +725,20 @@ async def generate_meeting_minutes_stream(
                 normalized_path = await asyncio.to_thread(normalize_audio, str(audio_path))
 
                 await queue.put(("progress", {"phase": "transcribing", "label": "Transcribing audio"}))
-                transcription = await transcribe_audio(normalized_path, groq_api_key)
+
+                async def on_transcription_chunk_done(completed: int, total: int) -> None:
+                    # Only fires when the recording was large enough to need
+                    # splitting; short recordings finish in one Groq request
+                    # with no intermediate progress to report.
+                    await queue.put(("progress", {
+                        "phase": "transcribing",
+                        "label": f"Transcribing audio ({completed}/{total})",
+                        "current": completed,
+                        "total": total,
+                        "percent": round(completed / total * 100) if total else None,
+                    }))
+
+                transcription = await transcribe_audio(normalized_path, groq_api_key, on_chunk_done=on_transcription_chunk_done)
                 transcript = transcription["text"]
                 segments = transcription["segments"]
 

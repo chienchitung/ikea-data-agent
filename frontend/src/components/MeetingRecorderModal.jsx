@@ -9,6 +9,13 @@ const PROGRESS_LABELS = {
     drafting_minutes: 'Drafting meeting minutes…',
 };
 
+// Mirrors the backend's GROQ_MAX_UPLOAD_BYTES (backend/agents/meeting.py) — the
+// original file size isn't exactly what that check runs against (the backend
+// checks the normalized mp3, not this raw upload/recording), so this is only
+// used as a rough heuristic for whether to show the "this may take a few
+// stages" hint before the server has reported any real progress.
+const GROQ_CHUNKING_THRESHOLD_BYTES = 20 * 1024 * 1024;
+
 function formatSeconds(totalSeconds) {
     const minutes = Math.floor(totalSeconds / 60);
     const seconds = totalSeconds % 60;
@@ -34,6 +41,10 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
 
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [progressLabel, setProgressLabel] = useState('');
+    // null = indeterminate (no chunk-level progress to report yet, e.g. short
+    // recordings that transcribe in a single request); 0-100 = determinate.
+    const [progressPercent, setProgressPercent] = useState(null);
+    const [elapsedSeconds, setElapsedSeconds] = useState(0);
     const [errorMessage, setErrorMessage] = useState('');
     const [errorDetails, setErrorDetails] = useState('');
 
@@ -41,11 +52,13 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
     const streamRef = useRef(null);
     const chunksRef = useRef([]);
     const timerRef = useRef(null);
+    const elapsedTimerRef = useRef(null);
     const abortControllerRef = useRef(null);
 
     useEffect(() => {
         return () => {
             clearInterval(timerRef.current);
+            clearInterval(elapsedTimerRef.current);
             streamRef.current?.getTracks().forEach((track) => track.stop());
             if (recordedUrl) URL.revokeObjectURL(recordedUrl);
             abortControllerRef.current?.abort();
@@ -121,6 +134,7 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
 
     const hasAudio = mode === 'upload' ? !!selectedFile : !!recordedBlob;
     const hasGroqKey = !!(groqApiKey || '').trim();
+    const audioFileBytes = mode === 'upload' ? (selectedFile?.size || 0) : (recordedBlob?.size || 0);
 
     const handleSubmit = async () => {
         if (!hasAudio || !hasGroqKey || isSubmitting) return;
@@ -128,6 +142,10 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
         setErrorMessage('');
         setErrorDetails('');
         setProgressLabel('Uploading recording…');
+        setProgressPercent(null);
+        setElapsedSeconds(0);
+        clearInterval(elapsedTimerRef.current);
+        elapsedTimerRef.current = setInterval(() => setElapsedSeconds((s) => s + 1), 1000);
 
         const controller = new AbortController();
         abortControllerRef.current = controller;
@@ -151,7 +169,13 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
 
             await readSseStream(response, (event, data) => {
                 if (event === 'progress') {
-                    setProgressLabel(PROGRESS_LABELS[data?.phase] || data?.label || 'Processing…');
+                    const percent = typeof data?.percent === 'number' ? data.percent : null;
+                    setProgressLabel(
+                        percent != null
+                            ? `Transcribing audio… ${percent}%`
+                            : (PROGRESS_LABELS[data?.phase] || data?.label || 'Processing…')
+                    );
+                    setProgressPercent(percent);
                 } else if (event === 'final') {
                     finalPayload = data;
                 } else if (event === 'error') {
@@ -175,8 +199,10 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
             setErrorMessage(error.message || 'Something went wrong while generating meeting minutes.');
             setErrorDetails(typeof error.details === 'string' ? error.details : (error.details ? JSON.stringify(error.details) : ''));
         } finally {
+            clearInterval(elapsedTimerRef.current);
             setIsSubmitting(false);
             setProgressLabel('');
+            setProgressPercent(null);
             abortControllerRef.current = null;
         }
     };
@@ -304,6 +330,37 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
                                 className="w-full mt-1 px-3 py-2 text-sm border border-[#DFDFDF] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#0058A3] text-[#111111]" />
                         </div>
                     </div>
+
+                    {isSubmitting && (
+                        <div className="mt-4 border border-[#DFDFDF] rounded-lg p-3 bg-[#F5F5F5]">
+                            <div className="flex items-center justify-between gap-2 mb-2">
+                                <span className="flex items-center gap-2 text-sm font-medium text-[#111111]">
+                                    <Loader2 className="w-4 h-4 animate-spin text-[#0058A3] shrink-0" />
+                                    {progressLabel || 'Processing…'}
+                                </span>
+                                <span className="text-xs text-[#767676] tabular-nums shrink-0">{formatSeconds(elapsedSeconds)}</span>
+                            </div>
+                            <div className="h-1.5 w-full bg-[#DFDFDF] rounded-full overflow-hidden">
+                                {progressPercent != null ? (
+                                    <div
+                                        className="h-full bg-[#0058A3] rounded-full transition-all duration-500 ease-out"
+                                        style={{ width: `${progressPercent}%` }}
+                                    />
+                                ) : (
+                                    // No chunk-level progress to report yet (short recording, single
+                                    // request, or still uploading/preparing) — still animates so a
+                                    // long wait doesn't read as a frozen screen.
+                                    <div className="h-full w-full bg-[#0058A3] animate-pulse" />
+                                )}
+                            </div>
+                            {audioFileBytes > GROQ_CHUNKING_THRESHOLD_BYTES && (
+                                <p className="mt-2 text-xs text-[#767676]">
+                                    This is a long recording, so transcription runs in stages — it can take a
+                                    few minutes. The percentage above updates as each stage finishes.
+                                </p>
+                            )}
+                        </div>
+                    )}
 
                     {errorMessage && (
                         <div className="mt-3">

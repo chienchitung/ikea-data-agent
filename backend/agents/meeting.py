@@ -4,10 +4,12 @@ import json
 import os
 import re
 import shutil
+import subprocess
+import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 import httpx
 from dotenv import load_dotenv
@@ -151,21 +153,65 @@ if GENAI_AVAILABLE:
 
 
 # ── Audio handling ───────────────────────────────────────────
+#
+# normalize_audio() and the large-file split in transcribe_audio() both shell
+# out to the ffmpeg/ffprobe binaries directly rather than going through pydub's
+# AudioSegment. pydub reads a decoded file's *entire* raw PCM into the Python
+# process's memory (e.g. a 1-hour recording decodes to several hundred MB of
+# PCM) — fine on a dev machine with several GB of RAM, but on Render's free
+# tier (512MB, shared with this process's baseline numpy/pandas/faiss/langchain
+# footprint) a long meeting recording reliably exceeds the memory limit and
+# gets the whole service OOM-killed and restarted mid-request. Invoking ffmpeg
+# as a subprocess instead keeps decoding inside ffmpeg's own bounded streaming
+# buffers — peak added memory in this process stays in the tens of MB range
+# regardless of recording length. pydub is kept only as a last-resort fallback
+# for the (unexpected, since pydub itself also requires ffmpeg to do anything
+# useful) case where the ffmpeg/ffprobe binaries aren't on PATH.
+
+FFMPEG_BIN = shutil.which("ffmpeg")
+FFPROBE_BIN = shutil.which("ffprobe")
+
+
+def _probe_duration_seconds(path: str) -> float:
+    """Returns 0.0 if ffprobe is unavailable or the probe fails."""
+    if not FFPROBE_BIN:
+        return 0.0
+    try:
+        result = subprocess.run(
+            [FFPROBE_BIN, "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrapper=1:nokey=1", path],
+            check=True, capture_output=True, text=True,
+        )
+        return float(result.stdout.strip())
+    except Exception:
+        return 0.0
+
 
 def normalize_audio(src_path: str) -> str:
     """
     Convert an uploaded/recorded audio file to a Gemini-supported format (mp3).
     Browser MediaRecorder produces audio/webm;codecs=opus, which is not in Gemini's
     documented supported audio MIME list (wav/mp3/aiff/aac/ogg/flac). Falls back to
-    the original file if pydub/ffmpeg isn't available so the pipeline still attempts
-    transcription with whatever format was uploaded.
+    the original file if neither ffmpeg nor pydub is available so the pipeline
+    still attempts transcription with whatever format was uploaded.
     """
+    dst_path = f"{os.path.splitext(src_path)[0]}_normalized.{NORMALIZED_AUDIO_FORMAT}"
+
+    if FFMPEG_BIN:
+        try:
+            subprocess.run(
+                [FFMPEG_BIN, "-y", "-i", src_path, "-vn", "-acodec", "libmp3lame", "-b:a", "128k", dst_path],
+                check=True, capture_output=True,
+            )
+            return dst_path
+        except Exception as e:
+            print(f"⚠️ ffmpeg audio normalization failed ({e}); falling back to pydub.")
+
     if not PYDUB_AVAILABLE:
         print("⚠️ pydub not installed; sending original audio file to Gemini as-is.")
         return src_path
     try:
         audio = AudioSegment.from_file(src_path)
-        dst_path = f"{os.path.splitext(src_path)[0]}_normalized.{NORMALIZED_AUDIO_FORMAT}"
         audio.export(dst_path, format=NORMALIZED_AUDIO_FORMAT)
         return dst_path
     except Exception as e:
@@ -251,7 +297,58 @@ async def _transcribe_bytes(audio_bytes: bytes, filename: str, groq_api_key: str
     return response.json().get("segments") or []
 
 
-async def transcribe_audio(audio_path: str, groq_api_key: str) -> dict:
+def _split_audio_ffmpeg(path: str, chunk_seconds: int, out_dir: str) -> list:
+    """
+    Splits `path` into sequential chunk files under `out_dir` using ffmpeg's
+    segment muxer with stream copy (-c copy) — i.e. it repackages existing
+    encoded frames into separate files rather than decoding+re-encoding, so it
+    doesn't pull the audio through Python at all and runs in roughly constant
+    memory regardless of file length. Requires `path` to already be the format
+    produced by normalize_audio() (mp3), which segments cleanly with copy.
+    """
+    pattern = os.path.join(out_dir, f"chunk_%03d.{NORMALIZED_AUDIO_FORMAT}")
+    subprocess.run(
+        [
+            FFMPEG_BIN, "-y", "-i", path,
+            "-f", "segment", "-segment_time", str(chunk_seconds),
+            "-c", "copy", "-reset_timestamps", "1",
+            pattern,
+        ],
+        check=True, capture_output=True,
+    )
+    return sorted(
+        os.path.join(out_dir, name)
+        for name in os.listdir(out_dir)
+        if name.startswith("chunk_")
+    )
+
+
+def _split_audio_pydub(audio_path: str, file_size: int) -> list:
+    """
+    Fallback for the (unexpected) case where ffmpeg isn't on PATH. Decodes the
+    whole file into memory via pydub, same as the pipeline used to do
+    unconditionally — kept only as a last resort since pydub itself normally
+    also requires ffmpeg to read anything but raw wav.
+    Returns [(offset_seconds, chunk_bytes), ...].
+    """
+    audio = AudioSegment.from_file(audio_path)
+    duration_ms = len(audio)
+    bytes_per_ms = file_size / duration_ms if duration_ms else 0
+    chunk_ms = int(GROQ_MAX_UPLOAD_BYTES / bytes_per_ms) if bytes_per_ms else duration_ms
+    chunk_ms = max(chunk_ms, 60_000)  # never split into slivers under a minute
+
+    chunks = []
+    for offset_ms in range(0, duration_ms, chunk_ms):
+        buffer = io.BytesIO()
+        audio[offset_ms:offset_ms + chunk_ms].export(buffer, format=NORMALIZED_AUDIO_FORMAT)
+        chunks.append((offset_ms / 1000.0, buffer.getvalue()))
+    return chunks
+
+
+ProgressCallback = Callable[[int, int], Awaitable[None]]
+
+
+async def transcribe_audio(audio_path: str, groq_api_key: str, on_chunk_done: Optional[ProgressCallback] = None) -> dict:
     """
     Returns {"segments": [{"start": seconds, "speaker": str, "text": str}, ...], "text": flat_text}.
     Segments power the clickable, timestamped transcript UI; "text" is a flat
@@ -261,6 +358,11 @@ async def transcribe_audio(audio_path: str, groq_api_key: str) -> dict:
     speaker diarization (unlike the previous audio-aware Gemini prompt, which
     could pick up on distinct voices). The transcript UI already renders the
     speaker label conditionally, so this degrades gracefully.
+
+    `on_chunk_done(completed, total)` is awaited after each chunk finishes when
+    the file needed to be split (over Groq's upload limit), so callers can
+    surface real transcription progress instead of one static "transcribing"
+    status for however long a long meeting takes.
     """
     file_size = os.path.getsize(audio_path)
 
@@ -268,36 +370,50 @@ async def transcribe_audio(audio_path: str, groq_api_key: str) -> dict:
         with open(audio_path, "rb") as f:
             audio_bytes = f.read()
         raw_segments = await _transcribe_bytes(audio_bytes, os.path.basename(audio_path), groq_api_key)
+    elif FFMPEG_BIN:
+        duration_seconds = _probe_duration_seconds(audio_path)
+        bytes_per_second = file_size / duration_seconds if duration_seconds else 0
+        chunk_seconds = int(GROQ_MAX_UPLOAD_BYTES / bytes_per_second) if bytes_per_second else int(duration_seconds) or 60
+        chunk_seconds = max(chunk_seconds, 60)  # never split into slivers under a minute
+
+        raw_segments = []
+        with tempfile.TemporaryDirectory(prefix="meeting_chunks_") as tmp_dir:
+            chunk_paths = _split_audio_ffmpeg(audio_path, chunk_seconds, tmp_dir)
+            total_chunks = len(chunk_paths)
+            offset_seconds = 0.0
+            # Chunks are transcribed one at a time (not concurrently): only one
+            # chunk's bytes + in-flight HTTP request are ever held in memory at
+            # once, trading some wall-clock time for a bounded memory peak.
+            for i, chunk_path in enumerate(chunk_paths, start=1):
+                with open(chunk_path, "rb") as f:
+                    chunk_bytes = f.read()
+                # Probe before deleting: actual segment length can differ slightly
+                # from the requested chunk_seconds since -c copy cuts at the
+                # nearest frame boundary, and errors compound across chunks.
+                actual_chunk_seconds = _probe_duration_seconds(chunk_path) or chunk_seconds
+                os.remove(chunk_path)
+
+                chunk_segments = await _transcribe_bytes(chunk_bytes, os.path.basename(chunk_path), groq_api_key)
+                for seg in chunk_segments:
+                    raw_segments.append({**seg, "start": (seg.get("start") or 0) + offset_seconds})
+
+                offset_seconds += actual_chunk_seconds
+                if on_chunk_done:
+                    await on_chunk_done(i, total_chunks)
     else:
         if not PYDUB_AVAILABLE:
             raise RuntimeError(
                 f"Audio file is {file_size / (1024 * 1024):.1f}MB, over Groq's per-request upload "
-                "limit, and pydub is not installed to split it into smaller chunks."
+                "limit, and neither ffmpeg nor pydub is available to split it into smaller chunks."
             )
-        # Chunk size is derived from this file's actual bytes-per-ms rather than
-        # a fixed duration, so it adapts to whatever bitrate/format normalize_audio
-        # produced instead of assuming a specific encoding.
-        audio = AudioSegment.from_file(audio_path)
-        duration_ms = len(audio)
-        bytes_per_ms = file_size / duration_ms if duration_ms else 0
-        chunk_ms = int(GROQ_MAX_UPLOAD_BYTES / bytes_per_ms) if bytes_per_ms else duration_ms
-        chunk_ms = max(chunk_ms, 60_000)  # never split into slivers under a minute
-
-        offsets_and_chunks = []
-        for offset_ms in range(0, duration_ms, chunk_ms):
-            buffer = io.BytesIO()
-            audio[offset_ms:offset_ms + chunk_ms].export(buffer, format=NORMALIZED_AUDIO_FORMAT)
-            offsets_and_chunks.append((offset_ms / 1000.0, buffer.getvalue()))
-
-        chunk_results = await asyncio.gather(*[
-            _transcribe_bytes(chunk_bytes, f"chunk_{i}.{NORMALIZED_AUDIO_FORMAT}", groq_api_key)
-            for i, (_, chunk_bytes) in enumerate(offsets_and_chunks)
-        ])
-
+        chunks = _split_audio_pydub(audio_path, file_size)
         raw_segments = []
-        for (offset_seconds, _), chunk_segments in zip(offsets_and_chunks, chunk_results):
+        for i, (offset_seconds, chunk_bytes) in enumerate(chunks, start=1):
+            chunk_segments = await _transcribe_bytes(chunk_bytes, f"chunk_{i}.{NORMALIZED_AUDIO_FORMAT}", groq_api_key)
             for seg in chunk_segments:
                 raw_segments.append({**seg, "start": (seg.get("start") or 0) + offset_seconds})
+            if on_chunk_done:
+                await on_chunk_done(i, len(chunks))
 
     segments = _normalize_segments([
         {"start": seg.get("start"), "speaker": "", "text": _to_traditional(seg.get("text"))}
