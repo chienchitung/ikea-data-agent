@@ -671,6 +671,36 @@ def audio_dir_for(meeting_id: str) -> Path:
     return AUDIO_DIR / _safe_id(meeting_id)
 
 
+def _prepared_audio_marker_path(meeting_id: str) -> Path:
+    return audio_dir_for(meeting_id) / "prepared.json"
+
+
+def save_prepared_audio(meeting_id: str, original_filename: str, normalized_filename: str) -> None:
+    """
+    Records which files under this meeting's audio dir are the raw upload vs.
+    the normalize_audio() output, so a later /meetings/generate/stream call
+    (given only meeting_id, no re-uploaded file) knows what to transcribe
+    without re-deriving normalize_audio()'s naming convention or trusting a
+    client-supplied filename.
+    """
+    path = _prepared_audio_marker_path(meeting_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump({"original_filename": original_filename, "normalized_filename": normalized_filename}, f)
+
+
+def load_prepared_audio(meeting_id: str) -> Optional[dict]:
+    path = _prepared_audio_marker_path(meeting_id)
+    if not path.exists():
+        return None
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"⚠️ Failed to load prepared-audio marker for {meeting_id}: {e}")
+        return None
+
+
 def _record_path(meeting_id: str) -> Path:
     return STORE_DIR / f"{_safe_id(meeting_id)}.json"
 

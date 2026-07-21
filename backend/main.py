@@ -650,6 +650,8 @@ from agents.meeting import (
     list_meeting_records,
     update_meeting_record,
     delete_meeting_record,
+    save_prepared_audio,
+    load_prepared_audio,
 )
 
 
@@ -676,20 +678,17 @@ def _meeting_not_found_error(action: str) -> dict:
     )
 
 
-@app.post("/meetings/generate/stream")
-async def generate_meeting_minutes_stream(
-    audio: UploadFile = File(...),
-    meeting_title: str = Form(""),
-    date: str = Form(""),
-    time: str = Form(""),
-    note_taker: str = Form(""),
-    attendees: str = Form(""),
-    apologies: str = Form(""),
-    gemini_api_key: Optional[str] = Form(None),
-    groq_api_key: Optional[str] = Form(None),
-):
-    api_key = _effective_gemini_api_key(gemini_api_key)
-    groq_api_key = _effective_groq_api_key(groq_api_key)
+@app.post("/meetings/prepare-audio/stream")
+async def prepare_meeting_audio_stream(audio: UploadFile = File(...)):
+    """
+    Phase 1 of meeting-minutes generation: upload + normalize the recording
+    only. The frontend calls this the moment a file is picked or a recording
+    finishes — while the user is still filling in title/attendees/etc — so
+    that by the time they click "Generate Meeting Minutes", the (often
+    slowest) audio-prep step is already done and that click can go straight
+    into transcribing instead of restarting the wait from "Preparing audio…".
+    Requires no API keys since nothing here calls Gemini or Groq.
+    """
     meeting_id = new_meeting_id()
 
     ext = os.path.splitext(audio.filename or "")[1] or ".bin"
@@ -699,6 +698,114 @@ async def generate_meeting_minutes_stream(
 
     with audio_path.open("wb") as buffer:
         shutil.copyfileobj(audio.file, buffer)
+
+    async def event_generator():
+        queue: asyncio.Queue = asyncio.Queue()
+
+        async def run_pipeline():
+            loop = asyncio.get_running_loop()
+
+            def emit_progress_threadsafe(phase: str, label: str, percent: Optional[int] = None) -> None:
+                # normalize_audio() runs in a worker thread (asyncio.to_thread)
+                # so a long transcode doesn't block other requests.
+                # asyncio.Queue isn't thread-safe, so progress ticks from that
+                # thread have to be handed back to the event loop via
+                # call_soon_threadsafe.
+                payload = {"phase": phase, "label": label}
+                if percent is not None:
+                    payload["percent"] = percent
+                loop.call_soon_threadsafe(queue.put_nowait, ("progress", payload))
+
+            try:
+                await queue.put(("progress", {"phase": "normalizing_audio", "label": "Preparing audio"}))
+
+                def on_normalize_progress(percent: int) -> None:
+                    emit_progress_threadsafe("normalizing_audio", f"Preparing audio ({percent}%)", percent)
+
+                normalized_path = await asyncio.to_thread(normalize_audio, str(audio_path), on_normalize_progress)
+                await asyncio.to_thread(save_prepared_audio, meeting_id, audio_path.name, Path(normalized_path).name)
+
+                await queue.put(("final", {"meeting_id": meeting_id}))
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                print(f"❌ Audio prepare error: {e}")
+                await queue.put(("error", product_error(
+                    "audio_prepare_error",
+                    "Could not prepare this recording",
+                    "An error occurred while preparing the audio for transcription.",
+                    ["Try again later", "Try a different audio file"],
+                    str(e),
+                )))
+
+        task = asyncio.create_task(run_pipeline())
+        try:
+            yield sse_event("progress", {"phase": "uploading_audio", "label": "Uploading recording"})
+            while True:
+                event, payload = await queue.get()
+                yield sse_event(event, payload)
+                if event in {"final", "error"}:
+                    break
+        finally:
+            # NOTE: deliberately not attempting to also delete meeting_dir here
+            # for the case where the client disconnects before ever receiving
+            # meeting_id (so it has no way to clean up via DELETE
+            # /meetings/{id} itself). task.cancel() can't actually interrupt
+            # normalize_audio() once its ffmpeg subprocess is running — it's
+            # synchronous work in a thread pool (asyncio.to_thread), so
+            # cancellation only stops us from *waiting* on it, not the thread
+            # itself. Deleting the directory here raced with that still-running
+            # background thread in testing (it was still writing into the
+            # directory being removed), producing spurious normalize_audio
+            # failures. Left as a rare, self-healing orphan instead — Render's
+            # ephemeral disk clears it on the next deploy regardless.
+            if not task.done():
+                task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    from fastapi.responses import StreamingResponse
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@app.post("/meetings/generate/stream")
+async def generate_meeting_minutes_stream(
+    meeting_id: str = Form(...),
+    meeting_title: str = Form(""),
+    date: str = Form(""),
+    time: str = Form(""),
+    note_taker: str = Form(""),
+    attendees: str = Form(""),
+    apologies: str = Form(""),
+    gemini_api_key: Optional[str] = Form(None),
+    groq_api_key: Optional[str] = Form(None),
+):
+    """
+    Phase 2: transcribe + draft minutes for a meeting_id that
+    /meetings/prepare-audio/stream already uploaded and normalized (no audio
+    file is re-uploaded here — see save_prepared_audio/load_prepared_audio).
+    """
+    api_key = _effective_gemini_api_key(gemini_api_key)
+    groq_api_key = _effective_groq_api_key(groq_api_key)
+
+    meeting_dir = audio_dir_for(meeting_id)
+    prepared = load_prepared_audio(meeting_id)
+    if not prepared or not (meeting_dir / prepared["normalized_filename"]).exists():
+        async def missing_prep_stream():
+            yield sse_event("error", product_error(
+                "meeting_not_prepared",
+                "This recording hasn't finished preparing yet",
+                "No prepared audio was found for this meeting. It may still be uploading, "
+                "preparation may have failed earlier, or the audio may have been discarded.",
+                ["Wait for audio preparation to finish and try again", "Re-select the recording and try again"],
+            ))
+        from fastapi.responses import StreamingResponse
+        return StreamingResponse(missing_prep_stream(), media_type="text/event-stream")
+
+    normalized_path = str(meeting_dir / prepared["normalized_filename"])
+    original_filename = prepared["original_filename"]
 
     meta = {
         "meeting_title": meeting_title,
@@ -715,16 +822,15 @@ async def generate_meeting_minutes_stream(
         async def run_pipeline():
             loop = asyncio.get_running_loop()
 
-            def emit_progress_threadsafe(phase: str, label: str, percent: Optional[int] = None) -> None:
-                # normalize_audio() and the audio-split step run in a worker
-                # thread (asyncio.to_thread) so a long transcode/split doesn't
-                # block other requests. asyncio.Queue isn't thread-safe, so
-                # progress ticks from that thread have to be handed back to
-                # the event loop via call_soon_threadsafe rather than awaited
-                # directly the way on_transcription_chunk_done below is.
-                payload = {"phase": phase, "label": label}
-                if percent is not None:
-                    payload["percent"] = percent
+            def on_split_progress(percent: int) -> None:
+                # See prepare_meeting_audio_stream's emit_progress_threadsafe
+                # for why this needs call_soon_threadsafe: the split runs in a
+                # worker thread, and asyncio.Queue isn't thread-safe.
+                payload = {
+                    "phase": "splitting_audio",
+                    "label": f"Splitting audio for transcription ({percent}%)",
+                    "percent": percent,
+                }
                 loop.call_soon_threadsafe(queue.put_nowait, ("progress", payload))
 
             try:
@@ -734,13 +840,6 @@ async def generate_meeting_minutes_stream(
                 if not groq_api_key:
                     await queue.put(("error", localized_product_error("transcription_provider_unavailable", "en")))
                     return
-
-                await queue.put(("progress", {"phase": "normalizing_audio", "label": "Preparing audio"}))
-
-                def on_normalize_progress(percent: int) -> None:
-                    emit_progress_threadsafe("normalizing_audio", f"Preparing audio ({percent}%)", percent)
-
-                normalized_path = await asyncio.to_thread(normalize_audio, str(audio_path), on_normalize_progress)
 
                 await queue.put(("progress", {"phase": "transcribing", "label": "Transcribing audio"}))
 
@@ -755,9 +854,6 @@ async def generate_meeting_minutes_stream(
                         "total": total,
                         "percent": round(completed / total * 100) if total else None,
                     }))
-
-                def on_split_progress(percent: int) -> None:
-                    emit_progress_threadsafe("splitting_audio", f"Splitting audio for transcription ({percent}%)", percent)
 
                 transcription = await transcribe_audio(
                     normalized_path, groq_api_key,
@@ -782,11 +878,11 @@ async def generate_meeting_minutes_stream(
                 record = {
                     "meeting_id": meeting_id,
                     "created_at": datetime.now(timezone.utc).isoformat(),
-                    "audio_filename": audio_path.name,
+                    "audio_filename": original_filename,
                     # The playback endpoint serves this file; normalize_audio() may
                     # have converted the original into a browser-playable mp3, or
                     # fallen back to the original path if pydub/ffmpeg weren't available.
-                    "audio_playback_filename": Path(normalized_path).name,
+                    "audio_playback_filename": prepared["normalized_filename"],
                     "transcript": transcript,
                     "segments": segments,
                     "meeting_data": minutes,
@@ -813,7 +909,6 @@ async def generate_meeting_minutes_stream(
 
         task = asyncio.create_task(run_pipeline())
         try:
-            yield sse_event("progress", {"phase": "uploading_audio", "label": "Uploading recording"})
             while True:
                 event, payload = await queue.get()
                 yield sse_event(event, payload)
