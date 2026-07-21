@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Mic, Square, Upload, X, Loader2, RotateCcw } from 'lucide-react';
 import { readSseStream } from '../utils/sse';
+import { saveMeetingRecord, saveMeetingAudio } from '../utils/meetingStore';
 
 const PROGRESS_LABELS = {
     uploading_audio: 'Uploading recording…',
@@ -302,10 +303,50 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
                 throw new Error('Stream ended before a final response was returned.');
             }
 
-            // This meeting_id now has a real, saved meeting record — clear the
-            // orphan tracker before onGenerated() (which the parent responds to
-            // by unmounting this modal) so the unmount cleanup doesn't delete
-            // the meeting record it's referencing.
+            // The backend only holds this generation transiently — persistence
+            // is the browser's job now (see meetingStore.js). Pull the audio
+            // down once and cache everything locally before telling the
+            // backend it can drop its copy.
+            setProgressLabel('Saving to your browser…');
+            setProgressPercent(null);
+            try {
+                const audioResponse = await fetch(`${apiUrl}/meetings/${finalPayload.meeting_id}/audio`, {
+                    signal: controller.signal,
+                });
+                if (!audioResponse.ok) throw new Error(`Could not download the recording to save it locally (status ${audioResponse.status}).`);
+                const audioBlob = await audioResponse.blob();
+
+                await saveMeetingAudio(
+                    finalPayload.meeting_id, audioBlob,
+                    finalPayload.audio_playback_filename, audioBlob.type,
+                );
+                await saveMeetingRecord({
+                    meeting_id: finalPayload.meeting_id,
+                    created_at: finalPayload.created_at,
+                    audio_filename: finalPayload.audio_filename,
+                    audio_playback_filename: finalPayload.audio_playback_filename,
+                    transcript: finalPayload.transcript,
+                    segments: finalPayload.segments,
+                    meeting_data: finalPayload.minutes,
+                });
+            } catch (saveError) {
+                if (saveError.name === 'AbortError') return;
+                console.error('Failed to save meeting record locally:', saveError);
+                const failure = saveError.name === 'QuotaExceededError'
+                    ? new Error("Your browser's storage is full, so this meeting couldn't be saved. Delete some older meeting recordings (from the Meeting Records list) to free up space, then try again.")
+                    : new Error('The meeting was transcribed, but saving it to your browser failed. It has not been kept — please try again.');
+                throw failure;
+            }
+
+            // Backend cleanup is best-effort and shouldn't block the user from
+            // seeing their result — this meeting_id is already safely cached
+            // locally at this point regardless of whether the delete succeeds.
+            fetch(`${apiUrl}/meetings/${finalPayload.meeting_id}`, { method: 'DELETE' }).catch(() => {});
+
+            // This meeting_id now has a real, locally-saved meeting record —
+            // clear the orphan tracker before onGenerated() (which the parent
+            // responds to by unmounting this modal) so the unmount cleanup
+            // doesn't try to delete it via the (already-gone) backend copy.
             prepMeetingIdRef.current = null;
             onGenerated(finalPayload);
         } catch (error) {

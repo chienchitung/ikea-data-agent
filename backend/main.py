@@ -647,15 +647,13 @@ from agents.meeting import (
     build_docx,
     save_meeting_record,
     load_meeting_record,
-    list_meeting_records,
-    update_meeting_record,
     delete_meeting_record,
     save_prepared_audio,
     load_prepared_audio,
 )
 
 
-class MeetingDataUpdate(BaseModel):
+class MeetingDownloadRequest(BaseModel):
     meeting_data: Dict[str, Any]
 
 
@@ -894,6 +892,14 @@ async def generate_meeting_minutes_stream(
                     "transcript": transcript,
                     "segments": segments,
                     "minutes": minutes,
+                    # The frontend fetches the audio once via GET
+                    # /meetings/{id}/audio and caches it client-side (see
+                    # meetingStore.js), then deletes this server-side copy —
+                    # it needs these filenames to build that cached record in
+                    # the same shape the old server-persisted one had.
+                    "created_at": record["created_at"],
+                    "audio_filename": record["audio_filename"],
+                    "audio_playback_filename": record["audio_playback_filename"],
                 }))
             except asyncio.CancelledError:
                 raise
@@ -929,42 +935,15 @@ async def generate_meeting_minutes_stream(
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
-@app.get("/meetings")
-async def get_meetings():
-    # list_meeting_records() reads and fully JSON-parses every stored meeting
-    # file, transcript included (tens of thousands of characters for a long
-    # meeting) just to build a short summary list. Run it on a worker thread
-    # so it can't stall the event loop -- and every other in-flight request,
-    # including an unrelated chat turn -- for however long that takes.
-    meetings = await asyncio.to_thread(list_meeting_records)
-    return {"meetings": meetings}
-
-
-@app.get("/meetings/{meeting_id}")
-async def get_meeting(meeting_id: str):
-    record = await asyncio.to_thread(load_meeting_record, meeting_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail=_meeting_not_found_error("view"))
-    return record
-
-
-@app.put("/meetings/{meeting_id}")
-async def update_meeting(meeting_id: str, payload: MeetingDataUpdate):
-    record = await asyncio.to_thread(update_meeting_record, meeting_id, payload.meeting_data)
-    if record is None:
-        raise HTTPException(status_code=404, detail=_meeting_not_found_error("update"))
-    return record
-
-
-@app.get("/meetings/{meeting_id}/download")
-async def download_meeting(meeting_id: str):
-    record = await asyncio.to_thread(load_meeting_record, meeting_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail=_meeting_not_found_error("download"))
-
-    meeting_data = record.get("meeting_data") or {}
-    docx_bytes = build_docx(meeting_data)
-    title = meeting_data.get("meeting_title") or "Meeting Notes"
+@app.post("/meetings/download")
+async def download_meeting(payload: MeetingDownloadRequest):
+    # Stateless by design: meeting records now live in the browser (IndexedDB),
+    # not on this server (see the frontend's meetingStore.js and the removed
+    # GET /meetings, GET /meetings/{id}, PUT /meetings/{id} endpoints this
+    # replaced) — this endpoint just converts whatever meeting_data the
+    # client already has into a .docx, without needing to look anything up.
+    docx_bytes = await asyncio.to_thread(build_docx, payload.meeting_data)
+    title = payload.meeting_data.get("meeting_title") or "Meeting Notes"
     safe_title = re.sub(r"[^\w\-() ]", "_", title).strip() or "Meeting Notes"
 
     return Response(

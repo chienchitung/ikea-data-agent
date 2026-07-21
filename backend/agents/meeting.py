@@ -7,7 +7,6 @@ import shutil
 import subprocess
 import tempfile
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
@@ -725,40 +724,6 @@ def load_meeting_record(meeting_id: str) -> Optional[dict]:
     except Exception as e:
         print(f"⚠️ Failed to load meeting record {meeting_id}: {e}")
         return None
-
-
-def list_meeting_records() -> list:
-    if not STORE_DIR.exists():
-        return []
-
-    records = []
-    for path in STORE_DIR.glob("*.json"):
-        try:
-            with path.open("r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception as e:
-            print(f"⚠️ Failed to read meeting record {path}: {e}")
-            continue
-        meeting_data = data.get("meeting_data") or {}
-        records.append({
-            "meeting_id": data.get("meeting_id"),
-            "meeting_title": meeting_data.get("meeting_title", ""),
-            "date": meeting_data.get("date", ""),
-            "created_at": data.get("created_at", ""),
-        })
-
-    records.sort(key=lambda r: r.get("created_at") or "", reverse=True)
-    return records
-
-
-def update_meeting_record(meeting_id: str, meeting_data: dict) -> Optional[dict]:
-    record = load_meeting_record(meeting_id)
-    if record is None:
-        return None
-    record["meeting_data"] = meeting_data
-    record["updated_at"] = datetime.now(timezone.utc).isoformat()
-    save_meeting_record(record)
-    return record
 
 
 def delete_meeting_record(meeting_id: str) -> bool:

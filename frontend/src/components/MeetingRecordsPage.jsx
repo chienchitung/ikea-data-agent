@@ -1,8 +1,24 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import axios from 'axios';
-import { FileAudio, Plus, Download, Trash2, Edit2, Check, CheckSquare, Loader2 } from 'lucide-react';
+import { FileAudio, Plus, Download, Trash2, Edit2, Check, CheckSquare, Loader2, AlertTriangle, X } from 'lucide-react';
 import { MeetingRecorderModal } from './MeetingRecorderModal';
 import { MeetingMinutesView } from './MeetingMinutesView';
+import {
+    listMeetingRecords,
+    getMeetingRecord,
+    updateMeetingRecordData,
+    deleteMeetingRecord,
+    getMeetingStorageBreakdown,
+    getStorageEstimate,
+    STORAGE_WARNING_THRESHOLD,
+} from '../utils/meetingStore';
+
+function formatMb(bytes) {
+    if (!Number.isFinite(bytes) || bytes < 0) return '—';
+    const mb = bytes / (1024 * 1024);
+    if (mb >= 100) return `${Math.round(mb).toLocaleString()} MB`;
+    return `${mb.toFixed(1)} MB`;
+}
 
 function formatRelativeTime(ts) {
     const now = Date.now();
@@ -23,7 +39,6 @@ export function MeetingRecordsPage({ apiUrl, geminiApiKey, groqApiKey, onOpenApi
     const [meetings, setMeetings] = useState([]);
     const [isLoading, setIsLoading] = useState(true);
     const [loadError, setLoadError] = useState(false);
-    const [isWakingServer, setIsWakingServer] = useState(false);
     const [activeMeetingId, setActiveMeetingId] = useState(null);
     const [showRecorderModal, setShowRecorderModal] = useState(false);
     const [isSelecting, setIsSelecting] = useState(false);
@@ -31,53 +46,45 @@ export function MeetingRecordsPage({ apiUrl, geminiApiKey, groqApiKey, onOpenApi
     const [renamingMeetingId, setRenamingMeetingId] = useState(null);
     const [renamingTitle, setRenamingTitle] = useState('');
     const [isRenaming, setIsRenaming] = useState(false);
-    // 遞增序號：使用者在重試迴圈進行中又按了 Try again 時，讓舊的迴圈
-    // 自行退場，避免兩個迴圈交錯更新狀態。
-    const fetchSeqRef = useRef(0);
+    // Storage-capacity warning: null until measured, then { usage, quota,
+    // breakdown } once over STORAGE_WARNING_THRESHOLD. Dismissing just hides
+    // it for this page visit — it comes back next load if still over.
+    const [storageWarning, setStorageWarning] = useState(null);
+    const [isStorageWarningDismissed, setIsStorageWarningDismissed] = useState(false);
 
+    // Meeting records + audio live in the browser's IndexedDB now (see
+    // meetingStore.js), not on the backend — Render's disk is ephemeral, so
+    // anything kept server-side was disappearing on every redeploy/restart.
+    // Reading from IndexedDB is local and fast, so none of the previous
+    // multi-attempt "server is waking up" retry logic (needed for a real
+    // network call to a possibly-sleeping Render instance) applies anymore.
     const fetchMeetings = useCallback(async () => {
-        const seq = ++fetchSeqRef.current;
         setIsLoading(true);
         setLoadError(false);
-        setIsWakingServer(false);
-
-        // Without a timeout, a stalled request (e.g. one queued behind a
-        // long-running chat stream to the same origin) left this spinner
-        // running forever with no way to recover short of a page reload.
-        //
-        // 第一次嘗試用短 timeout；失敗多半是後端冷啟動或部署重啟
-        // （Render 閒置喚醒常要 30~60 秒），所以改用長 timeout 自動重試
-        // 兩次，而不是 15 秒就直接對使用者說載入失敗。
-        const attempts = [
-            { timeout: 15000, delayBefore: 0 },
-            { timeout: 45000, delayBefore: 2000 },
-            { timeout: 45000, delayBefore: 3000 },
-        ];
-
-        for (let i = 0; i < attempts.length; i++) {
-            const { timeout, delayBefore } = attempts[i];
-            if (delayBefore) await new Promise((resolve) => setTimeout(resolve, delayBefore));
-            if (fetchSeqRef.current !== seq) return;
-            try {
-                const response = await axios.get(`${apiUrl}/meetings`, { timeout });
-                if (fetchSeqRef.current !== seq) return;
-                setMeetings(response.data.meetings || []);
-                setIsWakingServer(false);
-                setIsLoading(false);
-                return;
-            } catch (error) {
-                if (fetchSeqRef.current !== seq) return;
-                console.error(`Failed to fetch meetings (attempt ${i + 1}/${attempts.length}):`, error);
-                if (i < attempts.length - 1) setIsWakingServer(true);
-            }
+        try {
+            const records = await listMeetingRecords();
+            setMeetings(records);
+        } catch (error) {
+            console.error('Failed to load meeting records from this browser:', error);
+            setLoadError(true);
+        } finally {
+            setIsLoading(false);
         }
-
-        setIsWakingServer(false);
-        setLoadError(true);
-        setIsLoading(false);
-    }, [apiUrl]);
+    }, []);
 
     useEffect(() => { fetchMeetings(); }, [fetchMeetings]);
+
+    const checkStorageCapacity = useCallback(async () => {
+        const estimate = await getStorageEstimate();
+        if (!estimate || estimate.usage / estimate.quota < STORAGE_WARNING_THRESHOLD) {
+            setStorageWarning(null);
+            return;
+        }
+        const breakdown = await getMeetingStorageBreakdown();
+        setStorageWarning({ ...estimate, breakdown: breakdown.slice(0, 5) });
+    }, []);
+
+    useEffect(() => { checkStorageCapacity(); }, [checkStorageCapacity, meetings]);
 
     const startRenaming = (meeting) => {
         setRenamingMeetingId(meeting.meeting_id);
@@ -94,9 +101,10 @@ export function MeetingRecordsPage({ apiUrl, geminiApiKey, groqApiKey, onOpenApi
         const newTitle = renamingTitle.trim();
         setIsRenaming(true);
         try {
-            const { data: record } = await axios.get(`${apiUrl}/meetings/${encodeURIComponent(meetingId)}`);
+            const record = await getMeetingRecord(meetingId);
+            if (!record) throw new Error('Meeting record not found.');
             const updatedData = { ...(record.meeting_data || {}), meeting_title: newTitle };
-            await axios.put(`${apiUrl}/meetings/${encodeURIComponent(meetingId)}`, { meeting_data: updatedData });
+            await updateMeetingRecordData(meetingId, updatedData);
             setMeetings((prev) => prev.map((m) => m.meeting_id === meetingId ? { ...m, meeting_title: newTitle } : m));
             setRenamingMeetingId(null);
         } catch (error) {
@@ -111,7 +119,7 @@ export function MeetingRecordsPage({ apiUrl, geminiApiKey, groqApiKey, onOpenApi
         if (!confirm('Are you sure you want to delete this meeting record?')) return;
         setMeetings((prev) => prev.filter((m) => m.meeting_id !== meetingId));
         try {
-            await axios.delete(`${apiUrl}/meetings/${encodeURIComponent(meetingId)}`);
+            await deleteMeetingRecord(meetingId);
         } catch (error) {
             console.error('Failed to delete meeting:', error);
             await fetchMeetings();
@@ -150,7 +158,7 @@ export function MeetingRecordsPage({ apiUrl, geminiApiKey, groqApiKey, onOpenApi
 
         for (const meetingId of toDelete) {
             try {
-                await axios.delete(`${apiUrl}/meetings/${encodeURIComponent(meetingId)}`);
+                await deleteMeetingRecord(meetingId);
             } catch (error) {
                 console.error('Failed to delete meeting:', error);
             }
@@ -158,11 +166,19 @@ export function MeetingRecordsPage({ apiUrl, geminiApiKey, groqApiKey, onOpenApi
         await fetchMeetings();
     };
 
+    // Docx generation itself still has to happen server-side (python-docx),
+    // but statelessly now: the record lives here in the browser, so this
+    // sends meeting_data in the request body instead of the backend looking
+    // it up by id.
     const downloadMeetingDocx = async (meetingId, meetingTitle) => {
         try {
-            const response = await axios.get(`${apiUrl}/meetings/${encodeURIComponent(meetingId)}/download`, {
-                responseType: 'blob',
-            });
+            const record = await getMeetingRecord(meetingId);
+            if (!record) throw new Error('Meeting record not found.');
+            const response = await axios.post(
+                `${apiUrl}/meetings/download`,
+                { meeting_data: record.meeting_data || {} },
+                { responseType: 'blob' },
+            );
             const url = URL.createObjectURL(response.data);
             const link = document.createElement('a');
             link.href = url;
@@ -211,6 +227,52 @@ export function MeetingRecordsPage({ apiUrl, geminiApiKey, groqApiKey, onOpenApi
                 </div>
                 <p className="text-sm text-[#767676] mb-6">Record or upload a meeting and I'll turn it into a structured meeting minutes document.</p>
 
+                {storageWarning && !isStorageWarningDismissed && (
+                    <div className="mb-6 border border-amber-200 bg-amber-50 rounded-xl p-4">
+                        <div className="flex items-start justify-between gap-3">
+                            <div className="flex items-start gap-2.5 min-w-0">
+                                <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+                                <div className="min-w-0">
+                                    <p className="text-sm font-medium text-amber-800">
+                                        Your browser's storage is almost full ({formatMb(storageWarning.usage)} / {formatMb(storageWarning.quota)})
+                                    </p>
+                                    <p className="text-xs text-amber-700 mt-1">
+                                        Meeting recordings are saved in this browser, and it's running low on space. Delete some
+                                        older recordings below to keep saving new ones.
+                                    </p>
+                                    {storageWarning.breakdown.length > 0 && (
+                                        <ul className="mt-2 space-y-1">
+                                            {storageWarning.breakdown.map((item) => (
+                                                <li key={item.meeting_id} className="flex items-center justify-between gap-2 text-xs">
+                                                    <span className="text-amber-800 truncate">{item.title}</span>
+                                                    <div className="flex items-center gap-2 flex-shrink-0">
+                                                        <span className="text-amber-600 tabular-nums">{formatMb(item.bytes)}</span>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => deleteMeeting(item.meeting_id)}
+                                                            className="text-amber-700 hover:text-amber-900 font-medium hover:underline"
+                                                        >
+                                                            Delete
+                                                        </button>
+                                                    </div>
+                                                </li>
+                                            ))}
+                                        </ul>
+                                    )}
+                                </div>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setIsStorageWarningDismissed(true)}
+                                className="p-1 hover:bg-amber-100 rounded-full transition-colors flex-shrink-0"
+                                aria-label="Dismiss"
+                            >
+                                <X className="w-4 h-4 text-amber-600" />
+                            </button>
+                        </div>
+                    </div>
+                )}
+
                 <button
                     onClick={handleAddRecording}
                     className="w-full flex items-center justify-center gap-2 px-4 py-3 border border-dashed border-[#DFDFDF] rounded-xl hover:bg-[#F5F5F5] transition-colors text-sm font-medium text-[#484848] mb-6"
@@ -241,9 +303,6 @@ export function MeetingRecordsPage({ apiUrl, geminiApiKey, groqApiKey, onOpenApi
                 {isLoading ? (
                     <div className="flex flex-col items-center gap-3 py-10">
                         <Loader2 className="w-6 h-6 animate-spin text-[#0058A3]" />
-                        {isWakingServer && (
-                            <p className="text-xs text-[#767676]">Server is waking up — retrying automatically…</p>
-                        )}
                     </div>
                 ) : loadError ? (
                     <div className="text-center py-14 border border-dashed border-[#DFDFDF] rounded-xl">

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { X, Loader2, ChevronDown, Edit2, Download } from 'lucide-react';
+import { getMeetingRecord, updateMeetingRecordData, getMeetingAudioBlob } from '../utils/meetingStore';
 
 function formatTimestamp(totalSeconds) {
     const total = Math.max(0, Math.floor(totalSeconds || 0));
@@ -113,6 +114,7 @@ export function MeetingMinutesView({ apiUrl, meetingId, onClose }) {
     const [showTranscript, setShowTranscript] = useState(false);
     const [isDownloading, setIsDownloading] = useState(false);
     const [activeSegmentIndex, setActiveSegmentIndex] = useState(-1);
+    const [audioUrl, setAudioUrl] = useState(null);
     const audioRef = useRef(null);
     const segmentRefs = useRef([]);
     const segments = useMemo(() => record?.segments || [], [record]);
@@ -159,28 +161,43 @@ export function MeetingMinutesView({ apiUrl, meetingId, onClose }) {
         audio.play().catch(() => {});
     };
 
+    // Record + audio now come from this browser's IndexedDB (see
+    // meetingStore.js), not the backend — the backend only holds either
+    // transiently, during generation.
     useEffect(() => {
         let cancelled = false;
+        let objectUrl = null;
         setIsLoading(true);
         setLoadError('');
-        fetch(`${apiUrl}/meetings/${meetingId}`)
-            .then(async (res) => {
-                if (!res.ok) throw new Error('Failed to load meeting record.');
-                return res.json();
-            })
-            .then((data) => {
-                if (!cancelled) setRecord(data);
-            })
-            .catch((error) => {
+        setAudioUrl(null);
+
+        (async () => {
+            try {
+                const [rec, audio] = await Promise.all([
+                    getMeetingRecord(meetingId),
+                    getMeetingAudioBlob(meetingId),
+                ]);
+                if (cancelled) return;
+                if (!rec) throw new Error('Meeting record not found.');
+                setRecord(rec);
+                if (audio?.blob) {
+                    objectUrl = URL.createObjectURL(audio.blob);
+                    setAudioUrl(objectUrl);
+                }
+            } catch (error) {
                 if (cancelled) return;
                 console.error('Failed to load meeting record:', error);
                 setLoadError('Could not load this meeting record.');
-            })
-            .finally(() => {
+            } finally {
                 if (!cancelled) setIsLoading(false);
-            });
-        return () => { cancelled = true; };
-    }, [apiUrl, meetingId]);
+            }
+        })();
+
+        return () => {
+            cancelled = true;
+            if (objectUrl) URL.revokeObjectURL(objectUrl);
+        };
+    }, [meetingId]);
 
     const meetingData = isEditing ? draftData : record?.meeting_data;
 
@@ -201,28 +218,31 @@ export function MeetingMinutesView({ apiUrl, meetingId, onClose }) {
     const saveEditing = async () => {
         setIsSaving(true);
         try {
-            const res = await fetch(`${apiUrl}/meetings/${meetingId}`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ meeting_data: draftData }),
-            });
-            if (!res.ok) throw new Error('Failed to save changes.');
-            const updated = await res.json();
+            const updated = await updateMeetingRecordData(meetingId, draftData);
             setRecord(updated);
             setIsEditing(false);
             setDraftData(null);
         } catch (error) {
             console.error('Failed to save meeting minutes:', error);
-            alert('Could not save changes. Please try again.');
+            const message = error.name === 'QuotaExceededError'
+                ? "Your browser's storage is full — free up space (delete some older recordings) and try again."
+                : 'Could not save changes. Please try again.';
+            alert(message);
         } finally {
             setIsSaving(false);
         }
     };
 
+    // Docx generation is stateless server-side now — meeting_data goes in the
+    // request body since the backend no longer keeps its own copy to look up.
     const handleDownload = async () => {
         setIsDownloading(true);
         try {
-            const res = await fetch(`${apiUrl}/meetings/${meetingId}/download`);
+            const res = await fetch(`${apiUrl}/meetings/download`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ meeting_data: record?.meeting_data || {} }),
+            });
             if (!res.ok) throw new Error('Download failed.');
             const blob = await res.blob();
             const url = URL.createObjectURL(blob);
@@ -363,7 +383,7 @@ export function MeetingMinutesView({ apiUrl, meetingId, onClose }) {
                                 </button>
                                 {showTranscript && (
                                     <div className="mt-2">
-                                        <audio ref={audioRef} controls src={`${apiUrl}/meetings/${meetingId}/audio`} className="w-full mb-2" />
+                                        {audioUrl && <audio ref={audioRef} controls src={audioUrl} className="w-full mb-2" />}
                                         {segments.length > 0 ? (
                                             <div className="text-xs bg-[#F5F5F5] rounded-lg p-2 max-h-64 overflow-y-auto space-y-1">
                                                 {segments.map((seg, i) => (
