@@ -392,10 +392,12 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
                         type="button"
                         onClick={handleSubmit}
                         disabled={!hasAudio || !hasGroqKey || isSubmitting}
-                        className="px-4 py-2 text-sm font-medium text-white bg-[#0058A3] hover:bg-[#004F93] rounded-lg transition-colors disabled:opacity-50 flex items-center gap-2"
+                        className="px-4 py-2 text-sm font-medium text-white bg-[#0058A3] hover:bg-[#004F93] rounded-lg transition-colors disabled:opacity-50"
                     >
-                        {isSubmitting && <Loader2 className="w-4 h-4 animate-spin" />}
-                        {isSubmitting ? (progressLabel || 'Processing…') : 'Generate Meeting Minutes'}
+                        {/* The progress panel above already shows a spinner + live status while
+                            submitting; a second spinning icon + changing label here just doubled
+                            up the motion without adding information. */}
+                        {isSubmitting ? 'Processing…' : 'Generate Meeting Minutes'}
                     </button>
                 </div>
             </div>
