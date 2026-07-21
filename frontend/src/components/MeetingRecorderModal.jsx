@@ -49,6 +49,7 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
     const [elapsedSeconds, setElapsedSeconds] = useState(0);
     const [errorMessage, setErrorMessage] = useState('');
     const [errorDetails, setErrorDetails] = useState('');
+    const [showCancelConfirm, setShowCancelConfirm] = useState(false);
 
     const mediaRecorderRef = useRef(null);
     const streamRef = useRef(null);
@@ -144,11 +145,27 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
     const hasGroqKey = !!(groqApiKey || '').trim();
     const audioFileBytes = mode === 'upload' ? (selectedFile?.size || 0) : (recordedBlob?.size || 0);
 
-    // Cancel is always clickable, including mid-generation: abort the in-flight
-    // request (the fetch's AbortController) if one is running, then close.
-    // Aborting resolves readSseStream's await with an AbortError, which the
-    // catch block below already treats as a silent, expected cancellation.
+    // Backdrop click / header X / footer Cancel all funnel through here. While
+    // generation is running, a stray click (especially the backdrop, or the X
+    // in the corner right next to where the progress panel sits) shouldn't be
+    // able to silently kill an in-flight transcription — so this only asks
+    // for confirmation at that point instead of cancelling immediately.
+    // Before/after generation there's nothing to lose, so it still closes
+    // right away.
     const handleCancel = () => {
+        if (isSubmitting) {
+            setShowCancelConfirm(true);
+            return;
+        }
+        onClose();
+    };
+
+    // The actual cancel, only reachable via the confirmation dialog's
+    // destructive button. Aborting resolves readSseStream's await with an
+    // AbortError, which the catch block below already treats as a silent,
+    // expected cancellation.
+    const confirmCancelGeneration = () => {
+        setShowCancelConfirm(false);
         abortControllerRef.current?.abort();
         onClose();
     };
@@ -295,11 +312,13 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
             setIsSubmitting(false);
             setProgressLabel('');
             setProgressPercent(null);
+            setShowCancelConfirm(false);
             abortControllerRef.current = null;
         }
     };
 
     return (
+        <>
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={handleCancel}>
             <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
                 <div className="p-6">
@@ -496,5 +515,42 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
                 </div>
             </div>
         </div>
+
+        {/* Confirm-before-cancel: generation is a few minutes of Groq/Gemini
+            work that a stray click shouldn't be able to throw away silently. */}
+        {showCancelConfirm && (
+            <div
+                className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60] p-4"
+                onClick={() => setShowCancelConfirm(false)}
+            >
+                <div
+                    className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6"
+                    onClick={(e) => e.stopPropagation()}
+                >
+                    <h3 className="text-base font-semibold text-[#111111] mb-1">Stop generating this meeting record?</h3>
+                    <p className="text-sm text-[#767676] mb-5">
+                        {progressLabel || 'Generation'} is still in progress. If you cancel now, the transcript and
+                        meeting minutes generated so far won't be kept.
+                    </p>
+                    <div className="flex justify-end gap-2">
+                        <button
+                            type="button"
+                            onClick={() => setShowCancelConfirm(false)}
+                            className="px-4 py-2 text-sm font-medium text-[#111111] hover:bg-[#F5F5F5] rounded-lg transition-colors"
+                        >
+                            Keep generating
+                        </button>
+                        <button
+                            type="button"
+                            onClick={confirmCancelGeneration}
+                            className="px-4 py-2 text-sm font-medium text-white bg-red-500 hover:bg-red-600 rounded-lg transition-colors"
+                        >
+                            Stop and discard
+                        </button>
+                    </div>
+                </div>
+            </div>
+        )}
+        </>
     );
 }
