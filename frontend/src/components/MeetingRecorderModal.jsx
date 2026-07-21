@@ -137,6 +137,15 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
     const hasGroqKey = !!(groqApiKey || '').trim();
     const audioFileBytes = mode === 'upload' ? (selectedFile?.size || 0) : (recordedBlob?.size || 0);
 
+    // Cancel is always clickable, including mid-generation: abort the in-flight
+    // request (the fetch's AbortController) if one is running, then close.
+    // Aborting resolves readSseStream's await with an AbortError, which the
+    // catch block below already treats as a silent, expected cancellation.
+    const handleCancel = () => {
+        abortControllerRef.current?.abort();
+        onClose();
+    };
+
     const handleSubmit = async () => {
         if (!hasAudio || !hasGroqKey || isSubmitting) return;
         setIsSubmitting(true);
@@ -206,12 +215,12 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
     };
 
     return (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => !isSubmitting && onClose()}>
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={handleCancel}>
             <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
                 <div className="p-6">
                     <div className="flex items-center justify-between mb-1">
                         <h2 className="text-lg font-semibold text-[#111111]">Add Meeting Recording</h2>
-                        <button onClick={() => !isSubmitting && onClose()} className="p-1 hover:bg-[#F5F5F5] rounded-full transition-colors" aria-label="Close">
+                        <button onClick={handleCancel} className="p-1 hover:bg-[#F5F5F5] rounded-full transition-colors" aria-label="Close">
                             <X className="w-5 h-5 text-[#767676]" />
                         </button>
                     </div>
@@ -380,23 +389,25 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
                 <div className="px-6 pb-6 flex items-center justify-end gap-2">
                     <button
                         type="button"
-                        onClick={() => !isSubmitting && onClose()}
-                        disabled={isSubmitting}
-                        className="px-4 py-2 text-sm font-medium text-[#111111] hover:bg-[#F5F5F5] rounded-lg transition-colors disabled:opacity-50"
+                        onClick={handleCancel}
+                        className="px-4 py-2 text-sm font-medium text-[#111111] hover:bg-[#F5F5F5] rounded-lg transition-colors"
                     >
                         Cancel
                     </button>
-                    <button
-                        type="button"
-                        onClick={handleSubmit}
-                        disabled={!hasAudio || !hasGroqKey || isSubmitting}
-                        className="px-4 py-2 text-sm font-medium text-white bg-[#0058A3] hover:bg-[#004F93] rounded-lg transition-colors disabled:opacity-50"
-                    >
-                        {/* The progress panel above already shows a spinner + live status while
-                            submitting; a second spinning icon + changing label here just doubled
-                            up the motion without adding information. */}
-                        {isSubmitting ? 'Processing…' : 'Generate Meeting Minutes'}
-                    </button>
+                    {/* Hidden while submitting rather than shown disabled: the progress
+                        panel above already carries the live status, and Cancel is the
+                        only action that still does anything mid-generation — there's no
+                        reason to keep a second, inert button next to it. */}
+                    {!isSubmitting && (
+                        <button
+                            type="button"
+                            onClick={handleSubmit}
+                            disabled={!hasAudio || !hasGroqKey}
+                            className="px-4 py-2 text-sm font-medium text-white bg-[#0058A3] hover:bg-[#004F93] rounded-lg transition-colors disabled:opacity-50"
+                        >
+                            Generate Meeting Minutes
+                        </button>
+                    )}
                 </div>
             </div>
         </div>
