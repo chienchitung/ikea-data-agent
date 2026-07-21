@@ -1,15 +1,22 @@
-import { useState, useRef, useEffect, useLayoutEffect } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, lazy, Suspense } from 'react';
 import axios from 'axios';
 import { ChatMessage } from './components/ChatMessage';
 import { ArrowUp, Loader2, Sparkles, FileText, ChevronDown, ChevronLeft, Plus, Check, Edit2, Trash2, User, MessageSquare, PenSquare, Search, Mic, Square, X, Bug, Pin, MoreHorizontal, KeyRound, Eye, EyeOff, CheckSquare, FileAudio, Menu } from 'lucide-react';
-import bearAvatar from './assets/img/ikea-bear.png';
-import dogAvatar from './assets/img/ikea-dog.png';
-import elephantAvatar from './assets/img/ikea-elephant.png';
-import monkeyAvatar from './assets/img/ikea-monkey.png';
-import sharkAvatar from './assets/img/ikea-shark.png';
-import teddyAvatar from './assets/img/ikea-teddy.png';
+import bearAvatar from './assets/img/ikea-bear.webp';
+import dogAvatar from './assets/img/ikea-dog.webp';
+import elephantAvatar from './assets/img/ikea-elephant.webp';
+import monkeyAvatar from './assets/img/ikea-monkey.webp';
+import sharkAvatar from './assets/img/ikea-shark.webp';
+import teddyAvatar from './assets/img/ikea-teddy.webp';
 import { readSseStream } from './utils/sse';
-import { MeetingRecordsPage } from './components/MeetingRecordsPage';
+
+// Meeting Records is a whole separate page (recorder modal, minutes editor,
+// IndexedDB storage layer) that most chat sessions never open — lazy-loading
+// it keeps that code out of the initial bundle everyone downloads just to
+// chat. See the <Suspense> around its one usage below.
+const MeetingRecordsPage = lazy(() =>
+    import('./components/MeetingRecordsPage').then((m) => ({ default: m.MeetingRecordsPage }))
+);
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 const SHOW_AI_DEBUG = import.meta.env.DEV && import.meta.env.VITE_DEBUG_AI === 'true';
@@ -1822,7 +1829,13 @@ function App() {
                 </header>
 
                 {showMeetingsPage ? (
-                    <MeetingRecordsPage apiUrl={API_URL} geminiApiKey={geminiApiKey} groqApiKey={groqApiKey} onOpenApiKeys={openApiKeysModal} />
+                    <Suspense fallback={
+                        <div className="flex-1 flex items-center justify-center">
+                            <Loader2 className="w-6 h-6 animate-spin text-[#0058A3]" />
+                        </div>
+                    }>
+                        <MeetingRecordsPage apiUrl={API_URL} geminiApiKey={geminiApiKey} groqApiKey={groqApiKey} onOpenApiKeys={openApiKeysModal} />
+                    </Suspense>
                 ) : (
                 <>
                 {/* Chat Area */}

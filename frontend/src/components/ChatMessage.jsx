@@ -7,7 +7,7 @@ import remarkGfm from 'remark-gfm';
 import remarkCjkFriendly from 'remark-cjk-friendly';
 import clsx from 'clsx';
 import { Copy, Edit2, Check, BarChart3, LineChart, PieChart } from 'lucide-react';
-import assistantAvatar from '../assets/img/ikea-assistant.png';
+import assistantAvatar from '../assets/img/ikea-assistant.webp';
 
 // ── Preprocess message content ───────────────────────────
 // 處理 LLM 三種常見的錯誤 code block 格式，統一轉為合法的 Markdown fenced block
