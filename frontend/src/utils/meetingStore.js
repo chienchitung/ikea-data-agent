@@ -80,7 +80,10 @@ export async function saveMeetingAudio(meetingId, blob, filename, mimeType) {
 }
 
 // Summary list for the Meeting Records page — mirrors the shape the old
-// GET /meetings backend endpoint used to return.
+// GET /meetings backend endpoint used to return, plus `transcript` so the
+// list view can search over it without a second read per meeting: getAll()
+// below already pulls the full record (transcript included) off disk, so
+// carrying it through here is free.
 export async function listMeetingRecords() {
     const db = await openDb();
     const tx = db.transaction(RECORDS_STORE, 'readonly');
@@ -91,6 +94,7 @@ export async function listMeetingRecords() {
             meeting_title: r.meeting_data?.meeting_title || '',
             date: r.meeting_data?.date || '',
             created_at: r.created_at || '',
+            transcript: r.transcript || '',
         }))
         .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
 }
@@ -165,4 +169,98 @@ export async function getStorageEstimate() {
     } catch {
         return null;
     }
+}
+
+// ── Export / import (backup) ─────────────────────────────────
+//
+// Records live only in this one browser's IndexedDB now — no server copy to
+// fall back on — so moving to a new device or recovering from a cleared
+// browser profile needs an explicit backup/restore path. Packaged as a
+// single JSON file (audio embedded as base64) rather than a .zip so this
+// doesn't need a zip library as a dependency; JSON.parse on a file with a
+// handful of meetings' worth of base64 audio is well within what a browser
+// handles fine synchronously.
+
+const BACKUP_FORMAT = 'ikea-data-agent-meeting-backup';
+const BACKUP_VERSION = 1;
+
+async function blobToBase64(blob) {
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    let binary = '';
+    // String.fromCharCode(...bytes) on a large typed array can blow the call
+    // stack (it spreads into individual arguments), so this goes chunk by
+    // chunk instead — matters here since a chunk-sized meeting recording is
+    // exactly the kind of file this function handles.
+    const CHUNK_SIZE = 0x8000;
+    for (let i = 0; i < bytes.length; i += CHUNK_SIZE) {
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK_SIZE));
+    }
+    return btoa(binary);
+}
+
+function base64ToBlob(base64, mimeType) {
+    const byteChars = atob(base64);
+    const bytes = new Uint8Array(byteChars.length);
+    for (let i = 0; i < byteChars.length; i++) bytes[i] = byteChars.charCodeAt(i);
+    return new Blob([bytes], { type: mimeType || 'application/octet-stream' });
+}
+
+// Returns a downloadable Blob. Pass meetingIds to export a subset (e.g. the
+// current selection); omit/pass null to export everything.
+export async function exportMeetingRecords(meetingIds = null) {
+    const summaries = await listMeetingRecords();
+    const idsToExport = meetingIds && meetingIds.length ? meetingIds : summaries.map((s) => s.meeting_id);
+
+    const meetings = [];
+    for (const meetingId of idsToExport) {
+        const record = await getMeetingRecord(meetingId);
+        if (!record) continue;
+        const audio = await getMeetingAudioBlob(meetingId);
+        meetings.push({
+            ...record,
+            audio: audio ? {
+                filename: audio.filename,
+                mimeType: audio.mimeType,
+                base64: await blobToBase64(audio.blob),
+            } : null,
+        });
+    }
+
+    const payload = {
+        format: BACKUP_FORMAT,
+        version: BACKUP_VERSION,
+        exported_at: new Date().toISOString(),
+        meetings,
+    };
+    return new Blob([JSON.stringify(payload)], { type: 'application/json' });
+}
+
+// Imports a backup produced by exportMeetingRecords(). Existing records with
+// the same meeting_id are overwritten (this is a restore, not a merge).
+// onProgress(imported, total) is called after each meeting so callers can
+// show progress for a large backup. Returns the number of meetings imported.
+export async function importMeetingRecords(file, onProgress) {
+    const text = await file.text();
+    let payload;
+    try {
+        payload = JSON.parse(text);
+    } catch {
+        throw new Error('This file is not a valid backup (not JSON).');
+    }
+    if (payload?.format !== BACKUP_FORMAT || !Array.isArray(payload.meetings)) {
+        throw new Error('This file is not a recognized meeting-records backup.');
+    }
+
+    let imported = 0;
+    for (const entry of payload.meetings) {
+        const { audio, ...record } = entry;
+        if (!record.meeting_id) continue;
+        await saveMeetingRecord(record);
+        if (audio?.base64) {
+            await saveMeetingAudio(record.meeting_id, base64ToBlob(audio.base64, audio.mimeType), audio.filename, audio.mimeType);
+        }
+        imported += 1;
+        onProgress?.(imported, payload.meetings.length);
+    }
+    return imported;
 }

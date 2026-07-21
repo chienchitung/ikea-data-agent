@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import axios from 'axios';
-import { FileAudio, Plus, Download, Trash2, Edit2, Check, CheckSquare, Loader2, AlertTriangle, X } from 'lucide-react';
+import { FileAudio, Plus, Download, Upload, Trash2, Edit2, Check, CheckSquare, Loader2, AlertTriangle, X, Search } from 'lucide-react';
 import { MeetingRecorderModal } from './MeetingRecorderModal';
 import { MeetingMinutesView } from './MeetingMinutesView';
 import {
@@ -10,6 +10,8 @@ import {
     deleteMeetingRecord,
     getMeetingStorageBreakdown,
     getStorageEstimate,
+    exportMeetingRecords,
+    importMeetingRecords,
     STORAGE_WARNING_THRESHOLD,
 } from '../utils/meetingStore';
 
@@ -51,6 +53,23 @@ export function MeetingRecordsPage({ apiUrl, geminiApiKey, groqApiKey, onOpenApi
     // it for this page visit — it comes back next load if still over.
     const [storageWarning, setStorageWarning] = useState(null);
     const [isStorageWarningDismissed, setIsStorageWarningDismissed] = useState(false);
+    const [searchQuery, setSearchQuery] = useState('');
+    const [isExporting, setIsExporting] = useState(false);
+    const [isImporting, setIsImporting] = useState(false);
+    const [importProgress, setImportProgress] = useState(null);
+    const importFileInputRef = useRef(null);
+
+    // Matches against title and full transcript — listMeetingRecords() already
+    // carries transcript for free (see meetingStore.js), so this needs no
+    // extra IndexedDB reads.
+    const filteredMeetings = useMemo(() => {
+        const query = searchQuery.trim().toLowerCase();
+        if (!query) return meetings;
+        return meetings.filter((m) =>
+            (m.meeting_title || '').toLowerCase().includes(query) ||
+            (m.transcript || '').toLowerCase().includes(query)
+        );
+    }, [meetings, searchQuery]);
 
     // Meeting records + audio live in the browser's IndexedDB now (see
     // meetingStore.js), not on the backend — Render's disk is ephemeral, so
@@ -139,11 +158,14 @@ export function MeetingRecordsPage({ apiUrl, geminiApiKey, groqApiKey, onOpenApi
         });
     };
 
+    // Selects/clears only the currently-filtered (visible) meetings, not
+    // every meeting regardless of the search box — selecting something the
+    // user can't currently see would be surprising.
     const toggleSelectAll = () => {
         setSelectedIds((prev) =>
-            prev.size === meetings.length && meetings.length > 0
+            prev.size === filteredMeetings.length && filteredMeetings.length > 0
                 ? new Set()
-                : new Set(meetings.map((m) => m.meeting_id))
+                : new Set(filteredMeetings.map((m) => m.meeting_id))
         );
     };
 
@@ -199,6 +221,54 @@ export function MeetingRecordsPage({ apiUrl, geminiApiKey, groqApiKey, onOpenApi
         if (payload?.meeting_id) setActiveMeetingId(payload.meeting_id);
     };
 
+    // Records only live in this browser's IndexedDB now — no server copy to
+    // fall back on — so this is the only way to move them to a new device or
+    // recover from a cleared browser profile. meetingIds omitted exports
+    // everything; passed in (e.g. the current selection) exports a subset.
+    const downloadBackupFile = async (meetingIds) => {
+        setIsExporting(true);
+        try {
+            const blob = await exportMeetingRecords(meetingIds);
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            const dateStr = new Date().toISOString().slice(0, 10);
+            link.download = `meeting-records-backup-${dateStr}.json`;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            URL.revokeObjectURL(url);
+        } catch (error) {
+            console.error('Failed to export meeting records:', error);
+            alert('Could not export meeting records. Please try again.');
+        } finally {
+            setIsExporting(false);
+        }
+    };
+
+    const handleExportAll = () => downloadBackupFile();
+    const handleExportSelected = () => downloadBackupFile([...selectedIds]);
+
+    const handleImportFileChosen = async (e) => {
+        const file = e.target.files?.[0];
+        e.target.value = ''; // otherwise re-picking the same file no-ops (no change event)
+        if (!file) return;
+
+        setIsImporting(true);
+        setImportProgress({ done: 0, total: 0 });
+        try {
+            const count = await importMeetingRecords(file, (done, total) => setImportProgress({ done, total }));
+            await fetchMeetings();
+            alert(`Imported ${count} meeting record${count === 1 ? '' : 's'}. Any that already existed here were overwritten with the backup's version.`);
+        } catch (error) {
+            console.error('Failed to import meeting records:', error);
+            alert(error.message || 'Could not import this file. Please make sure it is a meeting-records backup exported from this app.');
+        } finally {
+            setIsImporting(false);
+            setImportProgress(null);
+        }
+    };
+
     // Proactively sends people to set the Groq key instead of letting them
     // open the recorder, fill out the whole form, and only then discover
     // (from the disabled submit button) that transcription can't run at all.
@@ -213,19 +283,53 @@ export function MeetingRecordsPage({ apiUrl, geminiApiKey, groqApiKey, onOpenApi
     return (
         <div className="flex-1 overflow-y-auto bg-white">
             <div className="max-w-4xl mx-auto w-full px-4 sm:px-6 py-6">
-                <div className="flex items-center justify-between mb-1">
+                <div className="flex items-center justify-between mb-1 gap-2">
                     <h2 className="text-xl font-bold text-[#111111]">Meeting Records</h2>
-                    {meetings.length > 0 && (
+                    <div className="flex items-center gap-1 flex-shrink-0">
+                        {meetings.length > 0 && (
+                            <button
+                                onClick={handleExportAll}
+                                disabled={isExporting}
+                                title="Export all meeting records as a backup file"
+                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-[#767676] hover:bg-[#F5F5F5] transition-colors disabled:opacity-50"
+                            >
+                                {isExporting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+                                Export
+                            </button>
+                        )}
                         <button
-                            onClick={toggleSelectMode}
-                            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${isSelecting ? 'bg-[#0058A3] text-white' : 'text-[#767676] hover:bg-[#F5F5F5]'}`}
+                            onClick={() => importFileInputRef.current?.click()}
+                            disabled={isImporting}
+                            title="Import meeting records from a backup file"
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-[#767676] hover:bg-[#F5F5F5] transition-colors disabled:opacity-50"
                         >
-                            <CheckSquare className="w-3.5 h-3.5" />
-                            {isSelecting ? 'Exit select mode' : 'Select'}
+                            {isImporting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
+                            {isImporting && importProgress?.total
+                                ? `Importing ${importProgress.done}/${importProgress.total}…`
+                                : 'Import'}
                         </button>
-                    )}
+                        <input
+                            ref={importFileInputRef}
+                            type="file"
+                            accept=".json,application/json"
+                            className="hidden"
+                            onChange={handleImportFileChosen}
+                        />
+                        {meetings.length > 0 && (
+                            <button
+                                onClick={toggleSelectMode}
+                                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${isSelecting ? 'bg-[#0058A3] text-white' : 'text-[#767676] hover:bg-[#F5F5F5]'}`}
+                            >
+                                <CheckSquare className="w-3.5 h-3.5" />
+                                {isSelecting ? 'Exit select mode' : 'Select'}
+                            </button>
+                        )}
+                    </div>
                 </div>
-                <p className="text-sm text-[#767676] mb-6">Record or upload a meeting and I'll turn it into a structured meeting minutes document.</p>
+                <p className="text-sm text-[#767676] mb-1">Record or upload a meeting and I'll turn it into a structured meeting minutes document.</p>
+                <p className="text-xs text-[#AAAAAA] mb-6">
+                    Records are saved in this browser only — export a backup periodically, or before switching devices or clearing browser data.
+                </p>
 
                 {storageWarning && !isStorageWarningDismissed && (
                     <div className="mb-6 border border-amber-200 bg-amber-50 rounded-xl p-4">
@@ -280,15 +384,36 @@ export function MeetingRecordsPage({ apiUrl, geminiApiKey, groqApiKey, onOpenApi
                     <Plus className="w-4 h-4" /> Add Meeting Recording
                 </button>
 
-                {isSelecting && meetings.length > 0 && (
+                {meetings.length > 0 && (
+                    <div className="relative mb-4">
+                        <Search className="w-4 h-4 text-[#AAAAAA] absolute left-3 top-1/2 -translate-y-1/2" />
+                        <input
+                            type="text"
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                            placeholder="Search by title or transcript…"
+                            className="w-full pl-9 pr-3 py-2 text-sm border border-[#DFDFDF] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#0058A3] focus:border-transparent text-[#111111]"
+                        />
+                    </div>
+                )}
+
+                {isSelecting && filteredMeetings.length > 0 && (
                     <div className="flex items-center justify-between mb-3 px-1">
                         <button onClick={toggleSelectAll} className="flex items-center gap-2 hover:bg-[#F5F5F5] rounded py-1 px-1 transition-colors">
-                            <div className={`w-4 h-4 rounded border-2 flex-shrink-0 ${selectedIds.size === meetings.length && meetings.length > 0 ? 'border-[#0058A3] bg-[#0058A3]' : 'border-[#CCCCCC]'} flex items-center justify-center`}>
-                                {selectedIds.size === meetings.length && meetings.length > 0 && <Check className="w-2.5 h-2.5 text-white" />}
+                            <div className={`w-4 h-4 rounded border-2 flex-shrink-0 ${selectedIds.size === filteredMeetings.length && filteredMeetings.length > 0 ? 'border-[#0058A3] bg-[#0058A3]' : 'border-[#CCCCCC]'} flex items-center justify-center`}>
+                                {selectedIds.size === filteredMeetings.length && filteredMeetings.length > 0 && <Check className="w-2.5 h-2.5 text-white" />}
                             </div>
                             <span className="text-xs text-[#767676]">
-                                {selectedIds.size === 0 ? 'Select all' : `${selectedIds.size} / ${meetings.length} selected`}
+                                {selectedIds.size === 0 ? 'Select all' : `${selectedIds.size} / ${filteredMeetings.length} selected`}
                             </span>
+                        </button>
+                        <div className="flex items-center gap-1">
+                        <button
+                            onClick={handleExportSelected}
+                            disabled={selectedIds.size === 0 || isExporting}
+                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#767676] hover:bg-[#F5F5F5] rounded-lg disabled:opacity-40 disabled:hover:bg-transparent transition-colors"
+                        >
+                            <Download className="w-3.5 h-3.5" /> Export selected
                         </button>
                         <button
                             onClick={deleteSelected}
@@ -297,6 +422,7 @@ export function MeetingRecordsPage({ apiUrl, geminiApiKey, groqApiKey, onOpenApi
                         >
                             <Trash2 className="w-3.5 h-3.5" /> Delete selected
                         </button>
+                        </div>
                     </div>
                 )}
 
@@ -319,9 +445,14 @@ export function MeetingRecordsPage({ apiUrl, geminiApiKey, groqApiKey, onOpenApi
                         <FileAudio className="w-8 h-8 text-[#DFDFDF] mx-auto mb-2" />
                         <p className="text-sm text-[#767676]">No meeting minutes yet</p>
                     </div>
+                ) : filteredMeetings.length === 0 ? (
+                    <div className="text-center py-14 border border-dashed border-[#DFDFDF] rounded-xl">
+                        <Search className="w-8 h-8 text-[#DFDFDF] mx-auto mb-2" />
+                        <p className="text-sm text-[#767676]">No meeting records match "{searchQuery.trim()}"</p>
+                    </div>
                 ) : (
                     <div className="space-y-2">
-                        {meetings.map((meeting) => {
+                        {filteredMeetings.map((meeting) => {
                             const isSelected = selectedIds.has(meeting.meeting_id);
                             return (
                                 <div
