@@ -340,23 +340,27 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
                                 </span>
                                 <span className="text-xs text-[#767676] tabular-nums shrink-0">{formatSeconds(elapsedSeconds)}</span>
                             </div>
-                            <div className="h-1.5 w-full bg-[#DFDFDF] rounded-full overflow-hidden">
+                            <div className="h-1.5 w-full bg-[#DFDFDF] rounded-full overflow-hidden relative">
                                 {progressPercent != null ? (
                                     <div
                                         className="h-full bg-[#0058A3] rounded-full transition-all duration-500 ease-out"
                                         style={{ width: `${progressPercent}%` }}
                                     />
                                 ) : (
-                                    // No chunk-level progress to report yet (short recording, single
-                                    // request, or still uploading/preparing) — still animates so a
-                                    // long wait doesn't read as a frozen screen.
-                                    <div className="h-full w-full bg-[#0058A3] animate-pulse" />
+                                    // No chunk-level progress to report yet (still uploading/preparing,
+                                    // or a short recording that transcribes in a single request). A
+                                    // full bar that only fades in/out reads as "finished" in a static
+                                    // glance, so this instead slides a segment across — the same
+                                    // "still working, no known ETA" language as a browser's indeterminate
+                                    // progress bar.
+                                    <div className="h-full w-2/5 bg-[#0058A3] rounded-full progress-bar-indeterminate" />
                                 )}
                             </div>
                             {audioFileBytes > GROQ_CHUNKING_THRESHOLD_BYTES && (
                                 <p className="mt-2 text-xs text-[#767676]">
-                                    This is a long recording, so transcription runs in stages — it can take a
-                                    few minutes. The percentage above updates as each stage finishes.
+                                    {progressPercent != null
+                                        ? 'This is a long recording, so transcription runs in stages — it can take a few minutes. The percentage above updates as each stage finishes.'
+                                        : 'This is a long recording — preparing it can take a little while before transcription starts.'}
                                 </p>
                             )}
                         </div>

@@ -1045,3 +1045,25 @@
         transform: scale(1.2);
     }
 }
+
+/* Indeterminate progress bar: a segment sliding left-to-right, for long-running
+   steps (e.g. audio preparation) with no known percentage yet. A same-width
+   pulsing fill reads as "finished" in a static glance; a moving segment reads
+   as "still working, no ETA yet" instead. */
+.progress-bar-indeterminate {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    animation: progressIndeterminate 1.3s ease-in-out infinite;
+}
+
+@keyframes progressIndeterminate {
+    0% {
+        transform: translateX(-100%);
+    }
+
+    100% {
+        transform: translateX(250%);
+    }
+}
