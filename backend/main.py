@@ -713,6 +713,20 @@ async def generate_meeting_minutes_stream(
         queue: asyncio.Queue = asyncio.Queue()
 
         async def run_pipeline():
+            loop = asyncio.get_running_loop()
+
+            def emit_progress_threadsafe(phase: str, label: str, percent: Optional[int] = None) -> None:
+                # normalize_audio() and the audio-split step run in a worker
+                # thread (asyncio.to_thread) so a long transcode/split doesn't
+                # block other requests. asyncio.Queue isn't thread-safe, so
+                # progress ticks from that thread have to be handed back to
+                # the event loop via call_soon_threadsafe rather than awaited
+                # directly the way on_transcription_chunk_done below is.
+                payload = {"phase": phase, "label": label}
+                if percent is not None:
+                    payload["percent"] = percent
+                loop.call_soon_threadsafe(queue.put_nowait, ("progress", payload))
+
             try:
                 if not api_key:
                     await queue.put(("error", localized_product_error("ai_provider_unavailable", "en")))
@@ -722,7 +736,11 @@ async def generate_meeting_minutes_stream(
                     return
 
                 await queue.put(("progress", {"phase": "normalizing_audio", "label": "Preparing audio"}))
-                normalized_path = await asyncio.to_thread(normalize_audio, str(audio_path))
+
+                def on_normalize_progress(percent: int) -> None:
+                    emit_progress_threadsafe("normalizing_audio", f"Preparing audio ({percent}%)", percent)
+
+                normalized_path = await asyncio.to_thread(normalize_audio, str(audio_path), on_normalize_progress)
 
                 await queue.put(("progress", {"phase": "transcribing", "label": "Transcribing audio"}))
 
@@ -738,7 +756,14 @@ async def generate_meeting_minutes_stream(
                         "percent": round(completed / total * 100) if total else None,
                     }))
 
-                transcription = await transcribe_audio(normalized_path, groq_api_key, on_chunk_done=on_transcription_chunk_done)
+                def on_split_progress(percent: int) -> None:
+                    emit_progress_threadsafe("splitting_audio", f"Splitting audio for transcription ({percent}%)", percent)
+
+                transcription = await transcribe_audio(
+                    normalized_path, groq_api_key,
+                    on_chunk_done=on_transcription_chunk_done,
+                    on_split_progress=on_split_progress,
+                )
                 transcript = transcription["text"]
                 segments = transcription["segments"]
 

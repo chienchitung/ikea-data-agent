@@ -5,6 +5,7 @@ import { readSseStream } from '../utils/sse';
 const PROGRESS_LABELS = {
     uploading_audio: 'Uploading recording…',
     normalizing_audio: 'Preparing audio…',
+    splitting_audio: 'Splitting audio for transcription…',
     transcribing: 'Transcribing audio…',
     drafting_minutes: 'Drafting meeting minutes…',
 };
@@ -170,11 +171,8 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
             await readSseStream(response, (event, data) => {
                 if (event === 'progress') {
                     const percent = typeof data?.percent === 'number' ? data.percent : null;
-                    setProgressLabel(
-                        percent != null
-                            ? `Transcribing audio… ${percent}%`
-                            : (PROGRESS_LABELS[data?.phase] || data?.label || 'Processing…')
-                    );
+                    const baseLabel = PROGRESS_LABELS[data?.phase] || data?.label || 'Processing…';
+                    setProgressLabel(percent != null ? `${baseLabel} ${percent}%` : baseLabel);
                     setProgressPercent(percent);
                 } else if (event === 'final') {
                     finalPayload = data;

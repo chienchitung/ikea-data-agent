@@ -179,7 +179,7 @@ def _probe_duration_seconds(path: str) -> float:
     try:
         result = subprocess.run(
             [FFPROBE_BIN, "-v", "error", "-show_entries", "format=duration",
-             "-of", "default=noprint_wrapper=1:nokey=1", path],
+             "-of", "csv=p=0", path],
             check=True, capture_output=True, text=True,
         )
         return float(result.stdout.strip())
@@ -187,21 +187,71 @@ def _probe_duration_seconds(path: str) -> float:
         return 0.0
 
 
-def normalize_audio(src_path: str) -> str:
+def _run_ffmpeg_with_progress(cmd: list, total_seconds: float, on_progress: Optional[Callable[[int], None]] = None) -> None:
+    """
+    Runs an ffmpeg command — which must include "-progress pipe:1 -nostats" —
+    and parses its machine-readable progress stream (out_time_us=... lines) to
+    report integer percent-complete via on_progress as the transcode/split
+    actually runs, instead of the caller only finding out once the whole
+    (possibly tens-of-seconds-long, for a long meeting) subprocess call
+    returns. `on_progress` must be synchronous and safe to call from this
+    thread — this function itself is a normal blocking call.
+
+    stderr is captured to a temp file rather than a pipe: ffmpeg can write
+    enough to it that an undrained PIPE fills up and deadlocks the process
+    while we're only reading stdout.
+    """
+    with tempfile.TemporaryFile() as stderr_capture:
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=stderr_capture, text=True, bufsize=1)
+        last_percent = -1
+        try:
+            for line in process.stdout:
+                line = line.strip()
+                if on_progress and total_seconds > 0 and line.startswith("out_time_us="):
+                    raw_value = line.split("=", 1)[1]
+                    if raw_value == "N/A":
+                        continue
+                    elapsed_seconds = max(0, int(raw_value)) / 1_000_000
+                    percent = min(99, int(elapsed_seconds / total_seconds * 100))
+                    if percent != last_percent:
+                        last_percent = percent
+                        on_progress(percent)
+                elif on_progress and line == "progress=end" and last_percent != 100:
+                    last_percent = 100
+                    on_progress(100)
+        finally:
+            process.wait()
+
+        if process.returncode != 0:
+            stderr_capture.seek(0)
+            stderr_text = stderr_capture.read().decode("utf-8", errors="replace")
+            raise subprocess.CalledProcessError(process.returncode, cmd, stderr=stderr_text)
+
+
+def normalize_audio(src_path: str, on_progress: Optional[Callable[[int], None]] = None) -> str:
     """
     Convert an uploaded/recorded audio file to a Gemini-supported format (mp3).
     Browser MediaRecorder produces audio/webm;codecs=opus, which is not in Gemini's
     documented supported audio MIME list (wav/mp3/aiff/aac/ogg/flac). Falls back to
     the original file if neither ffmpeg nor pydub is available so the pipeline
     still attempts transcription with whatever format was uploaded.
+
+    `on_progress(percent)` is called as the ffmpeg transcode runs (see
+    _run_ffmpeg_with_progress) when using the ffmpeg path; the pydub fallback
+    has no equivalent hook since pydub only returns once fully done.
     """
     dst_path = f"{os.path.splitext(src_path)[0]}_normalized.{NORMALIZED_AUDIO_FORMAT}"
 
     if FFMPEG_BIN:
         try:
-            subprocess.run(
-                [FFMPEG_BIN, "-y", "-i", src_path, "-vn", "-acodec", "libmp3lame", "-b:a", "128k", dst_path],
-                check=True, capture_output=True,
+            total_seconds = _probe_duration_seconds(src_path)
+            _run_ffmpeg_with_progress(
+                [
+                    FFMPEG_BIN, "-y", "-i", src_path, "-vn", "-acodec", "libmp3lame", "-b:a", "128k",
+                    "-progress", "pipe:1", "-nostats",
+                    dst_path,
+                ],
+                total_seconds, on_progress,
             )
             return dst_path
         except Exception as e:
@@ -297,7 +347,10 @@ async def _transcribe_bytes(audio_bytes: bytes, filename: str, groq_api_key: str
     return response.json().get("segments") or []
 
 
-def _split_audio_ffmpeg(path: str, chunk_seconds: int, out_dir: str) -> list:
+def _split_audio_ffmpeg(
+    path: str, chunk_seconds: int, out_dir: str,
+    total_seconds: float = 0.0, on_progress: Optional[Callable[[int], None]] = None,
+) -> list:
     """
     Splits `path` into sequential chunk files under `out_dir` using ffmpeg's
     segment muxer with stream copy (-c copy) — i.e. it repackages existing
@@ -305,16 +358,21 @@ def _split_audio_ffmpeg(path: str, chunk_seconds: int, out_dir: str) -> list:
     doesn't pull the audio through Python at all and runs in roughly constant
     memory regardless of file length. Requires `path` to already be the format
     produced by normalize_audio() (mp3), which segments cleanly with copy.
+
+    `on_progress(percent)` is called as the split runs (see
+    _run_ffmpeg_with_progress); `total_seconds` should be this file's already-
+    known duration so percent can be computed without a second probe.
     """
     pattern = os.path.join(out_dir, f"chunk_%03d.{NORMALIZED_AUDIO_FORMAT}")
-    subprocess.run(
+    _run_ffmpeg_with_progress(
         [
             FFMPEG_BIN, "-y", "-i", path,
             "-f", "segment", "-segment_time", str(chunk_seconds),
             "-c", "copy", "-reset_timestamps", "1",
+            "-progress", "pipe:1", "-nostats",
             pattern,
         ],
-        check=True, capture_output=True,
+        total_seconds, on_progress,
     )
     return sorted(
         os.path.join(out_dir, name)
@@ -348,7 +406,12 @@ def _split_audio_pydub(audio_path: str, file_size: int) -> list:
 ProgressCallback = Callable[[int, int], Awaitable[None]]
 
 
-async def transcribe_audio(audio_path: str, groq_api_key: str, on_chunk_done: Optional[ProgressCallback] = None) -> dict:
+async def transcribe_audio(
+    audio_path: str,
+    groq_api_key: str,
+    on_chunk_done: Optional[ProgressCallback] = None,
+    on_split_progress: Optional[Callable[[int], None]] = None,
+) -> dict:
     """
     Returns {"segments": [{"start": seconds, "speaker": str, "text": str}, ...], "text": flat_text}.
     Segments power the clickable, timestamped transcript UI; "text" is a flat
@@ -363,6 +426,12 @@ async def transcribe_audio(audio_path: str, groq_api_key: str, on_chunk_done: Op
     the file needed to be split (over Groq's upload limit), so callers can
     surface real transcription progress instead of one static "transcribing"
     status for however long a long meeting takes.
+
+    `on_split_progress(percent)` — synchronous, not awaited — is called while
+    ffmpeg is splitting an oversized file into chunks, before any chunk is
+    done yet. It runs off the event loop (see asyncio.to_thread below), so
+    unlike on_chunk_done it can't safely be an `await`-based callback itself;
+    callers bridge it back to async code (e.g. via loop.call_soon_threadsafe).
     """
     file_size = os.path.getsize(audio_path)
 
@@ -378,7 +447,12 @@ async def transcribe_audio(audio_path: str, groq_api_key: str, on_chunk_done: Op
 
         raw_segments = []
         with tempfile.TemporaryDirectory(prefix="meeting_chunks_") as tmp_dir:
-            chunk_paths = _split_audio_ffmpeg(audio_path, chunk_seconds, tmp_dir)
+            # Splitting a long file (even with -c copy) can take a few seconds;
+            # run it off the event loop so it doesn't stall other requests,
+            # consistent with how normalize_audio() is dispatched by the caller.
+            chunk_paths = await asyncio.to_thread(
+                _split_audio_ffmpeg, audio_path, chunk_seconds, tmp_dir, duration_seconds, on_split_progress,
+            )
             total_chunks = len(chunk_paths)
             offset_seconds = 0.0
             # Chunks are transcribed one at a time (not concurrently): only one
