@@ -8,7 +8,7 @@ import time
 from datetime import datetime
 from typing import Optional
 
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage, AIMessageChunk
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
 from reply_language import detect_reply_language_text, normalize_reply_language
 from agents.coordinator import (
     coordinator_executor,
@@ -34,11 +34,10 @@ from conversation_store import (
 _BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 _kb_init_lock = asyncio.Lock()
 
-# 驗證階段（全年稽核＋LLM 查核）的總時長上限。逐字串流上線後，驗證是在
-# 使用者「已經看到完整答案」之後才跑的——它拖多久，「Verifying the response」
-# 的泡泡就轉多久。答案都看完了還要盯著轉圈 40~50 秒，體感上就是卡住。
-# 超過預算就放行已串流的答案（驗證標記 timed_out），不讓查核無限期
-# 擋住 final 事件。
+# 驗證階段（全年稽核＋LLM 查核）的總時長上限。使用者在這個階段還看不到
+# 任何答案文字（答案要等驗證＋存檔全部跑完才會一次送到前端播放打字動畫），
+# 所以這個預算等於「使用者要盯著轉圈等多久」的上限。超過預算就放行原本
+# 生成的答案（驗證標記 timed_out），不讓查核無限期擋住 final 事件。
 VERIFICATION_TIME_BUDGET_SECONDS = float(os.getenv("VERIFICATION_TIME_BUDGET_SECONDS", "30"))
 
 
@@ -168,19 +167,6 @@ async def _emit_progress(progress_callback, phase: str, label: str, **extra) -> 
         "label": label,
         **extra,
     }
-    result = progress_callback(payload)
-    if inspect.isawaitable(result):
-        await result
-
-
-async def _emit_delta(progress_callback, text: str, reset: bool = False) -> None:
-    """把最終回答的 token 增量往 SSE 推。reset=True 表示前面串流的文字
-    屬於被放棄的訊息（例如 interim 重試），前端應清空重來。"""
-    if not progress_callback:
-        return
-    payload = {"phase": "delta", "text": text}
-    if reset:
-        payload["reset"] = True
     result = progress_callback(payload)
     if inspect.isawaitable(result):
         await result
@@ -822,50 +808,13 @@ async def process_chat_detailed(
             + [HumanMessage(content=current_message)]
         )
 
-        # astream 同時取兩種串流：
-        # - "values"：每個 super-step 後的完整 state，最後一份就是原本
-        #   ainvoke 會回傳的 response_state，後續邏輯不變。
-        # - "messages"：agent 節點內每次 LLM 呼叫的 token 增量，逐字轉發給
-        #   前端（SSE delta 事件），使用者不用等驗證/存檔全部跑完才看到答案。
-        #   final 事件仍帶驗證與後處理完的全文，前端以 final 為準覆蓋。
+        # 這一輪不逐字轉發 token：完整答案要先跑完驗證／存檔，前端才會用
+        # 假打字動畫把最終（已查核）文字顯示出來（見 App.jsx 的
+        # animateAssistantReply）。這樣不會出現「答案已經顯示完，畫面卻還在
+        # 轉」的矛盾狀態，也不會讓使用者看到一版之後又被查核悄悄改寫的答案。
         token = set_progress_handler(progress_callback)
-        response_state = None
-        streamed_message_id = None
         try:
-            async for mode, chunk in coordinator_executor.astream(
-                {"messages": messages},
-                stream_mode=["messages", "values"],
-            ):
-                if mode == "values":
-                    response_state = chunk
-                    continue
-
-                message_chunk, chunk_metadata = chunk
-                # 只轉發 agent 節點的 AI 文字增量：tool 節點（"action"）的
-                # ToolMessage 與帶 tool_call 的 chunk 都不是給使用者看的。
-                if chunk_metadata.get("langgraph_node") != "agent":
-                    continue
-                if not isinstance(message_chunk, AIMessageChunk):
-                    continue
-                if getattr(message_chunk, "tool_call_chunks", None):
-                    continue
-                delta_text = _message_text(message_chunk.content)
-                if not delta_text:
-                    continue
-
-                chunk_id = getattr(message_chunk, "id", None)
-                if streamed_message_id is not None and chunk_id != streamed_message_id:
-                    # 新的 AI 訊息開始：前一則是被放棄的 interim（例如模型說
-                    # 「我來查詢」但沒呼叫工具而觸發 retry），要求前端清空。
-                    await _emit_delta(progress_callback, "", reset=True)
-                streamed_message_id = chunk_id
-                await _emit_delta(progress_callback, delta_text)
-
-            if response_state is None:
-                # astream 沒吐出 values（理論上不會發生）時退回原本的路徑。
-                response_state = await coordinator_executor.ainvoke({
-                    "messages": messages
-                })
+            response_state = await coordinator_executor.ainvoke({"messages": messages})
         finally:
             reset_progress_handler(token)
         

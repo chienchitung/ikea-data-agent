@@ -276,12 +276,7 @@ async def chat_stream_endpoint(request: ChatRequest):
         queue: asyncio.Queue = asyncio.Queue()
 
         async def progress_handler(payload: dict):
-            # 最終回答的 token 增量走獨立的 SSE 事件型別，讓前端把它跟
-            # 進度狀態列分開處理（progress 更新狀態列，delta 逐字顯示答案）。
-            if isinstance(payload, dict) and payload.get("phase") == "delta":
-                await queue.put(("delta", payload))
-            else:
-                await queue.put(("progress", payload))
+            await queue.put(("progress", payload))
 
         async def run_chat():
             try:

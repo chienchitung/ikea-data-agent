@@ -280,7 +280,7 @@ function buildRequestErrorMessage(error, context = 'chat', userMessage = '') {
     );
 }
 
-async function streamChat(payload, signal, onProgress, geminiApiKey, onDelta) {
+async function streamChat(payload, signal, onProgress, geminiApiKey) {
     const body = geminiApiKey ? { ...payload, gemini_api_key: geminiApiKey } : payload;
     const response = await fetch(`${API_URL}/chat/stream`, {
         method: 'POST',
@@ -302,9 +302,6 @@ async function streamChat(payload, signal, onProgress, geminiApiKey, onDelta) {
     await readSseStream(response, (event, data) => {
         if (event === 'progress') {
             onProgress(data || {});
-        } else if (event === 'delta') {
-            // 最終回答的逐字增量；final 事件到達時會以完整全文覆蓋。
-            onDelta?.(data || {});
         } else if (event === 'final') {
             finalPayload = data || {};
         } else if (event === 'error') {
@@ -426,12 +423,6 @@ function App() {
     const currentStatus = convStatuses[currentConvId] || {};
     const responsePhase = currentStatus.phase || 'idle';
     const responseStatusText = currentStatus.statusText || '';
-    // 逐字文字已經全部顯示完，但後端還在背景查核／存檔（"Verifying the
-    // response" / "Finalizing the response"）——這段時間輸入框仍鎖定、
-    // 麥克風位置仍是暫停鍵，是因為真的還有工作在跑，不是卡住。用這個
-    // 旗標在原本的免責聲明位置換成說明文字，讓使用者知道原因。
-    const isFinalizingAfterStream = isCurrentConvLoading && isStreamingAnswerVisible
-        && (responseStatusText === 'Verifying the response' || responseStatusText === 'Finalizing the response');
     const responseStatusLabel = responseStatusText || getResponseStatusLabel(responsePhase, displayElapsedSeconds);
 
     useEffect(() => {
@@ -1203,6 +1194,37 @@ function App() {
         setIsListening(false);
     };
 
+    // 答案不再逐字串流：後端要等生成＋查核／存檔全部跑完，才把最終（已查核）
+    // 全文透過 final 事件一次送到前端（見 agent_logic.py 的說明）。這裡純粹
+    // 用前端動畫把已經確定的全文「假打字」出來，讓畫面還是有逐字浮現的感覺，
+    // 但不會出現「文字顯示完了，畫面卻還在轉」的矛盾狀態，也不會讓使用者
+    // 看到一版之後又被查核悄悄改寫的答案。signal.aborted（使用者按 Stop）
+    // 時直接跳到全文，讓呼叫端接著收尾。
+    const animateAssistantReply = (convId, fullText, signal) => new Promise((resolve) => {
+        if (!fullText) { resolve(); return; }
+        const TICK_MS = 24;
+        const totalMs = Math.min(1400, Math.max(300, fullText.length * 6));
+        const ticks = Math.max(1, Math.round(totalMs / TICK_MS));
+        const charsPerTick = Math.max(1, Math.ceil(fullText.length / ticks));
+        let shown = 0;
+
+        const step = () => {
+            if (signal.aborted) { resolve(); return; }
+            shown = Math.min(fullText.length, shown + charsPerTick);
+            const contentNow = fullText.slice(0, shown);
+            updateConversationMessages(convId, prev => {
+                const last = prev[prev.length - 1];
+                if (last && last.role === 'assistant' && last.streaming) {
+                    return [...prev.slice(0, -1), { ...last, content: contentNow }];
+                }
+                return [...prev, { role: 'assistant', content: contentNow, streaming: true }];
+            });
+            if (shown >= fullText.length) { resolve(); return; }
+            setTimeout(step, TICK_MS);
+        };
+        step();
+    });
+
     const sendChatMessage = async (
         messageContent,
         activeConvId,
@@ -1223,27 +1245,6 @@ function App() {
         const controller = new AbortController();
         abortControllersRef.current.set(activeConvId, controller);
 
-        // 逐字串流：delta 事件先把生成中的文字即時顯示成一則 streaming 佔位
-        // 訊息，final 事件到達時以驗證/後處理完的全文取代它。
-        const dropStreamingPlaceholder = (prev) =>
-            prev.length && prev[prev.length - 1].streaming ? prev.slice(0, -1) : prev;
-
-        let streamedText = '';
-        const handleDelta = (data) => {
-            if (data?.reset) streamedText = '';
-            if (data?.text) streamedText += data.text;
-            const contentNow = streamedText;
-            updateConversationMessages(activeConvId, prev => {
-                const last = prev[prev.length - 1];
-                if (last && last.role === 'assistant' && last.streaming) {
-                    if (!contentNow) return prev.slice(0, -1);
-                    return [...prev.slice(0, -1), { ...last, content: contentNow }];
-                }
-                if (!contentNow) return prev;
-                return [...prev, { role: 'assistant', content: contentNow, streaming: true }];
-            });
-        };
-
         try {
             const response = await streamChat({
                 message: messageContent,
@@ -1252,30 +1253,25 @@ function App() {
                 clarifications,
                 turn_context: turnContext,
                 active_documents: [...selectedDocuments],
-            }, controller.signal, makeProgressHandler(activeConvId), geminiApiKey || undefined, handleDelta);
-            updateConversationMessages(activeConvId, prev => [...dropStreamingPlaceholder(prev), {
-                role: 'assistant',
-                content: response.response,
-                metadata: response.metadata || {},
-                errorCode: response.error_code || null,
-            }]);
+            }, controller.signal, makeProgressHandler(activeConvId), geminiApiKey || undefined);
+
+            await animateAssistantReply(activeConvId, response.response || '', controller.signal);
+
+            updateConversationMessages(activeConvId, prev => {
+                const base = prev.length && prev[prev.length - 1].streaming ? prev.slice(0, -1) : prev;
+                return [...base, {
+                    role: 'assistant',
+                    content: response.response,
+                    metadata: response.metadata || {},
+                    errorCode: response.error_code || null,
+                }];
+            });
         } catch (error) {
             if (axios.isCancel(error) || error.code === 'ERR_CANCELED' || error.name === 'AbortError') {
-                // 使用者手動停止：保留已串流的部分文字，但拿掉 streaming 標記，
-                // 之後的輪次才不會把它誤認成進行中的佔位訊息。
-                updateConversationMessages(activeConvId, prev => {
-                    const last = prev[prev.length - 1];
-                    if (last && last.streaming) {
-                        const kept = prev.slice(0, -1);
-                        if (last.content) kept.push({ role: 'assistant', content: last.content });
-                        return kept;
-                    }
-                    return prev;
-                });
                 return;
             }
             console.error("Error:", error);
-            updateConversationMessages(activeConvId, prev => [...dropStreamingPlaceholder(prev), {
+            updateConversationMessages(activeConvId, prev => [...prev, {
                 role: 'assistant',
                 content: buildRequestErrorMessage(error, statusPhase === "regenerating" ? 'regenerate' : 'chat', messageContent)
             }]);
@@ -2146,14 +2142,7 @@ function App() {
                         </div>
                     </form>
                     <div className="text-center mt-2 pb-2">
-                        {isFinalizingAfterStream ? (
-                            <p className="text-[10px] text-[#767676] font-medium inline-flex items-center gap-1.5">
-                                <span className="finalizing-dot" aria-hidden="true" />
-                                {responseStatusText}… you can keep reading, or tap stop to cancel.
-                            </p>
-                        ) : (
-                            <p className="text-[10px] text-[#767676] font-medium">AI can make mistakes. Please verify important information.</p>
-                        )}
+                        <p className="text-[10px] text-[#767676] font-medium">AI can make mistakes. Please verify important information.</p>
                     </div>
                 </footer>
                 </>

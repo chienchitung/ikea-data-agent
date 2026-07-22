@@ -1021,17 +1021,6 @@
     font-weight: 600;
 }
 
-/* 答案已顯示完、背景仍在查核／存檔時的提示點，取代輸入框下方的免責聲明 */
-.finalizing-dot {
-    background-color: var(--color-ikea-blue);
-    border-radius: 50%;
-    display: inline-block;
-    height: 6px;
-    width: 6px;
-    animation: typingAnimation 1.4s infinite;
-    flex-shrink: 0;
-}
-
 @keyframes typingAnimation {
 
     0%,
