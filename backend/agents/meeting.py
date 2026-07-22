@@ -45,13 +45,16 @@ load_dotenv()
 
 # Used only for generate_minutes() (text-only) now — transcription is handled
 # by Groq's Whisper API below. Not chained through GEMINI_MODEL (the chat
-# coordinator's model) so it can be tuned independently: gemini-3.5-flash has
-# been observed under heavy load taking 90s+ for a trivial text-only call
-# vs. gemini-2.5-flash's ~7s for the same schema request — a known risk we're
-# accepting here in exchange for gemini-3.5-flash's output quality. If minutes
-# generation starts timing out or feels slow in practice, drop MEETING_MODEL
-# back to gemini-2.5-flash via env var rather than reverting this default.
-MEETING_MODEL = os.getenv("MEETING_MODEL", "gemini-3.5-flash")
+# coordinator's model) so it can be tuned independently. Was gemini-3.5-flash,
+# which had been observed under heavy load taking 90s+ for a trivial
+# text-only call vs. gemini-2.5-flash's ~7s for the same schema request — a
+# known risk accepted at the time in exchange for 3.5 Flash's output quality.
+# Moved to Gemini 3.6 Flash (2026-07): Google's successor to 3.5 Flash, and
+# itself faster/cheaper/more token-efficient per Google's release notes, so
+# this trade no longer applies as sharply. gemini-2.5-flash is also
+# scheduled to retire 2026-10-16, so it's no longer a viable long-term
+# fallback value for this env var regardless.
+MEETING_MODEL = os.getenv("MEETING_MODEL", "gemini-3.6-flash")
 NORMALIZED_AUDIO_FORMAT = "mp3"
 
 # gemini-3.5-flash has been observed returning a transient 503 ("high demand")

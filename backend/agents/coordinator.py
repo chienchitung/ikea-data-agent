@@ -31,17 +31,30 @@ from .analyst import analyst_tools
 
 load_dotenv()
 
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 # Used for internal JSON classification/verification steps (turn-context
 # routing, intent guardrail, clarification detection, response fact-check)
 # that run once or twice per turn but never generate the text the user
-# reads. gemini-3.5-flash has been observed taking 90s+ per call under heavy
-# load vs. gemini-2.5-flash's ~7s for the same kind of schema-only request
-# (see backend/agents/meeting.py), and with 2-3 of these internal calls
-# stacked sequentially before/after the user-facing answer, that difference
-# was the main driver of 100s+ replies. Keep GEMINI_MODEL (3.5-flash) only
-# for the final answer generation, where output quality is user-visible.
-GEMINI_FAST_MODEL = os.getenv("GEMINI_FAST_MODEL", "gemini-2.5-flash")
+# reads. This used to matter a lot more: Gemini 3.5 Flash was observed
+# taking 90s+ per call under heavy load vs. Gemini 2.5 Flash's ~7s for the
+# same kind of schema-only request (see backend/agents/meeting.py), and with
+# 2-3 of these internal calls stacked sequentially before/after the
+# user-facing answer, that gap was the main driver of 100s+ replies.
+#
+# As of 2026-07, both GEMINI_MODEL and GEMINI_FAST_MODEL default to Gemini
+# 3.6 Flash — Google's successor to 3.5 Flash, itself faster/cheaper and
+# more token-efficient per Google's release notes, and Gemini 2.5 Flash is
+# scheduled to retire 2026-10-16 regardless. They're kept as two separate
+# env vars rather than collapsed into one on purpose: if a future model
+# regresses the way 3.5 Flash did under load, GEMINI_FAST_MODEL can be
+# pointed at a different, faster model again via env var without touching
+# GEMINI_MODEL. Note that while both vars resolve to the same model, the
+# with_fallbacks() retry below (_effective_llm_with_fallback) is a fresh
+# attempt against the same backend rather than a genuinely different model
+# — it can still recover from a transient blip, but won't dodge a sustained
+# "high demand" 503 on that model the way falling back to a different model
+# used to.
+GEMINI_FAST_MODEL = os.getenv("GEMINI_FAST_MODEL", "gemini-3.6-flash")
 _env_api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
 
 # langchain_google_genai retries ResourceExhausted(429)/ServiceUnavailable(503)/
