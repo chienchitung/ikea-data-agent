@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useLayoutEffect, useMemo, lazy, Suspense }
 import axios from 'axios';
 import { ChatMessage } from './components/ChatMessage';
 import { ArrowUp, Loader2, Sparkles, FileText, ChevronDown, ChevronLeft, Plus, Check, Edit2, Trash2, User, MessageSquare, PenSquare, Search, Mic, Square, X, Bug, Pin, MoreHorizontal, KeyRound, Eye, EyeOff, CheckSquare, FileAudio, Menu } from 'lucide-react';
+import { listMeetingRecords, getMeetingRecord, formatMeetingRecordForContext } from './utils/meetingStore';
 import bearAvatar from './assets/img/ikea-bear.webp';
 import dogAvatar from './assets/img/ikea-dog.webp';
 import elephantAvatar from './assets/img/ikea-elephant.webp';
@@ -25,6 +26,7 @@ const CURRENT_ID_KEY = 'ikea_agent_current_id';
 const GEMINI_KEY_STORAGE = 'ikea_agent_gemini_key';
 const GROQ_KEY_STORAGE = 'ikea_agent_groq_key';
 const ACTIVE_DOCS_STORAGE = 'ikea_agent_active_docs';
+const ACTIVE_MEETINGS_STORAGE = 'ikea_agent_active_meetings';
 
 const AVATARS = [
     { id: 'bear', name: 'Bear', src: bearAvatar },
@@ -333,6 +335,15 @@ function App() {
         try { return new Set(JSON.parse(localStorage.getItem(ACTIVE_DOCS_STORAGE) || '[]')); }
         catch { return new Set(); }
     });
+    // 會議記錄清單（來自瀏覽器 IndexedDB，見 meetingStore.js）以及使用者
+    // 勾選要加入這輪對話上下文的項目——跟 documents/selectedDocuments 是
+    // 平行的一套機制，差別只在資料來源（後端 vs. IndexedDB）。
+    const [meetingRecords, setMeetingRecords] = useState([]);
+    const [selectedMeetings, setSelectedMeetings] = useState(() => {
+        try { return new Set(JSON.parse(localStorage.getItem(ACTIVE_MEETINGS_STORAGE) || '[]')); }
+        catch { return new Set(); }
+    });
+    const [isMeetingSourcesExpanded, setIsMeetingSourcesExpanded] = useState(true);
     const [showMeetingsPage, setShowMeetingsPage] = useState(false);
     const [loadingConvIds, setLoadingConvIds] = useState(new Set());
     const [convStatuses, setConvStatuses] = useState({});
@@ -542,6 +553,11 @@ function App() {
         localStorage.setItem(ACTIVE_DOCS_STORAGE, JSON.stringify([...selectedDocuments]));
     }, [selectedDocuments]);
 
+    // selectedMeetings 變動時同步到 localStorage（比照 selectedDocuments）
+    useEffect(() => {
+        localStorage.setItem(ACTIVE_MEETINGS_STORAGE, JSON.stringify([...selectedMeetings]));
+    }, [selectedMeetings]);
+
     const scrollToBottom = (behavior = "smooth") => {
         messagesEndRef.current?.scrollIntoView({ behavior });
     };
@@ -558,6 +574,20 @@ function App() {
             });
         } catch (error) {
             console.error("Failed to fetch documents:", error);
+        }
+    };
+
+    const fetchMeetingRecords = async () => {
+        try {
+            const records = await listMeetingRecords();
+            setMeetingRecords(records);
+            const fetchedIds = new Set(records.map(r => r.meeting_id));
+            setSelectedMeetings(prev => {
+                const pruned = new Set([...prev].filter(id => fetchedIds.has(id)));
+                return pruned.size === prev.size ? prev : pruned;
+            });
+        } catch (error) {
+            console.error("Failed to load meeting records:", error);
         }
     };
 
@@ -578,6 +608,13 @@ function App() {
     useEffect(() => {
         fetchDocuments();
     }, []);
+
+    // 首次掛載時載入一次；之後每次從「會議記錄」頁面切回聊天畫面時重新
+    // 讀取一次（那個頁面自己管理新增/刪除，離開時側欄清單才需要跟著更新）。
+    useEffect(() => {
+        if (showMeetingsPage) return;
+        fetchMeetingRecords();
+    }, [showMeetingsPage]);
 
     useEffect(() => {
         if (!isCurrentConvLoading) {
@@ -966,6 +1003,40 @@ function App() {
         }
     };
 
+    // ── 會議記錄上下文管理（比照上面的文件管理，checkbox 只決定「這輪對話
+    // 要不要把這筆會議記錄的內容送給 AI」，跟 Meeting Records 頁面本身的
+    // 新增/刪除是分開的）─────────────────────────────────
+    const toggleMeetingSelection = (meetingId) => {
+        setSelectedMeetings(prev => {
+            const next = new Set(prev);
+            if (next.has(meetingId)) next.delete(meetingId); else next.add(meetingId);
+            return next;
+        });
+    };
+
+    const toggleSelectAllMeetings = () => {
+        if (selectedMeetings.size === meetingRecords.length && meetingRecords.length > 0) {
+            setSelectedMeetings(new Set());
+        } else {
+            setSelectedMeetings(new Set(meetingRecords.map(r => r.meeting_id)));
+        }
+    };
+
+    // 送出聊天訊息前呼叫：把目前勾選的會議記錄從 IndexedDB 讀出完整內容
+    // （listMeetingRecords 只回傳摘要清單，agenda/actions 等欄位要另外
+    // 讀），格式化成純文字後跟著這輪請求送給後端。
+    const buildActiveMeetingsPayload = async () => {
+        if (selectedMeetings.size === 0) return [];
+        const results = await Promise.all([...selectedMeetings].map(async (meetingId) => {
+            const record = await getMeetingRecord(meetingId);
+            if (!record) return null;
+            const content = formatMeetingRecordForContext(record);
+            if (!content) return null;
+            return { title: record.meeting_data?.meeting_title || 'Meeting Notes', content };
+        }));
+        return results.filter(Boolean);
+    };
+
     // ── Bulk-select-to-delete for Sources (separate from the "active for
     // conversation" checkboxes above — mirrors the Conversations select-mode) ──
     const toggleDocsSelectMode = () => {
@@ -1246,6 +1317,7 @@ function App() {
         abortControllersRef.current.set(activeConvId, controller);
 
         try {
+            const activeMeetings = await buildActiveMeetingsPayload();
             const response = await streamChat({
                 message: messageContent,
                 history: historySnapshot,
@@ -1253,6 +1325,7 @@ function App() {
                 clarifications,
                 turn_context: turnContext,
                 active_documents: [...selectedDocuments],
+                active_meetings: activeMeetings,
             }, controller.signal, makeProgressHandler(activeConvId), geminiApiKey || undefined);
 
             await animateAssistantReply(activeConvId, response.response || '', controller.signal);
@@ -1797,6 +1870,73 @@ function App() {
                                             Delete unused sources and old conversations to free up space.
                                         </p>
                                     </div>
+                                )}
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Divider */}
+                    <div className="mx-4 border-t border-[#DFDFDF] my-2" />
+
+                    {/* ── Meeting Records Section — same checkbox pattern as Sources
+                        above, but toggles whether a meeting's organized minutes get
+                        sent along as chat context, not whether it exists. Adding/
+                        deleting records happens on the Meeting Records page itself. ── */}
+                    <div className="px-4">
+                        <div className="flex items-center justify-between py-2">
+                            <span className="text-xs font-semibold text-[#767676] tracking-widest uppercase">Meeting Records</span>
+                            <button
+                                onClick={() => setIsMeetingSourcesExpanded(!isMeetingSourcesExpanded)}
+                                className="p-1 hover:bg-[#DFDFDF] rounded transition-colors"
+                            >
+                                <ChevronDown className={`w-3.5 h-3.5 text-[#767676] transition-transform ${isMeetingSourcesExpanded ? '' : '-rotate-90'}`} />
+                            </button>
+                        </div>
+
+                        {isMeetingSourcesExpanded && (
+                            <div className="space-y-0.5">
+                                {meetingRecords.length === 0 ? (
+                                    <p className="text-sm text-[#767676] text-center py-4">No meeting records yet</p>
+                                ) : (
+                                    <>
+                                        <div className="flex items-center justify-between mb-1 px-2">
+                                            <button
+                                                onClick={toggleSelectAllMeetings}
+                                                className="flex items-center gap-2 hover:bg-white rounded py-1 transition-colors"
+                                            >
+                                                <div className={`w-3.5 h-3.5 rounded border-2 flex-shrink-0 ${selectedMeetings.size === meetingRecords.length && meetingRecords.length > 0 ? 'border-[#0058A3] bg-[#0058A3]' : 'border-[#CCCCCC]'} flex items-center justify-center`}>
+                                                    {selectedMeetings.size === meetingRecords.length && meetingRecords.length > 0 && <Check className="w-2.5 h-2.5 text-white" />}
+                                                </div>
+                                                <span className="text-xs text-[#767676]">
+                                                    {selectedMeetings.size === 0 ? 'Enable all' : `${selectedMeetings.size} / ${meetingRecords.length} active`}
+                                                </span>
+                                            </button>
+                                        </div>
+                                        {meetingRecords.map((rec) => {
+                                            const isActive = selectedMeetings.has(rec.meeting_id);
+                                            const label = rec.meeting_title || 'Meeting Notes';
+                                            return (
+                                                <div key={rec.meeting_id} className="flex items-center gap-2 p-2 rounded-lg hover:bg-white transition-colors group">
+                                                    <button
+                                                        onClick={() => toggleMeetingSelection(rec.meeting_id)}
+                                                        className="flex-shrink-0"
+                                                        title={isActive ? 'Disable for conversation' : 'Enable for conversation'}
+                                                    >
+                                                        <div className={`w-4 h-4 rounded border-2 ${isActive ? 'border-[#0058A3] bg-[#0058A3]' : 'border-[#CCCCCC]'} flex items-center justify-center transition-colors`}>
+                                                            {isActive && <Check className="w-2.5 h-2.5 text-white" />}
+                                                        </div>
+                                                    </button>
+                                                    <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                                                        <FileAudio className={`w-3.5 h-3.5 flex-shrink-0 ${isActive ? 'text-red-500' : 'text-[#CCCCCC]'}`} />
+                                                        <div className="min-w-0 flex-1">
+                                                            <p className={`text-sm truncate ${isActive ? 'text-[#111111]' : 'text-[#AAAAAA]'}`} title={label}>{label}</p>
+                                                            {rec.date && <p className="text-[11px] text-[#AAAAAA] truncate">{rec.date}</p>}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </>
                                 )}
                             </div>
                         )}

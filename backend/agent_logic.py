@@ -245,6 +245,38 @@ def _build_prior_tool_context(stored_tool_context: str, turn_context: dict) -> l
     ))]
 
 
+# 每則會議記錄注入 prompt 的上限（字元數）。這裡放的是整理後的會議記錄
+# （摘要／議程／備註／待辦事項），不是逐字稿，正常長度遠低於這個上限；
+# 只是防呆，避免異常長的單筆記錄把 prompt 撐爆。
+_MEETING_CONTEXT_CHAR_LIMIT = 8000
+
+
+def _build_meeting_context_messages(active_meetings: Optional[list]) -> list:
+    """會議記錄只存在瀏覽器的 IndexedDB（見 frontend/src/utils/meetingStore.js
+    的說明），後端本來完全看不到。使用者在側欄勾選要加入對話的會議記錄後，
+    前端直接把整理好的內容（不是逐字稿）放進這輪請求本文，這裡轉成一則
+    SystemMessage 讓 coordinator 在回答時可以引用。"""
+    if not active_meetings:
+        return []
+    blocks = []
+    for meeting in active_meetings:
+        if not isinstance(meeting, dict):
+            continue
+        title = str(meeting.get("title", "") or "").strip() or "會議記錄"
+        content = str(meeting.get("content", "") or "").strip()[:_MEETING_CONTEXT_CHAR_LIMIT]
+        if not content:
+            continue
+        blocks.append(f"【{title}】\n{content}")
+    if not blocks:
+        return []
+    return [SystemMessage(content=(
+        "## Active Meeting Records\n\n"
+        "使用者在這個對話中主動加入以下會議記錄（已整理版本，非逐字稿）作為參考資料，"
+        "回答問題時可以直接引用其中內容；若使用者的問題與這些會議記錄無關，忽略即可。\n\n"
+        + "\n\n---\n\n".join(blocks)
+    ))]
+
+
 def _tool_messages(messages: list) -> list:
     return [
         message for message in messages
@@ -717,6 +749,7 @@ async def process_chat_detailed(
     progress_callback=None,
     gemini_api_key: Optional[str] = None,
     active_documents: Optional[list] = None,
+    active_meetings: Optional[list] = None,
 ) -> dict:
     """
     Process the chat message using the LangGraph Coordinator Agent.
@@ -797,12 +830,14 @@ async def process_chat_detailed(
         memory_messages, recent_history = _build_conversation_memory(conversation_history, stored_memory_summary)
         turn_context_messages = _build_turn_context_message(turn_context)
         prior_tool_context_messages = _build_prior_tool_context(stored_tool_context, turn_context)
+        meeting_context_messages = _build_meeting_context_messages(active_meetings)
         current_message = message
 
         # Build messages payload for langgraph
         messages = (
             memory_messages
             + turn_context_messages
+            + meeting_context_messages
             + prior_tool_context_messages
             + recent_history
             + [HumanMessage(content=current_message)]

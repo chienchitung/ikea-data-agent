@@ -106,6 +106,55 @@ export async function getMeetingRecord(meetingId) {
     return record || null;
 }
 
+// Formats a full meeting record (as returned by getMeetingRecord) into a
+// plain-text block for handing to the chat LLM as reference material — the
+// organized minutes (summary/agenda/notes/action items), not the raw
+// transcript, since that's what "add to conversation context" is meant to
+// send (the transcript can be tens of thousands of words for a long
+// recording, far too much to put in every prompt).
+export function formatMeetingRecordForContext(record) {
+    const data = record?.meeting_data || {};
+    const lines = [];
+
+    lines.push(`會議標題：${data.meeting_title || 'Meeting Notes'}`);
+    const when = [data.date, data.time].filter(Boolean).join(' ');
+    if (when) lines.push(`日期／時間：${when}`);
+    if (data.note_taker) lines.push(`記錄人：${data.note_taker}`);
+    if (data.attendees) lines.push(`出席：${data.attendees}`);
+    if (data.apologies) lines.push(`請假：${data.apologies}`);
+
+    if (data.executive_summary) {
+        lines.push('', '摘要：', data.executive_summary);
+    }
+
+    if (Array.isArray(data.agenda) && data.agenda.length) {
+        lines.push('', '議程：');
+        data.agenda.forEach((item, idx) => {
+            const parts = [item?.item || ''];
+            if (item?.owner) parts.push(`負責人：${item.owner}`);
+            if (item?.duration) parts.push(`時長：${item.duration}`);
+            lines.push(`${idx + 1}. ${parts.filter(Boolean).join('，')}`);
+        });
+    }
+
+    if (Array.isArray(data.notes) && data.notes.length) {
+        lines.push('', '備註：');
+        data.notes.forEach((note) => lines.push(`- ${note}`));
+    }
+
+    if (Array.isArray(data.actions_review) && data.actions_review.length) {
+        lines.push('', '待辦事項：');
+        data.actions_review.forEach((action, idx) => {
+            const parts = [action?.item || ''];
+            if (action?.assigned_to) parts.push(`負責人：${action.assigned_to}`);
+            if (action?.deadline) parts.push(`期限：${action.deadline}`);
+            lines.push(`${action?.no ?? idx + 1}. ${parts.filter(Boolean).join('，')}`);
+        });
+    }
+
+    return lines.join('\n').trim();
+}
+
 // Replaces just meeting_data (agenda/notes/actions/etc — what the edit view
 // changes), like the old PUT /meetings/{id} did. Returns the updated record.
 export async function updateMeetingRecordData(meetingId, meetingData) {

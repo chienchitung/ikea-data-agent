@@ -51,6 +51,13 @@ class ClarificationSelection(BaseModel):
     label: str
     value: str
 
+class ActiveMeeting(BaseModel):
+    # 前端在使用者側欄勾選「加入對話上下文」的會議記錄後，直接把整理好的
+    # 內容（不是逐字稿）放進來——會議記錄只存在瀏覽器的 IndexedDB，後端
+    # 沒有另一份可查，只能靠請求本文帶過來。
+    title: str = ""
+    content: str
+
 class ChatRequest(BaseModel):
     message: str
     history: List[Message] = Field(default_factory=list)
@@ -59,6 +66,7 @@ class ChatRequest(BaseModel):
     turn_context: Dict[str, Any] = Field(default_factory=dict)
     gemini_api_key: Optional[str] = None
     active_documents: Optional[List[str]] = None
+    active_meetings: List[ActiveMeeting] = Field(default_factory=list)
 
 class ChatResponse(BaseModel):
     response: str
@@ -246,6 +254,7 @@ async def chat_endpoint(request: ChatRequest):
             request.turn_context or None,
             gemini_api_key=request.gemini_api_key or None,
             active_documents=request.active_documents,
+            active_meetings=[m.model_dump() for m in request.active_meetings],
         )
         response_text = result["response"]
         metadata = result.get("metadata", {})
@@ -288,6 +297,7 @@ async def chat_stream_endpoint(request: ChatRequest):
                     progress_handler,
                     gemini_api_key=request.gemini_api_key or None,
                     active_documents=request.active_documents,
+                    active_meetings=[m.model_dump() for m in request.active_meetings],
                 )
                 response_text = result["response"]
                 metadata = result.get("metadata", {})
