@@ -27,6 +27,11 @@ const GEMINI_KEY_STORAGE = 'ikea_agent_gemini_key';
 const GROQ_KEY_STORAGE = 'ikea_agent_groq_key';
 const ACTIVE_DOCS_STORAGE = 'ikea_agent_active_docs';
 const ACTIVE_MEETINGS_STORAGE = 'ikea_agent_active_meetings';
+// Below this usage ratio the footer just shows a one-line "X MB used" —
+// no point in a progress bar + cleanup hint when there's nothing to worry
+// about yet. At/above it, the full bar + hint appears; the existing 0.85
+// cutoff below still switches the bar to red for "actually getting full".
+const STORAGE_BAR_EXPAND_THRESHOLD = 0.5;
 
 const AVATARS = [
     { id: 'bear', name: 'Bear', src: bearAvatar },
@@ -1514,6 +1519,10 @@ function App() {
         await sendChatMessage(newContent, currentConvId, historyContext, [], false, "regenerating", true);
     };
 
+    const storageUsageRatio = storageEstimate?.quota ? storageEstimate.usage / storageEstimate.quota : 0;
+    const isStorageBarExpanded = storageUsageRatio >= STORAGE_BAR_EXPAND_THRESHOLD;
+    const isStorageNearFull = storageUsageRatio > 0.85;
+
     // ── Render ────────────────────────────────────────────
     return (
         <div className="flex h-screen bg-white">
@@ -1854,23 +1863,6 @@ function App() {
                                         })}
                                     </>
                                 )}
-                                {storageEstimate && (
-                                    <div className="pt-3 mt-2 border-t border-[#DFDFDF] px-1">
-                                        <div className="flex justify-between text-[11px] text-[#767676] mb-1">
-                                            <span>Browser storage</span>
-                                            <span>{formatMb(storageEstimate.usage)} / {formatMb(storageEstimate.quota)}</span>
-                                        </div>
-                                        <div className="w-full bg-[#DFDFDF] rounded-full h-1.5">
-                                            <div
-                                                className={`h-1.5 rounded-full transition-all duration-300 ${storageEstimate.quota && storageEstimate.usage / storageEstimate.quota > 0.85 ? 'bg-[#E00751]' : 'bg-[#0058A3]'}`}
-                                                style={{ width: `${storageEstimate.quota ? Math.max(2, Math.min(100, (storageEstimate.usage / storageEstimate.quota) * 100)) : 0}%` }}
-                                            />
-                                        </div>
-                                        <p className="text-[10px] text-[#AAAAAA] mt-1 leading-snug">
-                                            Delete unused sources and old conversations to free up space.
-                                        </p>
-                                    </div>
-                                )}
                             </div>
                         )}
                     </div>
@@ -1945,6 +1937,29 @@ function App() {
                 </div>
 
                 <div className="p-3 border-t border-[#DFDFDF] flex-shrink-0">
+                    {storageEstimate && (
+                        isStorageBarExpanded ? (
+                            <div className="mb-2">
+                                <div className="flex justify-between text-[11px] text-[#767676] mb-1">
+                                    <span>Browser storage</span>
+                                    <span>{formatMb(storageEstimate.usage)} / {formatMb(storageEstimate.quota)}</span>
+                                </div>
+                                <div className="w-full bg-[#DFDFDF] rounded-full h-1.5">
+                                    <div
+                                        className={`h-1.5 rounded-full transition-all duration-300 ${isStorageNearFull ? 'bg-[#E00751]' : 'bg-[#0058A3]'}`}
+                                        style={{ width: `${Math.max(2, Math.min(100, storageUsageRatio * 100))}%` }}
+                                    />
+                                </div>
+                                <p className="text-[10px] text-[#AAAAAA] mt-1 leading-snug">
+                                    Delete unused sources and old conversations to free up space.
+                                </p>
+                            </div>
+                        ) : (
+                            <div className="text-[11px] text-[#AAAAAA] text-center mb-1">
+                                {formatMb(storageEstimate.usage)} browser storage used
+                            </div>
+                        )
+                    )}
                     <div className="text-xs text-[#767676] text-center">Developed by IKEA Data Team</div>
                 </div>
             </aside>
