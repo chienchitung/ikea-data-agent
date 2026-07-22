@@ -187,6 +187,21 @@
     -webkit-overflow-scrolling: touch;
 }
 
+/* KaTeX 不會自動換行，長公式（含冗長的 \text{} 標籤）的實際寬度常常超過
+   泡泡本身——沒有這條規則時，公式會直接從泡泡右側溢出，蓋到旁邊的內容。
+   比照上面的表格：溢出的部分改成在公式自己的框內橫向捲動，泡泡寬度維持
+   不變。katex-display 自帶的上下留白（margin: 1em 0）繼續保留。 */
+.message-bubble .markdown .katex-display {
+    overflow-x: auto;
+    overflow-y: hidden;
+    max-width: 100%;
+    padding-bottom: 4px;
+}
+
+.message-bubble .markdown .katex {
+    max-width: 100%;
+}
+
 .message-bubble .markdown table {
     background-color: #fff;
     border-collapse: collapse;
