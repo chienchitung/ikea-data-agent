@@ -5,9 +5,34 @@ import remarkGfm from 'remark-gfm';
 // （典型：`**標題：**內文`、`文字**「重點」**`），** 會被當一般字元
 // 原樣顯示。這個插件依 CJK 友善規則修正解析，星號不再殘留。
 import remarkCjkFriendly from 'remark-cjk-friendly';
+// LLM 常用 $$...$$ / \(...\) 輸出數學公式（計算方式說明、統計公式等），
+// 沒有這兩個插件時 ReactMarkdown 只會把它們當純文字原樣印出。
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
+import 'katex/dist/katex.min.css';
 import clsx from 'clsx';
 import { Copy, Edit2, Check, BarChart3, LineChart, PieChart } from 'lucide-react';
 import assistantAvatar from '../assets/img/ikea-assistant.webp';
+
+// remark-math 只把獨占一整行的 $$...$$ 當成 block math；LLM 常把 $$...$$
+// 混在條列項目或句子中間當「行內」公式用（例如「計算結果：$$...$$」），
+// 這種用法不符合 block math 的語法，會被原樣印成文字。這裡把「非獨占一行」
+// 的 $$...$$ 改寫成單一 $...$（inline math 的正確語法），獨占一行的維持
+// 原樣（已經是合法的 block math）。
+function normalizeInlineDisplayMath(content) {
+    return content.replace(/\$\$([\s\S]+?)\$\$/g, (match, inner, offset) => {
+        const before = content.slice(0, offset);
+        const after = content.slice(offset + match.length);
+        const linePrefix = before.slice(before.lastIndexOf('\n') + 1);
+        const nextNewline = after.indexOf('\n');
+        const lineSuffix = nextNewline === -1 ? after : after.slice(0, nextNewline);
+        if (linePrefix.trim() === '' && lineSuffix.trim() === '') {
+            return match;
+        }
+        const trimmedInner = inner.trim();
+        return trimmedInner ? `$${trimmedInner}$` : match;
+    });
+}
 
 // ── Preprocess message content ───────────────────────────
 // 處理 LLM 三種常見的錯誤 code block 格式，統一轉為合法的 Markdown fenced block
@@ -563,10 +588,11 @@ export function ChatMessage({ message, userAvatar, debugMode = false, onUpdate, 
                     ) : (
                         <div className="markdown">
                             <ReactMarkdown
-                                remarkPlugins={[remarkGfm, remarkCjkFriendly]}
+                                remarkPlugins={[remarkGfm, remarkCjkFriendly, remarkMath]}
+                                rehypePlugins={[rehypeKatex]}
                                 components={markdownComponents}
                             >
-                                {preprocessContent(message.content)}
+                                {preprocessContent(normalizeInlineDisplayMath(message.content))}
                             </ReactMarkdown>
                         </div>
                     )}
