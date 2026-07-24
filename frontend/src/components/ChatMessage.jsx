@@ -1,18 +1,51 @@
-import { lazy, Suspense, useState } from 'react';
+import { lazy, Suspense, useState, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 // CommonMark 的粗體/斜體 flanking 規則在 CJK 全形標點相鄰時會失效
 // （典型：`**標題：**內文`、`文字**「重點」**`），** 會被當一般字元
 // 原樣顯示。這個插件依 CJK 友善規則修正解析，星號不再殘留。
 import remarkCjkFriendly from 'remark-cjk-friendly';
-// LLM 常用 $$...$$ / \(...\) 輸出數學公式（計算方式說明、統計公式等），
-// 沒有這兩個插件時 ReactMarkdown 只會把它們當純文字原樣印出。
-import remarkMath from 'remark-math';
-import rehypeKatex from 'rehype-katex';
-import 'katex/dist/katex.min.css';
 import clsx from 'clsx';
 import { Copy, Edit2, Check, BarChart3, LineChart, PieChart } from 'lucide-react';
 import assistantAvatar from '../assets/img/ikea-assistant.webp';
+
+// remark-math/rehype-katex/katex 一起打包大約 250KB+（KaTeX 本體 + 字型），
+// 但大多數回答完全沒有數學公式——不該讓每個使用者都下載這包只為了聊天。
+// 動態 import 讓 Vite 把這幾個套件拆進獨立 chunk，只有訊息內容真的出現
+// `$`（可能是公式）時才觸發下載；一旦下載過，同一頁後續訊息共用同一個
+// cached promise，不會重複載入。
+let mathPluginsPromise = null;
+function loadMathPlugins() {
+    if (!mathPluginsPromise) {
+        mathPluginsPromise = Promise.all([
+            import('remark-math'),
+            import('rehype-katex'),
+            import('katex/dist/katex.min.css'),
+        ]).then(([remarkMathModule, rehypeKatexModule]) => ({
+            remarkMath: remarkMathModule.default,
+            rehypeKatex: rehypeKatexModule.default,
+        }));
+    }
+    return mathPluginsPromise;
+}
+
+const MATH_HINT_RE = /\$/;
+
+// 載入前先用一個字元的規則判斷「這則訊息可能含公式嗎」，避免完全沒有 `$`
+// 的訊息也觸發下載。載入完成前，公式會先以原始 $$...$$ 文字顯示，套件到位
+// 後這則訊息（以及同一頁其他有公式的訊息）會立刻重新渲染成排版好的公式。
+function useMathPlugins(content) {
+    const [plugins, setPlugins] = useState(null);
+    useEffect(() => {
+        if (plugins || !MATH_HINT_RE.test(content)) return;
+        let cancelled = false;
+        loadMathPlugins().then((loaded) => {
+            if (!cancelled) setPlugins(loaded);
+        });
+        return () => { cancelled = true; };
+    }, [content, plugins]);
+    return plugins;
+}
 
 // remark-math 的 block math 語法要求開/關 $$ 各自獨占一行（像 code fence
 // 一樣：$$ 開頭那行、公式內容、$$ 結尾那行，三行分開）。LLM 幾乎都是把整條
@@ -541,6 +574,7 @@ export function ChatMessage({ message, userAvatar, debugMode = false, onUpdate, 
     const [copied, setCopied] = useState(false);
     const [isEditing, setIsEditing] = useState(false);
     const [editContent, setEditContent] = useState(message.content);
+    const mathPlugins = useMathPlugins(message.content);
 
     const handleCopy = () => {
         onCopy(message.content);
@@ -594,8 +628,8 @@ export function ChatMessage({ message, userAvatar, debugMode = false, onUpdate, 
                     ) : (
                         <div className="markdown">
                             <ReactMarkdown
-                                remarkPlugins={[remarkGfm, remarkCjkFriendly, remarkMath]}
-                                rehypePlugins={[rehypeKatex]}
+                                remarkPlugins={mathPlugins ? [remarkGfm, remarkCjkFriendly, mathPlugins.remarkMath] : [remarkGfm, remarkCjkFriendly]}
+                                rehypePlugins={mathPlugins ? [mathPlugins.rehypeKatex] : []}
                                 components={markdownComponents}
                             >
                                 {preprocessContent(normalizeInlineDisplayMath(message.content))}
