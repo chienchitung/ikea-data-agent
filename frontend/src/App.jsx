@@ -1621,6 +1621,8 @@ function App() {
                                 <button
                                     onClick={() => setIsConvsExpanded(!isConvsExpanded)}
                                     className="p-1 hover:bg-[#DFDFDF] rounded transition-colors"
+                                    aria-label={isConvsExpanded ? 'Collapse conversations' : 'Expand conversations'}
+                                    aria-expanded={isConvsExpanded}
                                 >
                                     <ChevronDown className={`w-3.5 h-3.5 text-[#767676] transition-transform ${isConvsExpanded ? '' : '-rotate-90'}`} />
                                 </button>
@@ -1753,6 +1755,8 @@ function App() {
                                 <button
                                     onClick={() => setIsSourcesExpanded(!isSourcesExpanded)}
                                     className="p-1 hover:bg-[#DFDFDF] rounded transition-colors"
+                                    aria-label={isSourcesExpanded ? 'Collapse sources' : 'Expand sources'}
+                                    aria-expanded={isSourcesExpanded}
                                 >
                                     <ChevronDown className={`w-3.5 h-3.5 text-[#767676] transition-transform ${isSourcesExpanded ? '' : '-rotate-90'}`} />
                                 </button>
@@ -1906,6 +1910,8 @@ function App() {
                             <button
                                 onClick={() => setIsMeetingSourcesExpanded(!isMeetingSourcesExpanded)}
                                 className="p-1 hover:bg-[#DFDFDF] rounded transition-colors"
+                                aria-label={isMeetingSourcesExpanded ? 'Collapse meeting records' : 'Expand meeting records'}
+                                aria-expanded={isMeetingSourcesExpanded}
                             >
                                 <ChevronDown className={`w-3.5 h-3.5 text-[#767676] transition-transform ${isMeetingSourcesExpanded ? '' : '-rotate-90'}`} />
                             </button>
@@ -2339,11 +2345,14 @@ function App() {
             {showConvSearch && (
                 <div className="fixed inset-0 bg-black/50 flex items-start justify-center z-50 pt-24 px-4" onClick={closeConvSearch}>
                     <div
+                        role="dialog"
+                        aria-modal="true"
+                        aria-label="Search conversations"
                         className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[70vh] flex flex-col overflow-hidden"
                         onClick={(e) => e.stopPropagation()}
                     >
                         <div className="flex items-center gap-2 px-4 py-3 border-b border-[#DFDFDF] flex-shrink-0">
-                            <Search className="w-4 h-4 text-[#767676] flex-shrink-0" />
+                            <Search className="w-4 h-4 text-[#767676] flex-shrink-0" aria-hidden="true" />
                             <input
                                 ref={convSearchInputRef}
                                 type="text"
@@ -2393,8 +2402,14 @@ function App() {
             {/* ── Rename Conversation Modal ── */}
             {renamingConvId && (
                 <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setRenamingConvId(null)}>
-                    <div className="bg-white rounded-2xl p-6 w-[min(400px,calc(100vw-2rem))] shadow-2xl" onClick={e => e.stopPropagation()}>
-                        <h3 className="text-base font-semibold text-[#111111] mb-1">Rename conversation</h3>
+                    <div
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="rename-conv-heading"
+                        className="bg-white rounded-2xl p-6 w-[min(400px,calc(100vw-2rem))] shadow-2xl"
+                        onClick={e => e.stopPropagation()}
+                    >
+                        <h3 id="rename-conv-heading" className="text-base font-semibold text-[#111111] mb-1">Rename conversation</h3>
                         <p className="text-sm text-[#767676] mb-4">Enter a new name for this conversation.</p>
                         <input
                             type="text"
@@ -2429,13 +2444,22 @@ function App() {
             {/* ── Rename Document Modal ── */}
             {renamingDoc && (
                 <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setRenamingDoc(null)}>
-                    <div className="bg-white rounded-lg p-6 w-96 shadow-xl" onClick={(e) => e.stopPropagation()}>
-                        <h3 className="text-lg font-semibold mb-4">Rename Document</h3>
+                    <div
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="rename-doc-heading"
+                        className="bg-white rounded-lg p-6 w-96 shadow-xl"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <h3 id="rename-doc-heading" className="text-lg font-semibold mb-4">Rename Document</h3>
                         <input
                             type="text"
                             value={newDocName}
                             onChange={(e) => setNewDocName(e.target.value)}
-                            onKeyDown={(e) => e.key === 'Enter' && confirmRename()}
+                            onKeyDown={(e) => {
+                                if (e.key === 'Enter') confirmRename();
+                                if (e.key === 'Escape') setRenamingDoc(null);
+                            }}
                             className="w-full px-3 py-2 border border-[#DFDFDF] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#0058A3]"
                             placeholder="Enter new name"
                             autoFocus
@@ -2493,16 +2517,22 @@ function App() {
                     onClick={() => { setShowApiKeyModal(false); setApiKeyVisible(false); setGroqApiKeyVisible(false); }}
                 >
                     <div
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="api-keys-heading"
                         className="bg-white rounded-2xl shadow-2xl w-full max-w-md"
                         onClick={e => e.stopPropagation()}
+                        onKeyDown={e => {
+                            if (e.key === 'Escape') { setShowApiKeyModal(false); setApiKeyVisible(false); setGroqApiKeyVisible(false); }
+                        }}
                     >
                         <div className="p-6">
                             <div className="flex items-center gap-3 mb-1">
                                 <div className="w-10 h-10 bg-[#F5F5F5] rounded-full flex items-center justify-center flex-shrink-0">
-                                    <KeyRound className="w-5 h-5 text-[#0058A3]" />
+                                    <KeyRound className="w-5 h-5 text-[#0058A3]" aria-hidden="true" />
                                 </div>
                                 <div>
-                                    <h2 className="text-lg font-semibold text-[#111111]">API Keys</h2>
+                                    <h2 id="api-keys-heading" className="text-lg font-semibold text-[#111111]">API Keys</h2>
                                     <p className="text-xs text-[#767676]">Stored locally in your browser</p>
                                 </div>
                             </div>

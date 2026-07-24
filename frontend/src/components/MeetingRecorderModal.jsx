@@ -320,10 +320,16 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
     return (
         <>
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={handleCancel}>
-            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <div
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="meeting-recorder-heading"
+                className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto"
+                onClick={(e) => e.stopPropagation()}
+            >
                 <div className="p-6">
                     <div className="flex items-center justify-between mb-1">
-                        <h2 className="text-lg font-semibold text-[#111111]">Add Meeting Recording</h2>
+                        <h2 id="meeting-recorder-heading" className="text-lg font-semibold text-[#111111]">Add Meeting Recording</h2>
                         <button onClick={handleCancel} className="p-1 hover:bg-[#F5F5F5] rounded-full transition-colors" aria-label="Close">
                             <X className="w-5 h-5 text-[#767676]" />
                         </button>
@@ -524,17 +530,23 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
                 onClick={() => setShowCancelConfirm(false)}
             >
                 <div
+                    role="alertdialog"
+                    aria-modal="true"
+                    aria-labelledby="cancel-generation-heading"
+                    aria-describedby="cancel-generation-description"
                     className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6"
                     onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => { if (e.key === 'Escape') setShowCancelConfirm(false); }}
                 >
-                    <h3 className="text-base font-semibold text-[#111111] mb-1">Stop generating this meeting record?</h3>
-                    <p className="text-sm text-[#767676] mb-5">
+                    <h3 id="cancel-generation-heading" className="text-base font-semibold text-[#111111] mb-1">Stop generating this meeting record?</h3>
+                    <p id="cancel-generation-description" className="text-sm text-[#767676] mb-5">
                         {progressLabel || 'Generation'} is still in progress. If you cancel now, the transcript and
                         meeting minutes generated so far won't be kept.
                     </p>
                     <div className="flex justify-end gap-2">
                         <button
                             type="button"
+                            autoFocus
                             onClick={() => setShowCancelConfirm(false)}
                             className="px-4 py-2 text-sm font-medium text-[#111111] hover:bg-[#F5F5F5] rounded-lg transition-colors"
                         >
