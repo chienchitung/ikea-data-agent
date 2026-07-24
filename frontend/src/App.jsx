@@ -32,6 +32,10 @@ const ACTIVE_MEETINGS_STORAGE = 'ikea_agent_active_meetings';
 // about yet. At/above it, the full bar + hint appears; the existing 0.85
 // cutoff below still switches the bar to red for "actually getting full".
 const STORAGE_BAR_EXPAND_THRESHOLD = 0.5;
+// Matches backend/agent_logic.py's _MEETING_CONTEXT_TOTAL_CHAR_LIMIT (24000)
+// with headroom — warn before the backend actually starts dropping meetings
+// for being over budget, not after.
+const ACTIVE_MEETINGS_WARN_CHAR_THRESHOLD = 18000;
 
 const AVATARS = [
     { id: 'bear', name: 'Bear', src: bearAvatar },
@@ -349,6 +353,10 @@ function App() {
         catch { return new Set(); }
     });
     const [isMeetingSourcesExpanded, setIsMeetingSourcesExpanded] = useState(true);
+    // 目前勾選的會議記錄格式化後的總字數估計，只用來在側欄提示「選太多會
+    // 拖慢速度」——真正的防呆（總量上限、超過就跳過）在後端
+    // _build_meeting_context_messages 做，這裡只是提前告知使用者。
+    const [activeMeetingsCharCount, setActiveMeetingsCharCount] = useState(0);
     const [showMeetingsPage, setShowMeetingsPage] = useState(false);
     const [loadingConvIds, setLoadingConvIds] = useState(new Set());
     const [convStatuses, setConvStatuses] = useState({});
@@ -1042,6 +1050,25 @@ function App() {
         return results.filter(Boolean);
     };
 
+    // 勾選變動時重新估算總字數，供側欄的「選太多」提示使用（見下面的
+    // ACTIVE_MEETINGS_WARN_CHAR_THRESHOLD）。跟 buildActiveMeetingsPayload
+    // 送出時做的事一樣，只是這裡是提前預覽，不是真的要送出。
+    useEffect(() => {
+        if (selectedMeetings.size === 0) {
+            setActiveMeetingsCharCount(0);
+            return;
+        }
+        let cancelled = false;
+        buildActiveMeetingsPayload().then((payload) => {
+            if (cancelled) return;
+            setActiveMeetingsCharCount(payload.reduce((sum, m) => sum + m.content.length, 0));
+        });
+        return () => { cancelled = true; };
+        // buildActiveMeetingsPayload is recreated every render; including it
+        // here would refire this effect every render (it reads IndexedDB and
+        // calls setState), which is exactly the loop this dep list avoids.
+    }, [selectedMeetings]); // eslint-disable-line react-hooks/exhaustive-deps
+
     // ── Bulk-select-to-delete for Sources (separate from the "active for
     // conversation" checkboxes above — mirrors the Conversations select-mode) ──
     const toggleDocsSelectMode = () => {
@@ -1308,7 +1335,6 @@ function App() {
         clarifications = [],
         appendUserMessage = true,
         statusPhase = "searching",
-        resetStatusTimer = true,
         turnContext = {}
     ) => {
         if (appendUserMessage) {
@@ -1408,7 +1434,7 @@ function App() {
         const turnContext = pendingTurnContext;
         const messageToSend = pendingMessage;
         clearClarification();
-        await sendChatMessage(messageToSend, activeConvId, historySnapshot, clarificationSelections, false, "searching", true, turnContext);
+        await sendChatMessage(messageToSend, activeConvId, historySnapshot, clarificationSelections, false, "searching", turnContext);
     };
 
     const skipClarification = async () => {
@@ -1422,7 +1448,7 @@ function App() {
         const historySnapshot = pendingHistorySnapshot;
         const turnContext = pendingTurnContext;
         clearClarification();
-        await sendChatMessage(messageToSend, activeConvId, historySnapshot, [], false, "searching", true, turnContext);
+        await sendChatMessage(messageToSend, activeConvId, historySnapshot, [], false, "searching", turnContext);
     };
 
     // ── 聊天邏輯 ─────────────────────────────────────────
@@ -1508,7 +1534,7 @@ function App() {
         }
 
         advanceResponseStatus(activeConvId, "searching");
-        await sendChatMessage(messageContent, activeConvId, historySnapshot, [], false, "searching", false, turnContext);
+        await sendChatMessage(messageContent, activeConvId, historySnapshot, [], false, "searching", turnContext);
     };
 
     const handleMessageUpdate = async (index, newContent) => {
@@ -1516,7 +1542,7 @@ function App() {
         const historyContext = messages.slice(0, index);
         const updatedUserMessage = { ...messages[index], content: newContent };
         updateConversationMessages(currentConvId, [...historyContext, updatedUserMessage]);
-        await sendChatMessage(newContent, currentConvId, historyContext, [], false, "regenerating", true);
+        await sendChatMessage(newContent, currentConvId, historyContext, [], false, "regenerating");
     };
 
     const storageUsageRatio = storageEstimate?.quota ? storageEstimate.usage / storageEstimate.quota : 0;
@@ -1904,6 +1930,11 @@ function App() {
                                                 </span>
                                             </button>
                                         </div>
+                                        {activeMeetingsCharCount > ACTIVE_MEETINGS_WARN_CHAR_THRESHOLD && (
+                                            <p className="text-[10px] text-[#AAAAAA] px-2 mb-1 leading-snug">
+                                                Selected meetings add ~{Math.round(activeMeetingsCharCount / 1000)}k characters to every message — consider selecting fewer for faster replies.
+                                            </p>
+                                        )}
                                         {meetingRecords.map((rec) => {
                                             const isActive = selectedMeetings.has(rec.meeting_id);
                                             const label = rec.meeting_title || 'Meeting Notes';

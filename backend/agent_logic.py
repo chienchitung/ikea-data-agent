@@ -250,6 +250,12 @@ def _build_prior_tool_context(stored_tool_context: str, turn_context: dict) -> l
 # 只是防呆，避免異常長的單筆記錄把 prompt 撐爆。
 _MEETING_CONTEXT_CHAR_LIMIT = 8000
 
+# 所有勾選的會議記錄「加總」起來的上限——單筆有上限不代表一次勾選 8、9 筆
+# 也安全，疊加起來一樣可能把 prompt 撐大、拖慢回應甚至頂到 token 上限。
+# 超過預算後面的記錄直接跳過（不是各自砍一半），讓先勾選的記錄維持完整，
+# 比每筆都砍半更有用。
+_MEETING_CONTEXT_TOTAL_CHAR_LIMIT = 24000
+
 
 def _build_meeting_context_messages(active_meetings: Optional[list]) -> list:
     """會議記錄只存在瀏覽器的 IndexedDB（見 frontend/src/utils/meetingStore.js
@@ -259,6 +265,8 @@ def _build_meeting_context_messages(active_meetings: Optional[list]) -> list:
     if not active_meetings:
         return []
     blocks = []
+    total_chars = 0
+    omitted_count = 0
     for meeting in active_meetings:
         if not isinstance(meeting, dict):
             continue
@@ -266,14 +274,26 @@ def _build_meeting_context_messages(active_meetings: Optional[list]) -> list:
         content = str(meeting.get("content", "") or "").strip()[:_MEETING_CONTEXT_CHAR_LIMIT]
         if not content:
             continue
+        if total_chars + len(content) > _MEETING_CONTEXT_TOTAL_CHAR_LIMIT:
+            omitted_count += 1
+            continue
         blocks.append(f"【{title}】\n{content}")
+        total_chars += len(content)
     if not blocks:
         return []
+    omitted_note = ""
+    if omitted_count:
+        omitted_note = (
+            f"\n\n（使用者另外勾選了 {omitted_count} 筆會議記錄，"
+            "但加總長度超過上限，未附上內容——如果使用者的問題明顯需要那幾筆，"
+            "請提醒使用者縮小勾選範圍再問一次。）"
+        )
     return [SystemMessage(content=(
         "## Active Meeting Records\n\n"
         "使用者在這個對話中主動加入以下會議記錄（已整理版本，非逐字稿）作為參考資料，"
         "回答問題時可以直接引用其中內容；若使用者的問題與這些會議記錄無關，忽略即可。\n\n"
         + "\n\n---\n\n".join(blocks)
+        + omitted_note
     ))]
 
 
