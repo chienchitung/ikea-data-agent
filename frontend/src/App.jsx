@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useLayoutEffect, useMemo, lazy, Suspense } from 'react';
 import axios from 'axios';
 import { ChatMessage } from './components/ChatMessage';
-import { ArrowUp, Loader2, Sparkles, FileText, ChevronDown, ChevronLeft, Plus, Check, Edit2, Trash2, User, MessageSquare, PenSquare, Search, Mic, Square, X, Bug, Pin, MoreHorizontal, KeyRound, Eye, EyeOff, CheckSquare, FileAudio, Menu } from 'lucide-react';
+import { ArrowUp, Loader2, Sparkles, FileText, ChevronDown, ChevronLeft, Plus, Check, Edit2, Trash2, User, MessageSquare, PenSquare, Search, Mic, Square, X, Bug, Pin, MoreHorizontal, KeyRound, Eye, EyeOff, CheckSquare, FileAudio, Menu, Kanban } from 'lucide-react';
 import { listMeetingRecords, getMeetingRecord, formatMeetingRecordForContext } from './utils/meetingStore';
 import bearAvatar from './assets/img/ikea-bear.webp';
 import dogAvatar from './assets/img/ikea-dog.webp';
@@ -17,6 +17,12 @@ import { readSseStream } from './utils/sse';
 // chat. See the <Suspense> around its one usage below.
 const MeetingRecordsPage = lazy(() =>
     import('./components/MeetingRecordsPage').then((m) => ({ default: m.MeetingRecordsPage }))
+);
+
+// Same rationale as MeetingRecordsPage above, plus it pulls in @dnd-kit/core
+// for the drag-and-drop board — no reason to ship that to everyone either.
+const ActionItemsBoard = lazy(() =>
+    import('./components/ActionItemsBoard').then((m) => ({ default: m.ActionItemsBoard }))
 );
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
@@ -358,6 +364,7 @@ function App() {
     // _build_meeting_context_messages 做，這裡只是提前告知使用者。
     const [activeMeetingsCharCount, setActiveMeetingsCharCount] = useState(0);
     const [showMeetingsPage, setShowMeetingsPage] = useState(false);
+    const [showActionBoard, setShowActionBoard] = useState(false);
     const [loadingConvIds, setLoadingConvIds] = useState(new Set());
     const [convStatuses, setConvStatuses] = useState({});
     const [clarifyingConvId, setClarifyingConvId] = useState(null);
@@ -605,18 +612,18 @@ function App() {
     };
 
     useLayoutEffect(() => {
-        // Meeting Records is rendered instead of (not alongside) the chat
-        // <main>, so returning to chat remounts it at a fresh scroll
-        // position. messages/isCurrentConvLoading don't change on that
-        // transition, so this effect needs showMeetingsPage in its deps too,
-        // or the remounted view is silently left scrolled to the top.
-        if (showMeetingsPage) return;
+        // Meeting Records / Action Items are rendered instead of (not
+        // alongside) the chat <main>, so returning to chat remounts it at a
+        // fresh scroll position. messages/isCurrentConvLoading don't change
+        // on that transition, so this effect needs both page flags in its
+        // deps too, or the remounted view is silently left scrolled to the top.
+        if (showMeetingsPage || showActionBoard) return;
         if (messages.length === 0 && !isCurrentConvLoading) return;
 
         const behavior = pendingScrollBehaviorRef.current;
         scrollToBottom(behavior);
         pendingScrollBehaviorRef.current = "smooth";
-    }, [messages, isCurrentConvLoading, showMeetingsPage]);
+    }, [messages, isCurrentConvLoading, showMeetingsPage, showActionBoard]);
 
     useEffect(() => {
         fetchDocuments();
@@ -2066,6 +2073,7 @@ function App() {
                                     // when coming back to chat, matching the "auto"
                                     // behavior used elsewhere for a freshly mounted view.
                                     if (showMeetingsPage) pendingScrollBehaviorRef.current = "auto";
+                                    setShowActionBoard(false);
                                     setShowMeetingsPage((v) => !v);
                                 }}
                                 className={`p-1.5 sm:p-2 rounded-full transition-colors ${showMeetingsPage ? 'bg-[#F5F5F5]' : 'hover:bg-[#F5F5F5]'}`}
@@ -2073,6 +2081,19 @@ function App() {
                                 aria-pressed={showMeetingsPage}
                             >
                                 <FileAudio className="w-4 h-4 sm:w-5 sm:h-5 text-[#111111]" />
+                            </button>
+                            {/* Action Items board entry */}
+                            <button
+                                onClick={() => {
+                                    if (showActionBoard) pendingScrollBehaviorRef.current = "auto";
+                                    setShowMeetingsPage(false);
+                                    setShowActionBoard((v) => !v);
+                                }}
+                                className={`p-1.5 sm:p-2 rounded-full transition-colors ${showActionBoard ? 'bg-[#F5F5F5]' : 'hover:bg-[#F5F5F5]'}`}
+                                title="Action Items"
+                                aria-pressed={showActionBoard}
+                            >
+                                <Kanban className="w-4 h-4 sm:w-5 sm:h-5 text-[#111111]" />
                             </button>
                             {/* Clear / New chat button */}
                             {messages.length > 0 && (
@@ -2119,6 +2140,14 @@ function App() {
                         </div>
                     }>
                         <MeetingRecordsPage apiUrl={API_URL} geminiApiKey={geminiApiKey} groqApiKey={groqApiKey} onOpenApiKeys={openApiKeysModal} />
+                    </Suspense>
+                ) : showActionBoard ? (
+                    <Suspense fallback={
+                        <div className="flex-1 flex items-center justify-center">
+                            <Loader2 className="w-6 h-6 animate-spin text-[#0058A3]" />
+                        </div>
+                    }>
+                        <ActionItemsBoard />
                     </Suspense>
                 ) : (
                 <>

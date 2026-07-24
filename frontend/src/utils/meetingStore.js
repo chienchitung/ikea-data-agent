@@ -10,52 +10,12 @@
 // single recording can be tens of MB. IndexedDB supports storing Blobs
 // directly and its quota is normally a meaningful fraction of free disk space.
 
-const DB_NAME = 'ikea-meeting-records';
-const DB_VERSION = 1;
-const RECORDS_STORE = 'records';
-const AUDIO_STORE = 'audio';
+import { openDb, promisifyRequest, promisifyTransaction, RECORDS_STORE, AUDIO_STORE } from './db';
 
 // Matches the threshold the existing "Browser storage" bar in App.jsx uses
 // for its red/over-quota color, so the two stay visually consistent even
 // though they're computed independently.
 export const STORAGE_WARNING_THRESHOLD = 0.85;
-
-let dbPromise = null;
-
-function openDb() {
-    if (!dbPromise) {
-        dbPromise = new Promise((resolve, reject) => {
-            const request = indexedDB.open(DB_NAME, DB_VERSION);
-            request.onupgradeneeded = () => {
-                const db = request.result;
-                if (!db.objectStoreNames.contains(RECORDS_STORE)) {
-                    db.createObjectStore(RECORDS_STORE, { keyPath: 'meeting_id' });
-                }
-                if (!db.objectStoreNames.contains(AUDIO_STORE)) {
-                    db.createObjectStore(AUDIO_STORE, { keyPath: 'meeting_id' });
-                }
-            };
-            request.onsuccess = () => resolve(request.result);
-            request.onerror = () => reject(request.error);
-        });
-    }
-    return dbPromise;
-}
-
-function promisifyRequest(request) {
-    return new Promise((resolve, reject) => {
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error);
-    });
-}
-
-function promisifyTransaction(tx) {
-    return new Promise((resolve, reject) => {
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => reject(tx.error);
-        tx.onabort = () => reject(tx.error || new DOMException('Transaction aborted', 'AbortError'));
-    });
-}
 
 // Saves/overwrites a full meeting record: { meeting_id, created_at,
 // updated_at, audio_filename, audio_playback_filename, transcript, segments,

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { X, Loader2, ChevronDown, Edit2, Download } from 'lucide-react';
+import { X, Loader2, ChevronDown, Edit2, Download, Kanban, Check } from 'lucide-react';
 import { getMeetingRecord, updateMeetingRecordData, getMeetingAudioBlob } from '../utils/meetingStore';
+import { hasImportedActionsForMeeting, importActionItemsFromMeeting } from '../utils/actionItemStore';
 
 function formatTimestamp(totalSeconds) {
     const total = Math.max(0, Math.floor(totalSeconds || 0));
@@ -115,6 +116,8 @@ export function MeetingMinutesView({ apiUrl, meetingId, onClose }) {
     const [isDownloading, setIsDownloading] = useState(false);
     const [activeSegmentIndex, setActiveSegmentIndex] = useState(-1);
     const [audioUrl, setAudioUrl] = useState(null);
+    const [actionsImported, setActionsImported] = useState(false);
+    const [isImportingActions, setIsImportingActions] = useState(false);
     const audioRef = useRef(null);
     const segmentRefs = useRef([]);
     const segments = useMemo(() => record?.segments || [], [record]);
@@ -173,13 +176,15 @@ export function MeetingMinutesView({ apiUrl, meetingId, onClose }) {
 
         (async () => {
             try {
-                const [rec, audio] = await Promise.all([
+                const [rec, audio, alreadyImported] = await Promise.all([
                     getMeetingRecord(meetingId),
                     getMeetingAudioBlob(meetingId),
+                    hasImportedActionsForMeeting(meetingId),
                 ]);
                 if (cancelled) return;
                 if (!rec) throw new Error('Meeting record not found.');
                 setRecord(rec);
+                setActionsImported(alreadyImported);
                 if (audio?.blob) {
                     objectUrl = URL.createObjectURL(audio.blob);
                     setAudioUrl(objectUrl);
@@ -230,6 +235,24 @@ export function MeetingMinutesView({ apiUrl, meetingId, onClose }) {
             alert(message);
         } finally {
             setIsSaving(false);
+        }
+    };
+
+    // Imports actions_review as-saved on record, not draftData — importing
+    // mid-edit would ship unsaved changes to the board silently. The button
+    // is disabled while isEditing (see below) so this path shouldn't be
+    // reachable, but guarding here too costs nothing.
+    const handleImportActions = async () => {
+        if (!record || actionsImported) return;
+        setIsImportingActions(true);
+        try {
+            await importActionItemsFromMeeting(record);
+            setActionsImported(true);
+        } catch (error) {
+            console.error('Failed to import action items:', error);
+            alert('Could not import action items to the board. Please try again.');
+        } finally {
+            setIsImportingActions(false);
         }
     };
 
@@ -379,7 +402,26 @@ export function MeetingMinutesView({ apiUrl, meetingId, onClose }) {
                             </section>
 
                             <section>
-                                <h3 className="text-sm font-semibold text-[#111111] mb-2">Actions review</h3>
+                                <div className="flex items-center justify-between mb-2">
+                                    <h3 className="text-sm font-semibold text-[#111111]">Actions review</h3>
+                                    {(meetingData.actions_review || []).length > 0 && !isEditing && (
+                                        <button
+                                            type="button"
+                                            onClick={handleImportActions}
+                                            disabled={isImportingActions || actionsImported}
+                                            className={`flex items-center gap-1 text-xs font-medium transition-colors disabled:cursor-default ${actionsImported ? 'text-[#767676]' : 'text-[#0058A3] hover:underline'}`}
+                                        >
+                                            {isImportingActions ? (
+                                                <Loader2 className="w-3 h-3 animate-spin" />
+                                            ) : actionsImported ? (
+                                                <Check className="w-3 h-3" />
+                                            ) : (
+                                                <Kanban className="w-3 h-3" />
+                                            )}
+                                            {actionsImported ? 'Imported to board' : 'Import to Action Items board'}
+                                        </button>
+                                    )}
+                                </div>
                                 <EditableTable
                                     headers={['No.', 'Action items', 'Assigned to', 'Deadline']}
                                     fields={[{ key: 'no' }, { key: 'item' }, { key: 'assigned_to' }, { key: 'deadline' }]}
