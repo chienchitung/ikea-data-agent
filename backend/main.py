@@ -144,6 +144,14 @@ def localized_product_error(code: str, language: str, details=None) -> dict:
             ["改用更接近來源文件的關鍵字", "補充頁碼、段落標題或截圖標題", "如果內容是圖片型資料，請詢問掃描頁或圖片頁細節"] if zh else ["Try a keyword closer to the source document", "Add a page number, section title, or screenshot heading", "If the content is image-based, ask for the scanned/image page details"],
             details,
         )
+    if code == "model_overloaded_or_timeout":
+        return product_error(
+            code,
+            "模型回應太慢或暫時無法使用" if zh else "The model took too long to respond",
+            "這次請求等待模型回應的時間超過上限——可能是模型暫時負載較高，或問題範圍較大、需要較長時間才能生成完整答案。這通常跟 API 金鑰設定無關。" if zh else "This request waited longer for a model response than the limit allows — the model may be under heavy load right now, or the question is broad enough that generating a full answer takes a long time. This usually has nothing to do with your API key configuration.",
+            ["稍後再試一次，通常很快就會恢復", "如果問題牽涉大量資料或很長的範圍，先縮小範圍再問"] if zh else ["Try again shortly — this usually recovers quickly", "If the question spans a lot of data or a wide scope, narrow it down first"],
+            details,
+        )
     if code == "agent_runtime_error":
         return product_error(
             code,
@@ -169,10 +177,30 @@ def classify_chat_error_text(text: str, language: str = "en") -> Optional[dict]:
         return None
 
     is_error_response = lowered.startswith("error processing request")
+
+    # 逾時／過載要先判斷，且要比 API key 判斷更明確。原本
+    # `"gemini" in lowered and is_error_response` 幾乎會逮到任何跟 Gemini
+    # 有關的未預期例外——逾時、503 過載、配額用盡都會被誤判成同一句
+    # 「請確認 API key」，但這些情況大多跟金鑰設定完全無關，只會誤導使用者
+    # 去檢查根本沒問題的東西（實測：問題複雜、生成超過 100 秒時常觸發）。
+    timeout_or_overload = is_error_response and any(
+        keyword in lowered
+        for keyword in (
+            "timeout", "timed out", "deadline_exceeded", "504",
+            "503", "unavailable", "overloaded", "resource_exhausted", "429",
+        )
+    )
+    if timeout_or_overload:
+        return localized_product_error("model_overloaded_or_timeout", language)
+
+    # 收窄成需要明確的認證/金鑰訊號，不再只靠訊息裡有沒有出現「gemini」
+    # 這種模型名稱本身就會出現在任何錯誤裡的字詞。
     api_key_error = (
         "google_api_key" in lowered
-        or ("api key" in lowered and (is_error_response or "not valid" in lowered or "invalid" in lowered))
-        or ("gemini" in lowered and is_error_response)
+        or "api_key_invalid" in lowered
+        or "permission_denied" in lowered
+        or "unauthenticated" in lowered
+        or ("api key" in lowered and ("not valid" in lowered or "invalid" in lowered or "missing" in lowered))
     )
     if api_key_error:
         return localized_product_error("ai_provider_unavailable", language)
