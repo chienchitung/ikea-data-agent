@@ -37,11 +37,17 @@ function formatRelativeTime(ts) {
     return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
-export function MeetingRecordsPage({ apiUrl, geminiApiKey, groqApiKey, onOpenApiKeys }) {
+export function MeetingRecordsPage({ apiUrl, geminiApiKey, groqApiKey, onOpenApiKeys, initialMeetingId }) {
     const [meetings, setMeetings] = useState([]);
     const [isLoading, setIsLoading] = useState(true);
     const [loadError, setLoadError] = useState(false);
-    const [activeMeetingId, setActiveMeetingId] = useState(null);
+    // Deep-link support (e.g. "open source meeting" from an Action Items
+    // card): this page is only ever mounted fresh when navigated to — it's
+    // swapped in/out via a ternary in App.jsx, not kept alive in the
+    // background — so reading the prop once as the initial state is enough;
+    // there's no later prop change to react to since a new deep link always
+    // arrives via a fresh mount.
+    const [activeMeetingId, setActiveMeetingId] = useState(() => initialMeetingId || null);
     const [showRecorderModal, setShowRecorderModal] = useState(false);
     const [isSelecting, setIsSelecting] = useState(false);
     const [selectedIds, setSelectedIds] = useState(new Set());

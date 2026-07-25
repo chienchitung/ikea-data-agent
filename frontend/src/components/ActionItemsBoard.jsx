@@ -31,7 +31,23 @@ function toDateInputValue(value) {
     return ISO_DATE_RE.test(value || '') ? value : '';
 }
 
-function Card({ item, isEditing, onStartEdit, onCancelEdit, onSave, onDelete }) {
+const DUE_SOON_DAYS = 3;
+
+// Only ISO deadlines can be reliably compared to "today" — a legacy
+// freeform string (e.g. "3/5" from an older import) is left unstyled
+// rather than guessed at. A finished card is never overdue.
+function getDeadlineUrgency(deadline, status) {
+    if (status === 'Done' || !ISO_DATE_RE.test(deadline || '')) return null;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const due = new Date(`${deadline}T00:00:00`);
+    const diffDays = Math.round((due - today) / 86400000);
+    if (diffDays < 0) return 'overdue';
+    if (diffDays <= DUE_SOON_DAYS) return 'soon';
+    return null;
+}
+
+function Card({ item, isEditing, onStartEdit, onCancelEdit, onSave, onDelete, onOpenMeeting }) {
     const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: item.id });
     const [draft, setDraft] = useState(item);
 
@@ -48,6 +64,7 @@ function Card({ item, isEditing, onStartEdit, onCancelEdit, onSave, onDelete }) 
         transform: CSS.Transform.toString(transform),
         transition,
     };
+    const urgency = getDeadlineUrgency(item.deadline, item.status);
 
     if (isEditing) {
         return (
@@ -118,18 +135,30 @@ function Card({ item, isEditing, onStartEdit, onCancelEdit, onSave, onDelete }) 
                         </span>
                     )}
                     {item.deadline && (
-                        <span className="inline-flex items-center gap-1">
+                        <span
+                            className={`inline-flex items-center gap-1 ${
+                                urgency === 'overdue' ? 'text-red-600 font-medium' : urgency === 'soon' ? 'text-amber-600 font-medium' : ''
+                            }`}
+                        >
                             <Calendar className="w-3 h-3 flex-shrink-0" />
                             {item.deadline}
+                            {urgency === 'overdue' && ' · Overdue'}
+                            {urgency === 'soon' && ' · Due soon'}
                         </span>
                     )}
                 </div>
             )}
             {item.meeting_title && (
-                <div className="flex items-center gap-1 mt-2 text-[11px] text-[#AAAAAA]">
+                <button
+                    type="button"
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onClick={(e) => { e.stopPropagation(); onOpenMeeting?.(item.meeting_id); }}
+                    className="flex items-center gap-1 mt-2 text-[11px] text-[#AAAAAA] hover:text-[#0058A3] hover:underline transition-colors max-w-full"
+                    title="Open source meeting"
+                >
                     <FileAudio className="w-3 h-3 flex-shrink-0" />
                     <span className="truncate">{item.meeting_title}</span>
-                </div>
+                </button>
             )}
             <div className="flex justify-end gap-1 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
                 <button
@@ -155,7 +184,7 @@ function Card({ item, isEditing, onStartEdit, onCancelEdit, onSave, onDelete }) 
     );
 }
 
-function Column({ status, items, editingId, onStartEdit, onCancelEdit, onSave, onDelete, isAdding, onStartAdd, onCancelAdd, onConfirmAdd }) {
+function Column({ status, items, editingId, onStartEdit, onCancelEdit, onSave, onDelete, onOpenMeeting, isAdding, onStartAdd, onCancelAdd, onConfirmAdd }) {
     const { setNodeRef, isOver } = useDroppable({ id: status });
     const [draftText, setDraftText] = useState('');
     const itemIds = items.map((i) => i.id);
@@ -186,6 +215,7 @@ function Column({ status, items, editingId, onStartEdit, onCancelEdit, onSave, o
                             onCancelEdit={onCancelEdit}
                             onSave={onSave}
                             onDelete={onDelete}
+                            onOpenMeeting={onOpenMeeting}
                         />
                     ))}
                 </SortableContext>
@@ -236,7 +266,7 @@ function Column({ status, items, editingId, onStartEdit, onCancelEdit, onSave, o
     );
 }
 
-export function ActionItemsBoard() {
+export function ActionItemsBoard({ onOpenMeeting }) {
     const [items, setItems] = useState([]);
     const [isLoading, setIsLoading] = useState(true);
     const [editingId, setEditingId] = useState(null);
@@ -387,6 +417,7 @@ export function ActionItemsBoard() {
                                 onCancelEdit={() => setEditingId(null)}
                                 onSave={handleSaveEdit}
                                 onDelete={handleDelete}
+                                onOpenMeeting={onOpenMeeting}
                                 isAdding={addingStatus === status}
                                 onStartAdd={setAddingStatus}
                                 onCancelAdd={() => setAddingStatus(null)}

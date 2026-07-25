@@ -365,6 +365,12 @@ function App() {
     const [activeMeetingsCharCount, setActiveMeetingsCharCount] = useState(0);
     const [showMeetingsPage, setShowMeetingsPage] = useState(false);
     const [showActionBoard, setShowActionBoard] = useState(false);
+    // Set right before switching to the Meeting Records page so it opens
+    // straight to that meeting's detail view (used by the Action Items
+    // board's "open source meeting" link). Cleared whenever navigating away
+    // from Meeting Records so a later plain visit to that page doesn't
+    // reopen a stale deep link.
+    const [openMeetingId, setOpenMeetingId] = useState(null);
     const [loadingConvIds, setLoadingConvIds] = useState(new Set());
     const [convStatuses, setConvStatuses] = useState({});
     const [clarifyingConvId, setClarifyingConvId] = useState(null);
@@ -2072,7 +2078,10 @@ function App() {
                                     // Jump straight to the bottom (no animated scroll)
                                     // when coming back to chat, matching the "auto"
                                     // behavior used elsewhere for a freshly mounted view.
-                                    if (showMeetingsPage) pendingScrollBehaviorRef.current = "auto";
+                                    if (showMeetingsPage) {
+                                        pendingScrollBehaviorRef.current = "auto";
+                                        setOpenMeetingId(null);
+                                    }
                                     setShowActionBoard(false);
                                     setShowMeetingsPage((v) => !v);
                                 }}
@@ -2087,6 +2096,7 @@ function App() {
                                 onClick={() => {
                                     if (showActionBoard) pendingScrollBehaviorRef.current = "auto";
                                     setShowMeetingsPage(false);
+                                    setOpenMeetingId(null);
                                     setShowActionBoard((v) => !v);
                                 }}
                                 className={`p-1.5 sm:p-2 rounded-full transition-colors ${showActionBoard ? 'bg-[#F5F5F5]' : 'hover:bg-[#F5F5F5]'}`}
@@ -2139,7 +2149,7 @@ function App() {
                             <Loader2 className="w-6 h-6 animate-spin text-[#0058A3]" />
                         </div>
                     }>
-                        <MeetingRecordsPage apiUrl={API_URL} geminiApiKey={geminiApiKey} groqApiKey={groqApiKey} onOpenApiKeys={openApiKeysModal} />
+                        <MeetingRecordsPage apiUrl={API_URL} geminiApiKey={geminiApiKey} groqApiKey={groqApiKey} onOpenApiKeys={openApiKeysModal} initialMeetingId={openMeetingId} />
                     </Suspense>
                 ) : showActionBoard ? (
                     <Suspense fallback={
@@ -2147,7 +2157,15 @@ function App() {
                             <Loader2 className="w-6 h-6 animate-spin text-[#0058A3]" />
                         </div>
                     }>
-                        <ActionItemsBoard />
+                        <ActionItemsBoard
+                            onOpenMeeting={(meetingId) => {
+                                if (!meetingId) return;
+                                pendingScrollBehaviorRef.current = "auto";
+                                setShowActionBoard(false);
+                                setOpenMeetingId(meetingId);
+                                setShowMeetingsPage(true);
+                            }}
+                        />
                     </Suspense>
                 ) : (
                 <>
