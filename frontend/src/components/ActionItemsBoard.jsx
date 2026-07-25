@@ -6,28 +6,33 @@ import {
     KeyboardSensor,
     useSensor,
     useSensors,
-    useDraggable,
     useDroppable,
 } from '@dnd-kit/core';
-import { Plus, Trash2, Edit2, X, Check, Loader2, FileAudio } from 'lucide-react';
+import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
+import { Plus, Trash2, Edit2, X, Check, Loader2, FileAudio, User, Calendar } from 'lucide-react';
 import {
     listActionItems,
     addActionItem,
     updateActionItem,
-    moveActionItem,
+    reorderActionItems,
     deleteActionItem,
     ACTION_STATUSES,
 } from '../utils/actionItemStore';
 
-// Only cross-column dragging (changing status) is supported — not
-// reordering within a column. There's no explicit "order" field in the
-// data model (cards are listed by created_at), and adding one just for
-// drag-to-reorder within a single column is a fair bit of extra
-// bookkeeping for a "nice to have" that wasn't asked for. Easy to add
-// later (via @dnd-kit/sortable) if it turns out to matter.
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+// <input type="date"> only accepts an exact YYYY-MM-DD value — anything
+// else (e.g. a meeting-generated "3/5") just renders as blank rather than
+// throwing, but showing it as blank would make the underlying text look
+// lost. Leaving draft.deadline untouched (only overwritten by onChange)
+// means an untouched field still saves the original string; the caption
+// below the input is just there so that isn't invisible to the user.
+function toDateInputValue(value) {
+    return ISO_DATE_RE.test(value || '') ? value : '';
+}
 
 function Card({ item, isEditing, onStartEdit, onCancelEdit, onSave, onDelete }) {
-    const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({ id: item.id });
+    const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: item.id });
     const [draft, setDraft] = useState(item);
 
     // Reset the draft right when editing starts (in the click handler, not
@@ -39,9 +44,10 @@ function Card({ item, isEditing, onStartEdit, onCancelEdit, onSave, onDelete }) 
         onStartEdit(item.id);
     };
 
-    const style = transform
-        ? { transform: `translate3d(${transform.x}px, ${transform.y}px, 0)`, zIndex: 10 }
-        : undefined;
+    const style = {
+        transform: CSS.Transform.toString(transform),
+        transition,
+    };
 
     if (isEditing) {
         return (
@@ -60,13 +66,17 @@ function Card({ item, isEditing, onStartEdit, onCancelEdit, onSave, onDelete }) 
                     placeholder="Assigned to"
                     className="w-full text-xs border border-[#DFDFDF] rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-[#0058A3]"
                 />
-                <input
-                    type="text"
-                    value={draft.deadline}
-                    onChange={(e) => setDraft((d) => ({ ...d, deadline: e.target.value }))}
-                    placeholder="Deadline"
-                    className="w-full text-xs border border-[#DFDFDF] rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-[#0058A3]"
-                />
+                <div>
+                    <input
+                        type="date"
+                        value={toDateInputValue(draft.deadline)}
+                        onChange={(e) => setDraft((d) => ({ ...d, deadline: e.target.value }))}
+                        className="w-full text-xs border border-[#DFDFDF] rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-[#0058A3]"
+                    />
+                    {draft.deadline && !ISO_DATE_RE.test(draft.deadline) && (
+                        <p className="text-[10px] text-[#AAAAAA] mt-0.5">Current: {draft.deadline} (pick a date to replace)</p>
+                    )}
+                </div>
                 <div className="flex justify-end gap-1.5">
                     <button
                         type="button"
@@ -100,9 +110,19 @@ function Card({ item, isEditing, onStartEdit, onCancelEdit, onSave, onDelete }) 
         >
             <p className="text-sm text-[#111111] leading-snug">{item.item}</p>
             {(item.assigned_to || item.deadline) && (
-                <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-2 text-xs text-[#767676]">
-                    {item.assigned_to && <span>👤 {item.assigned_to}</span>}
-                    {item.deadline && <span>📅 {item.deadline}</span>}
+                <div className="flex flex-wrap gap-x-3 gap-y-1 mt-2 text-xs text-[#767676]">
+                    {item.assigned_to && (
+                        <span className="inline-flex items-center gap-1">
+                            <User className="w-3 h-3 flex-shrink-0" />
+                            {item.assigned_to}
+                        </span>
+                    )}
+                    {item.deadline && (
+                        <span className="inline-flex items-center gap-1">
+                            <Calendar className="w-3 h-3 flex-shrink-0" />
+                            {item.deadline}
+                        </span>
+                    )}
                 </div>
             )}
             {item.meeting_title && (
@@ -138,6 +158,7 @@ function Card({ item, isEditing, onStartEdit, onCancelEdit, onSave, onDelete }) 
 function Column({ status, items, editingId, onStartEdit, onCancelEdit, onSave, onDelete, isAdding, onStartAdd, onCancelAdd, onConfirmAdd }) {
     const { setNodeRef, isOver } = useDroppable({ id: status });
     const [draftText, setDraftText] = useState('');
+    const itemIds = items.map((i) => i.id);
 
     const handleConfirmAdd = () => {
         if (!draftText.trim()) return;
@@ -155,17 +176,19 @@ function Column({ status, items, editingId, onStartEdit, onCancelEdit, onSave, o
                 ref={setNodeRef}
                 className={`flex-1 overflow-y-auto px-2 pb-2 space-y-2 min-h-[120px] rounded-lg transition-colors ${isOver ? 'bg-blue-50' : ''}`}
             >
-                {items.map((item) => (
-                    <Card
-                        key={item.id}
-                        item={item}
-                        isEditing={editingId === item.id}
-                        onStartEdit={onStartEdit}
-                        onCancelEdit={onCancelEdit}
-                        onSave={onSave}
-                        onDelete={onDelete}
-                    />
-                ))}
+                <SortableContext items={itemIds} strategy={verticalListSortingStrategy}>
+                    {items.map((item) => (
+                        <Card
+                            key={item.id}
+                            item={item}
+                            isEditing={editingId === item.id}
+                            onStartEdit={onStartEdit}
+                            onCancelEdit={onCancelEdit}
+                            onSave={onSave}
+                            onDelete={onDelete}
+                        />
+                    ))}
+                </SortableContext>
                 {items.length === 0 && !isAdding && (
                     <p className="text-xs text-[#AAAAAA] text-center py-6">No cards</p>
                 )}
@@ -242,26 +265,65 @@ export function ActionItemsBoard() {
         return () => { cancelled = true; };
     }, [refresh]);
 
+    // A status name is always a valid drop target id (the column's own
+    // droppable, e.g. for dropping into empty space or an empty column);
+    // otherwise resolve which column a card id currently belongs to.
+    const findStatus = useCallback((id) => {
+        if (ACTION_STATUSES.includes(id)) return id;
+        return items.find((i) => i.id === id)?.status || null;
+    }, [items]);
+
     const handleDragStart = (event) => {
         const item = items.find((i) => i.id === event.active.id);
         setActiveItem(item || null);
+    };
+
+    // Live-updates the dragged card's status as it crosses into a different
+    // column, so the columns visually reflect where it would land — final
+    // ordering/persistence happens in handleDragEnd once the drag settles.
+    const handleDragOver = (event) => {
+        const { active, over } = event;
+        if (!over) return;
+        const activeStatus = findStatus(active.id);
+        const overStatus = findStatus(over.id);
+        if (!activeStatus || !overStatus || activeStatus === overStatus) return;
+        setItems((prev) => prev.map((i) => (i.id === active.id ? { ...i, status: overStatus } : i)));
     };
 
     const handleDragEnd = async (event) => {
         setActiveItem(null);
         const { active, over } = event;
         if (!over) return;
-        const newStatus = over.id;
-        const dragged = items.find((i) => i.id === active.id);
-        if (!dragged || dragged.status === newStatus || !ACTION_STATUSES.includes(newStatus)) return;
 
-        // Optimistic update so the card moves instantly; roll back on failure.
-        setItems((prev) => prev.map((i) => (i.id === dragged.id ? { ...i, status: newStatus } : i)));
+        const finalStatus = findStatus(over.id);
+        if (!finalStatus) return;
+
+        const columnItems = items.filter((i) => i.status === finalStatus);
+        const activeIndex = columnItems.findIndex((i) => i.id === active.id);
+        const overIndex = columnItems.findIndex((i) => i.id === over.id);
+        const reordered = (activeIndex !== -1 && overIndex !== -1 && activeIndex !== overIndex)
+            ? arrayMove(columnItems, activeIndex, overIndex)
+            : columnItems;
+
+        const orderedIds = reordered.map((i) => i.id);
+        const orderMap = new Map(orderedIds.map((id, idx) => [id, idx]));
+        const previousItems = items;
+
+        // Updating each item's `order` field alone isn't enough to move it on
+        // screen: Column renders items in `items` array order (via filter),
+        // which a plain .map() over the previous array doesn't change. Resort
+        // by the new order values so the drop is reflected immediately instead
+        // of only after the next full reload.
+        setItems((prev) => {
+            const next = prev.map((i) => (orderMap.has(i.id) ? { ...i, status: finalStatus, order: orderMap.get(i.id) } : i));
+            return next.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+        });
+
         try {
-            await moveActionItem(dragged.id, newStatus);
+            await reorderActionItems(finalStatus, orderedIds);
         } catch (error) {
-            console.error('Failed to move action item:', error);
-            setItems((prev) => prev.map((i) => (i.id === dragged.id ? { ...i, status: dragged.status } : i)));
+            console.error('Failed to persist card move:', error);
+            setItems(previousItems);
         }
     };
 
@@ -305,7 +367,7 @@ export function ActionItemsBoard() {
             <div className="max-w-5xl mx-auto mb-4">
                 <h1 className="text-xl font-bold text-[#111111]">Action Items</h1>
                 <p className="text-sm text-[#767676] mt-0.5">
-                    Drag a card between columns to update its status. Cards tagged with a meeting name were imported from that meeting's minutes.
+                    Drag a card to reorder it or move it between columns. Cards tagged with a meeting name were imported from that meeting's minutes.
                 </p>
             </div>
             {isLoading ? (
@@ -313,7 +375,7 @@ export function ActionItemsBoard() {
                     <Loader2 className="w-6 h-6 animate-spin text-[#0058A3]" />
                 </div>
             ) : (
-                <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
+                <DndContext sensors={sensors} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd}>
                     <div className="flex gap-4 max-w-5xl mx-auto h-[calc(100%-4rem)]">
                         {ACTION_STATUSES.map((status) => (
                             <Column

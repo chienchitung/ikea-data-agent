@@ -6,6 +6,7 @@ import {
     addActionItem,
     updateActionItem,
     moveActionItem,
+    reorderActionItems,
     deleteActionItem,
     ACTION_STATUSES,
 } from './actionItemStore';
@@ -118,5 +119,52 @@ describe('deleteActionItem', () => {
         await deleteActionItem(created.id);
         const all = await listActionItems();
         expect(all.find((a) => a.id === created.id)).toBeUndefined();
+    });
+});
+
+describe('ordering', () => {
+    it('addActionItem appends new cards after existing ones in the same status', async () => {
+        const first = await addActionItem({ item: 'Order test 1', status: 'To Do' });
+        const second = await addActionItem({ item: 'Order test 2', status: 'To Do' });
+        expect(second.order).toBeGreaterThan(first.order);
+    });
+
+    it('listActionItems sorts by order within the same status', async () => {
+        const a = await addActionItem({ item: 'Sort A', status: 'Doing' });
+        const b = await addActionItem({ item: 'Sort B', status: 'Doing' });
+        const c = await addActionItem({ item: 'Sort C', status: 'Doing' });
+
+        // Move C to the front, then B, leaving A last — reorderActionItems
+        // is what a drag-and-drop reorder ultimately calls.
+        await reorderActionItems('Doing', [c.id, b.id, a.id]);
+
+        const all = await listActionItems();
+        const doing = all.filter((i) => ['Sort A', 'Sort B', 'Sort C'].includes(i.item));
+        expect(doing.map((i) => i.item)).toEqual(['Sort C', 'Sort B', 'Sort A']);
+    });
+
+    it('reorderActionItems also updates status for a card arriving from another column', async () => {
+        const created = await addActionItem({ item: 'Cross-column drag', status: 'To Do' });
+        const other = await addActionItem({ item: 'Already in Doing', status: 'Doing' });
+
+        await reorderActionItems('Doing', [created.id, other.id]);
+
+        const all = await listActionItems();
+        const moved = all.find((i) => i.id === created.id);
+        expect(moved.status).toBe('Doing');
+        expect(moved.order).toBe(0);
+        const stayed = all.find((i) => i.id === other.id);
+        expect(stayed.order).toBe(1);
+    });
+
+    it('reorderActionItems rejects an invalid status', async () => {
+        await expect(reorderActionItems('Archived', ['x'])).rejects.toThrow('Invalid status: Archived');
+    });
+
+    it('moveActionItem appends to the end of the destination column', async () => {
+        const existing = await addActionItem({ item: 'Existing in Done', status: 'Done' });
+        const moving = await addActionItem({ item: 'Moving to Done', status: 'To Do' });
+        const moved = await moveActionItem(moving.id, 'Done');
+        expect(moved.order).toBeGreaterThan(existing.order);
     });
 });
