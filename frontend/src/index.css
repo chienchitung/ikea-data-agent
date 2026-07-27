@@ -190,10 +190,14 @@
 /* KaTeX 不會自動換行，長公式（含冗長的 \text{} 標籤）的實際寬度常常超過
    泡泡本身——沒有這條規則時，公式會直接從泡泡右側溢出，蓋到旁邊的內容。
    比照上面的表格：溢出的部分改成在公式自己的框內橫向捲動，泡泡寬度維持
-   不變。katex-display 自帶的上下留白（margin: 1em 0）繼續保留。 */
+   不變。katex-display 自帶的上下留白（margin: 1em 0）繼續保留。
+   overflow-y 故意用 auto 而不是 hidden：分數這類疊起來的符號（例如
+   \frac{}{}）實際渲染高度比一般文字行高，分子會往上超出容器的正常行高，
+   若 overflow-y: hidden 會把分子上緣直接砍掉；auto 只在真的垂直溢出時
+   才捲動，不會裁切內容。 */
 .message-bubble .markdown .katex-display {
     overflow-x: auto;
-    overflow-y: hidden;
+    overflow-y: auto;
     max-width: 100%;
     padding-bottom: 4px;
 }
