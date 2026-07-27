@@ -199,8 +199,8 @@ workflow.add_edge("action", "agent")
     * **出處**：[anthropics/claude-code (GitHub)](https://github.com/anthropics/claude-code)
 
 13. **Anthropic: Model Context Protocol (MCP)**（2024 年 11 月發表，2025–2026 快速成為業界標準）：
-    * **論點**：MCP 是「Agent 如何連接外部工具與資料源」的開放標準，解決了本文一直在談的問題——每接一個新工具（Trello、Confluence、Google Sheets…）都要客製一次整合的困境。2025 年起 OpenAI、Google DeepMind 等相繼採用；2025 年 12 月 Anthropic 進一步把 MCP 捐給 Linux Foundation 旗下新成立的 Agentic AI Foundation，成為廠商中立的開放標準。對 Data Machi 而言，這代表 Trello/Confluence/Analyst 這幾支工具，長期有機會統一改走 MCP 而不是各自客製的 API 整合。
-    * **出處**：[Introducing the Model Context Protocol](https://www.anthropic.com/news/model-context-protocol)、[Donating MCP and establishing the Agentic AI Foundation](https://www.anthropic.com/news/donating-the-model-context-protocol-and-establishing-of-the-agentic-ai-foundation)
+    * **論點**：MCP 是「Agent 如何連接外部工具與資料源」的開放標準，解決了本文一直在談的問題——每接一個新工具（Trello、Confluence、Google Sheets…）都要客製一次整合的困境。2025 年起 OpenAI、Google DeepMind 等相繼採用；2025/12/9 更進一步由 **Anthropic（捐出 MCP）、OpenAI（捐出 AGENTS.md，見第 17 項）、Block（捐出 Goose 框架）** 三方共同發起，正式成立 Linux Foundation 旗下的 Agentic AI Foundation（AAIF），白金會員還包含 AWS、Google、Microsoft、Bloomberg、Cloudflare，成為廠商中立的開放標準——不是單一家公司「捐贈」而已，而是主要廠商聯合治理。對 Data Machi 而言，這代表 Trello/Confluence/Analyst 這幾支工具，長期有機會統一改走 MCP 而不是各自客製的 API 整合。
+    * **出處**：[Introducing the Model Context Protocol](https://www.anthropic.com/news/model-context-protocol)、[Linux Foundation Announces the Formation of the Agentic AI Foundation (AAIF)](https://www.linuxfoundation.org/press/linux-foundation-announces-the-formation-of-the-agentic-ai-foundation)
 
 14. **Anthropic: Building Effective Agents**（2024 年 12 月發表，持續是 2025–2026 agent 設計模式領域被引用最多的文章之一）：
     * **論點**：Anthropic 匯整與數十個團隊合作打造 LLM Agent 的實務經驗，明確區分「Workflow（預先寫死的程式路徑）」與「Agent（LLM 動態決定下一步）」，並提醒：多數成功案例用的是簡單、可組合的模式，而不是複雜框架。這正好呼應第 3.5 節第 5 點「避免為拆而拆」——不是每個任務都需要真正的 Multi-Agent。
@@ -213,6 +213,14 @@ workflow.add_edge("action", "agent")
 16. **Google: Agent2Agent Protocol (A2A)**（2025 年 4 月發表，2025 年 6 月捐贈給 Linux Foundation）：
     * **論點**：如果說 MCP 解決的是「Agent 如何連接工具」，A2A 解決的是「不同廠商打造的 Agent 之間如何互相溝通、委派任務」——兩者是互補而非競爭關係。已有 Salesforce、SAP、ServiceNow 等 150 多個組織採用，是 Multi-Agent 系統走向「跨廠商協作」的下一步基礎建設。
     * **出處**：[Announcing the Agent2Agent Protocol (A2A)](https://developers.googleblog.com/en/a2a-a-new-era-of-agent-interoperability/)
+
+17. **AGENTS.md**（開放格式，2025 年由 OpenAI 發起，已有 6 萬多個開源專案採用）：
+    * **論點**：一份給 AI coding agent 看的「README」——用固定格式在專案根目錄說明架構、慣例、測試指令、注意事項，讓 Claude Code、OpenAI Codex、Cursor 等不同廠商的 coding agent 都能讀懂同一份專案上下文，不用每個工具各寫一份客製設定。是第 8 節「CLI Coding Agent」討論的具體配套標準，也是 AAIF（第 13 項）成立時 OpenAI 捐出的專案之一。
+    * **出處**：[agents.md（官方網站與規格）](https://agents.md/)
+
+18. **Gartner: 超過 40% 的 Agentic AI 專案將於 2027 年底前被取消**（2025/6/25 發布，持續是 2026 年業界討論的重要提醒）：
+    * **論點**：Gartner 預測，多數目前的 agentic AI 專案仍停留在早期實驗或概念驗證階段，成本失控、商業價值不明確、風險控管不足是主要取消原因；報告也點出「**agent washing**」現象——許多廠商把既有的 AI 助理、RPA、聊天機器人重新包裝成「agentic」，Gartner 估計數千家宣稱做 agentic AI 的廠商中，只有約 130 家是真正名符其實的。同一份報告也預測到 2028 年，33% 的企業軟體會內建 agentic AI（2024 年不到 1%），日常工作決策有 15% 會由 agentic AI 自主完成（2024 年為 0%）。這份數據是本文第 3.5 節「避免為拆而拆」與第 7、8 節樂觀展望之間很好的平衡提醒：技術方向正確，不代表每個專案都該急著上馬。
+    * **出處**：[Gartner Predicts Over 40% of Agentic AI Projects Will Be Canceled by End of 2027](https://www.gartner.com/en/newsroom/press-releases/2025-06-25-gartner-predicts-over-40-percent-of-agentic-ai-projects-will-be-canceled-by-end-of-2027)
 
 ---
 
