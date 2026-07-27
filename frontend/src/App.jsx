@@ -797,6 +797,7 @@ function App() {
         setCurrentConvId(newId);
         setMessages([]);
         setShowMeetingsPage(false);
+        setShowActionBoard(false);
     };
 
     const switchConversation = (conv) => {
@@ -815,6 +816,7 @@ function App() {
         setCurrentConvId(conv.id);
         setMessages(conv.messages);
         setShowMeetingsPage(false);
+        setShowActionBoard(false);
     };
 
     const openConvSearch = () => {
