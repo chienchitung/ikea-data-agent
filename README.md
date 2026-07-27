@@ -1,16 +1,19 @@
 # IKEA Data Agent (Data Machi) 專屬數據助手
 
 ## 📌 專案介紹 (Project Overview)
-本專案為開發給「IKEA Data Team」使用的內部專屬 AI 助理系統——**Data Machi**。這是一個基於大型語言模型（LLM）結合 LangGraph 打造的多智能體（Multi-Agent System）架構。系統採用雙模型設計：最終回答與使用者實際互動使用 `GEMINI_MODEL`（預設 `gemini-3.5-flash`），對話脈絡判斷、澄清問題設計、回答查核等內部、非使用者可見的步驟則改用較快的 `GEMINI_FAST_MODEL`（預設 `gemini-2.5-flash`），兩者皆可透過環境變數調整。它被賦予了嚴格的系統身份與邊界，專注於解決團隊內部的數據處理、專案進度追蹤以及知識庫檢索問題。系統同時包含方便使用者互動的 Web 前端介面設計與穩定提供服務的 Python 後端。
+本專案為開發給「IKEA Data Team」使用的內部專屬 AI 助理系統——**Data Machi**。這是一個基於大型語言模型（LLM）結合 LangGraph 打造的多智能體（Multi-Agent System）架構。系統採用雙模型設計：最終回答與使用者實際互動使用 `GEMINI_MODEL`（預設 `gemini-3.6-flash`），對話脈絡判斷、澄清問題設計、回答查核等內部、非使用者可見的步驟則改用較快的 `GEMINI_FAST_MODEL`（預設 `gemini-3.5-flash`），兩者皆可透過環境變數調整。它被賦予了嚴格的系統身份與邊界，專注於解決團隊內部的數據處理、專案進度追蹤以及知識庫檢索問題。系統同時包含方便使用者互動的 Web 前端介面設計與穩定提供服務的 Python 後端。
 
 ## 🎯 核心開發目的 (Core Purpose)
 1. **專注業務範圍**：確保 AI 助理只協助回答 IKEA 內部的數據、Trello 專案進度、Confluence 文件以及團隊知識庫的問題。針對無關的閒聊（如天氣、食譜、通用百科等），將會進行阻擋並回覆標準答案，避免模型提供非業務範圍的資訊。
 2. **多代理人協作 (Multi-Agent System)**：系統核心由一個 Coordinator (協調整合者) 接收使用者提問，並依據意圖分配給特定的專家 Agent，包含：
-   - **Analyst (數據分析)**：負責串接 Google 服務存取 Google Sheets 上的商業資料。
+   - **Analyst (數據分析)**：負責串接 Google 服務存取 Google Sheets 上的商業資料，包含工單/Request 追蹤表，以及台灣／香港的 App 數據指標表（依 `region` 參數切換查哪一份，見下方環境變數說明）。
    - **Confluence (知識庫)**：負責檢索 Confluence 上的團隊文件、規範與解決方案。
    - **Trello (專案管理)**：負責追蹤專案管理看板狀態以及票卡進度。
    - **Document (文檔處理)**：負責檢索本地文件（使用向量資料庫輔助問答）。
-3. **優化團隊效率**：透過直覺的聊天對話介面，幫助團隊成員快速檢索所需資料並排解問題。
+3. **會議記錄與待辦追蹤**：獨立於上述 Agent 系統之外的功能，資料儲存在瀏覽器本機（IndexedDB），不經過後端，也不會因為 Render 重新部署而消失：
+   - **會議記錄 (Meeting Records)**：錄製或上傳會議錄音，透過 Groq Whisper 轉逐字稿，再用 Gemini 自動整理成結構化會議記錄（議程、摘要、行動項目等），可將訊息加入聊天上下文，也可匯出/匯入備份。
+   - **Action Items 看板**：可將會議記錄中的行動項目一鍵匯入，或手動新增卡片，以 Trello 風格的拖拉式看板（To Do / Doing / Done）追蹤進度，並可點回原始會議記錄。
+4. **優化團隊效率**：透過直覺的聊天對話介面，幫助團隊成員快速檢索所需資料並排解問題。
 
 ## 🛠 系統架構與技術棧 (Tech Stack)
 - **前端 (Frontend)**：React.js + Vite + TailwindCSS (建構於 Node.js 環境)
@@ -88,8 +91,8 @@ python main.py
 GOOGLE_API_KEY=your_google_api_key
 
 # 選填：分別指定「最終回答」與「內部判斷步驟」使用的模型，不設定則用預設值
-GEMINI_MODEL=gemini-3.5-flash
-GEMINI_FAST_MODEL=gemini-2.5-flash
+GEMINI_MODEL=gemini-3.6-flash
+GEMINI_FAST_MODEL=gemini-3.5-flash
 
 # Trello API 設定
 TRELLO_BOARD_ID=your_trello_board_id
@@ -303,17 +306,18 @@ VITE_API_URL=http://127.0.0.1:8000
 
 ### 6️⃣ 驗證指令（建議在提交前執行）
 
-後端語法與上下文路由 smoke test：
+後端語法檢查與全部 smoke test（`backend/tests/*_smoke.py`）：
 ```bash
-python -m py_compile backend/agent_logic.py backend/agents/coordinator.py backend/main.py backend/conversation_store.py backend/tests/context_routing_smoke.py backend/tests/meeting_docx_smoke.py
-GOOGLE_API_KEY=dummy python backend/tests/context_routing_smoke.py
-python backend/tests/meeting_docx_smoke.py
+cd backend
+python -m py_compile agent_logic.py agents/coordinator.py agents/analyst.py main.py conversation_store.py
+for f in tests/*_smoke.py; do GOOGLE_API_KEY=dummy python "$f" || echo "FAILED: $f"; done
 ```
 
-前端 lint 與 production build：
+前端 lint、自動化測試與 production build：
 ```bash
 cd frontend
 npm run lint
+npm run test
 npm run build
 ```
 
