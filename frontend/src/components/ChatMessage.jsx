@@ -550,6 +550,18 @@ export function ChatMessage({ message, userAvatar, debugMode = false, onUpdate, 
     const [isEditing, setIsEditing] = useState(false);
     const [editContent, setEditContent] = useState(message.content);
     const mathPlugins = useMathPlugins(message.content);
+    // During the typewriter reveal (message.streaming), message.content is a
+    // growing PREFIX of the raw markdown/LaTeX source -- e.g. "\frac{...}{"
+    // with the closing brace and denominator not typed yet. KaTeX re-parses
+    // whatever partial (often syntactically invalid) LaTeX has been revealed
+    // so far at every tick, which can render garbled mid-formula (mismatched
+    // braces, a stray error token, a frac bar in the wrong place) for the
+    // ~1.4s the reveal takes. Loading stays gated on content alone (so the
+    // chunk is ready the instant streaming ends), but applying the plugins
+    // to ReactMarkdown waits for streaming to finish -- the formula's raw
+    // $$...$$ source just shows as plain text until then, then renders
+    // cleanly in one shot once the full, valid LaTeX is in.
+    const shouldRenderMath = mathPlugins && !message.streaming;
 
     const handleCopy = () => {
         onCopy(message.content);
@@ -603,8 +615,8 @@ export function ChatMessage({ message, userAvatar, debugMode = false, onUpdate, 
                     ) : (
                         <div className="markdown">
                             <ReactMarkdown
-                                remarkPlugins={mathPlugins ? [remarkGfm, remarkCjkFriendly, mathPlugins.remarkMath] : [remarkGfm, remarkCjkFriendly]}
-                                rehypePlugins={mathPlugins ? [mathPlugins.rehypeKatex] : []}
+                                remarkPlugins={shouldRenderMath ? [remarkGfm, remarkCjkFriendly, mathPlugins.remarkMath] : [remarkGfm, remarkCjkFriendly]}
+                                rehypePlugins={shouldRenderMath ? [mathPlugins.rehypeKatex] : []}
                                 components={markdownComponents}
                             >
                                 {preprocessContent(normalizeInlineDisplayMath(message.content))}
