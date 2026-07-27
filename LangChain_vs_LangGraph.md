@@ -108,7 +108,19 @@ LangChain / LangGraph 官方多 Agent 指南也提醒：不是每個複雜任務
 
 如果停留在舊的 `AgentExecutor`，你只能將這些壓力全部塞在 **coordinator_prompt** 裡，祈禱模型夠聰明，不要偷懶。
 
-換上 **LangGraph** (如我們目前重構的 `create_react_agent`) 後，我們打開了一扇大門。雖然我們目前使用了預建構的 `create_react_agent` 幫助我們無縫過渡，但未來如果發生「模型一直學不會轉派」的狀況，我們只需要把 `coordinator.py` 拆解成真正的 LangGraph 節點：讓 Python 去驗證工具的回傳值，只要是空的，直接透過 Edge (程式邏輯) 強制把對話丟給下一個 Agent。
+換上 **LangGraph** 後，我們打開了一扇大門——而 `coordinator.py` 目前已經不再是預建構的 `create_react_agent`，而是拆解成真正的 `StateGraph` 節點：
+
+```python
+workflow = StateGraph(AgentState)
+workflow.add_node("agent", agent_node)      # LLM 決策：選工具或給答案
+workflow.add_node("action", parallel_tool_node)  # 執行工具（平行、非阻塞）
+
+workflow.add_edge(START, "agent")
+workflow.add_conditional_edges("agent", should_continue)
+workflow.add_edge("action", "agent")
+```
+
+`should_continue` 這條 Edge 就是第 1 節提到「LLM 固執己見、開發者難以強制介入」問題的具體解法：如果 LLM 呼叫了工具，路由到 `action` 執行；如果 LLM 只輸出了規劃文字、卻沒有真的呼叫工具（`_is_interim_response`），Python 會強制把對話送回 `agent` 重試，最多重試 `_MAX_INTERIM_RETRIES` 次，而不是任由模型用文字敷衍過關。這是程式邏輯（Edge）在把關，不是靠 Prompt 祈禱模型自律。
 
 這才是現今企業級 Multi-Agent 開發的主流共識：**不只要有聰明的 AI，更要有確定性的工程流程。**
 
@@ -177,6 +189,14 @@ LangChain / LangGraph 官方多 Agent 指南也提醒：不是每個複雜任務
 10. **OpenAI Swarm GitHub**：
     * **論點**：Swarm 是用於探索輕量 multi-agent orchestration 的教育型框架，適合理解 agents / handoffs 概念，但不應直接當成 production-ready 架構。
     * **出處**：[OpenAI Swarm](https://github.com/openai/swarm)
+
+11. **Anthropic: Introducing Computer Use**：
+    * **論點**：Anthropic 官方發表，讓 Claude 具備直接讀取螢幕截圖、控制滑鼠與鍵盤操作電腦介面的能力，是第 7、8 節「跨出 API 限制、具身電腦操作」討論的官方出處。目前仍是 beta 功能，正式導入前需評估權限隔離與審核機制。
+    * **出處**：[Introducing computer use, a new Claude 3.5 Sonnet, and Claude 3.5 Haiku](https://www.anthropic.com/news/3-5-models-and-computer-use)、[Computer use tool（技術文件）](https://platform.claude.com/docs/en/agents-and-tools/tool-use/computer-use-tool)
+
+12. **Claude Code（Anthropic 官方 CLI Coding Agent）**：
+    * **論點**：第 8 節提到「活在 Terminal / IDE / repo 裡的 coding agent」的具體案例，能讀取 codebase、執行指令、修改檔案，並在人工審核後交付 commit——本文件本身也是在這樣的環境中被建立與維護的。
+    * **出處**：[anthropics/claude-code (GitHub)](https://github.com/anthropics/claude-code)
 
 ---
 
