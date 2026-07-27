@@ -198,6 +198,22 @@ workflow.add_edge("action", "agent")
     * **論點**：第 8 節提到「活在 Terminal / IDE / repo 裡的 coding agent」的具體案例，能讀取 codebase、執行指令、修改檔案，並在人工審核後交付 commit——本文件本身也是在這樣的環境中被建立與維護的。
     * **出處**：[anthropics/claude-code (GitHub)](https://github.com/anthropics/claude-code)
 
+13. **Anthropic: Model Context Protocol (MCP)**（2024 年 11 月發表，2025–2026 快速成為業界標準）：
+    * **論點**：MCP 是「Agent 如何連接外部工具與資料源」的開放標準，解決了本文一直在談的問題——每接一個新工具（Trello、Confluence、Google Sheets…）都要客製一次整合的困境。2025 年起 OpenAI、Google DeepMind 等相繼採用；2025 年 12 月 Anthropic 進一步把 MCP 捐給 Linux Foundation 旗下新成立的 Agentic AI Foundation，成為廠商中立的開放標準。對 Data Machi 而言，這代表 Trello/Confluence/Analyst 這幾支工具，長期有機會統一改走 MCP 而不是各自客製的 API 整合。
+    * **出處**：[Introducing the Model Context Protocol](https://www.anthropic.com/news/model-context-protocol)、[Donating MCP and establishing the Agentic AI Foundation](https://www.anthropic.com/news/donating-the-model-context-protocol-and-establishing-of-the-agentic-ai-foundation)
+
+14. **Anthropic: Building Effective Agents**（2024 年 12 月發表，持續是 2025–2026 agent 設計模式領域被引用最多的文章之一）：
+    * **論點**：Anthropic 匯整與數十個團隊合作打造 LLM Agent 的實務經驗，明確區分「Workflow（預先寫死的程式路徑）」與「Agent（LLM 動態決定下一步）」，並提醒：多數成功案例用的是簡單、可組合的模式，而不是複雜框架。這正好呼應第 3.5 節第 5 點「避免為拆而拆」——不是每個任務都需要真正的 Multi-Agent。
+    * **出處**：[Building Effective Agents](https://www.anthropic.com/engineering/building-effective-agents)
+
+15. **OpenAI Agents SDK**（2025 年 3 月發表，取代第 10 項的 Swarm 成為正式 production 框架）：
+    * **論點**：延續 Swarm 的核心概念（Agents、Handoffs），但補上 Guardrails、Tracing、Session 管理等 production 必要功能；Swarm repo 目前已停止更新並在文件中直接導向 Agents SDK。可視為「教育型原型 → 正式框架」的具體後續發展，讓第 10 項的 Swarm 討論不再停留在 2024 年的原型階段。
+    * **出處**：[openai/openai-agents-python (GitHub)](https://github.com/openai/openai-agents-python)
+
+16. **Google: Agent2Agent Protocol (A2A)**（2025 年 4 月發表，2025 年 6 月捐贈給 Linux Foundation）：
+    * **論點**：如果說 MCP 解決的是「Agent 如何連接工具」，A2A 解決的是「不同廠商打造的 Agent 之間如何互相溝通、委派任務」——兩者是互補而非競爭關係。已有 Salesforce、SAP、ServiceNow 等 150 多個組織採用，是 Multi-Agent 系統走向「跨廠商協作」的下一步基礎建設。
+    * **出處**：[Announcing the Agent2Agent Protocol (A2A)](https://developers.googleblog.com/en/a2a-a-new-era-of-agent-interoperability/)
+
 ---
 
 ## 7. 展望未來：Multi-Agent 的下一步發展趨勢
