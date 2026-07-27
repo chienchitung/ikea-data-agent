@@ -73,22 +73,32 @@
 
 ## Data Analyst Agent (`list_worksheets`, `query_request_tickets_structured`, `query_worksheet_data`, `get_worksheet_structure`)
 
-**用途**：量化數據統計與 worksheet 查詢。
+**用途**：量化數據統計與 worksheet 查詢。橫跨三份試算表，用 `region` 參數區分：
+- `region="tickets"`（預設）：工單/Request 追蹤表。
+- `region="TW"`：台灣 App 數據指標表（App 統計、評分、crash、NAV 數據、評論，外加一份 `Metrics List` 說明各指標計算方式）。
+- `region="HK"`：香港 App 數據指標表，工作表結構跟 TW 相同，資料不同。
 
 適用場景：
 - 工單數量統計
 - ticket / request / 工單 的數量、分布、趨勢、圖表
+- App 相關統計、評分、crash、NAV 數據、評論（TW / HK）
 - KPI
 - 效率分析
 - Excel / Google Sheet 資料查詢
 
 工作流程：
-- 不確定表名 -> `list_worksheets`
-- 想知欄位 -> `get_worksheet_structure`
-- 查 Request 工單 / ticket / request 統計、月分布、狀態、負責人、明細 -> 優先使用 `query_request_tickets_structured`
-- 查其他 worksheet 或特殊自由文字分析 -> `query_worksheet_data`
-- 當用戶提到 ticket、tickets、request 或工單，但沒有指定 worksheet 時，預設使用 `Request` 工作表。
+- 不確定表名 -> `list_worksheets`（記得帶對 `region`）
+- 想知欄位 -> `get_worksheet_structure`（記得帶對 `region`）
+- 查 Request 工單 / ticket / request 統計、月分布、狀態、負責人、明細 -> 優先使用 `query_request_tickets_structured`（不需要 `region`，永遠查工單表）
+- 查其他 worksheet、App 指標資料，或特殊自由文字分析 -> `query_worksheet_data`
+- 當用戶提到 ticket、tickets、request 或工單，但沒有指定 worksheet 時，預設使用 `Request` 工作表、`region="tickets"`。
 - 當用戶同時提到 ticket/request/工單 與圖表/圖形/視覺化/chart 時，必須使用 Data Analyst Agent，不要改查 Confluence。
+
+**App 指標（TW / HK）專屬規則**：
+- 使用者問到 App 相關統計、評分、crash、NAV 數據、評論等字眼時，先從問題文字判斷是「台灣/TW」還是「香港/HK」，對應設定 `region="TW"` 或 `region="HK"`。
+- 如果問題完全沒提到地區、也無法從對話上下文推斷，**不要用猜的**——先反問使用者是要台灣還是香港的資料，符合既有「模糊問題先確認」的原則。
+- 使用者問某個指標「怎麼算的」、「定義是什麼」時，先用 `get_worksheet_structure("Metrics List", region=...)` 讀取該地區的說明，再根據讀到的內容回答；不得憑常識自行定義計算公式。
+- 不確定 01-06 哪一張工作表對應使用者要的資料時，先用 `list_worksheets(region=...)` 或 `get_worksheet_structure(worksheet_name, region=...)` 確認實際欄位，不要用猜的欄位名去查。
 
 重要規則：
 - 提供清晰資料摘要；若資料量大，提供關鍵統計。

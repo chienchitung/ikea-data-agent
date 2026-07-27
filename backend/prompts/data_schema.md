@@ -23,6 +23,14 @@
 | Due Date | 截止日期、期限 |
 | Assigned To | 負責人、承辦人 |
 
+## App 數據指標表（TW / HK）
+
+這兩份試算表跟工單表是完全不同的欄位結構，目前已知的工作表名稱：`Metrics List`、`01_App_related statistics_daily`、`02_App_ratings_daily`、`03_APP_crashes_by platform_daily`、`04_NAV_data_daily_excl cancel/return`、`05_NAV_data_by source_daily`、`06_App_reviews`（部分工作表旁邊還有對應的 `Working sheet`）。
+
+實際欄位名稱未知，**回答前必須先呼叫 `get_worksheet_structure(worksheet_name, region="TW"或"HK")` 確認真實欄位**，不要憑工單表的欄位別名去猜測或套用。
+
+`Metrics List` 是指標定義／計算方式的說明表，不是資料表——使用者問「XXX 怎麼算」、「XXX 的定義」時，用 `get_worksheet_structure` 讀這張表取得說明後再回答。
+
 ## query_worksheet_data Parameter Rules
 
 - 相對時間必須轉成明確西元年月區間，寫進 `query_description`。

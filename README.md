@@ -102,7 +102,12 @@ CONFLUENCE_USERNAME=your_confluence_username
 CONFLUENCE_API_TOKEN=your_confluence_api_token
 
 # Google Sheet 設定
+# GOOGLE_SHEET_KEY 是工單/Request 追蹤表；GOOGLE_SHEET_KEY_TW / _HK 是台灣／
+# 香港的 App 數據指標表（Analyst Agent 用 region 參數切換查哪一份）。三者都
+# 不設定的話，程式碼裡有對應的預設值可用。
 GOOGLE_SHEET_KEY=your_sheet_key_id
+GOOGLE_SHEET_KEY_TW=your_tw_app_metrics_sheet_key_id
+GOOGLE_SHEET_KEY_HK=your_hk_app_metrics_sheet_key_id
 ```
 
 如果要使用 Google Sheets / Analyst Agent，還需要提供 Google Cloud service account 憑證。**請勿把 `.json` 金鑰檔提交到 git**（`backend/*.json` 已加入 `.gitignore`）。有兩種方式擇一：

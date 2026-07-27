@@ -16,8 +16,20 @@ load_dotenv()
 # 全局變量來緩存工作表數據
 _cached_data = {}
 
-# Hardcoded sheet key from notebook
-SPREADSHEET_KEY = os.getenv("GOOGLE_SHEET_KEY", "1bnqghULmnxgZdu4ALDZ2FGUzBxwamD27qYZVGMq1uEo")
+# 三份試算表各自的 key。都不是敏感資訊本身——存取權是靠 Google Sheet 的共用
+# 設定（只共用給下面的 service account）把關，不是靠 key 保密，所以沿用既有
+# 慣例保留預設值方便本機開發；正式環境可透過對應的環境變數覆寫。
+# "tickets" 是原本的工單/Request 追蹤表；"TW"/"HK" 是台灣/香港的 App 數據
+# 指標表（App 統計、評分、crash、NAV 數據、評論，外加一份 Metrics List 說明
+# 各指標怎麼算）。
+SPREADSHEET_KEYS: dict[str, str] = {
+    "tickets": os.getenv("GOOGLE_SHEET_KEY", "1bnqghULmnxgZdu4ALDZ2FGUzBxwamD27qYZVGMq1uEo"),
+    "TW": os.getenv("GOOGLE_SHEET_KEY_TW", "1auj7LyCSGNxSAgBpECX78PFyAud1FBUP4h5YGKFjrKI"),
+    "HK": os.getenv("GOOGLE_SHEET_KEY_HK", "1I9KT8XgDZj5WHKvb0zpjLUqI-sIU4YfQF8aRa9mBUnM"),
+}
+# 沿用舊名稱，query_request_tickets_structured 等工單專用邏輯直接用這個即可，
+# 不需要 region 參數（工單資料不分地區）。
+SPREADSHEET_KEY = SPREADSHEET_KEYS["tickets"]
 
 # 明細表輸出上限（列數）。詳見 query_worksheet_data 的 Data Details 分支。
 _DETAIL_ROW_LIMIT = 150
@@ -175,25 +187,35 @@ def get_all_records_safe(worksheet) -> list:
     return records
 
 
-def _fetch_worksheet_records(worksheet_name: str) -> list:
+def _resolve_spreadsheet_key(region: str) -> str:
+    key = SPREADSHEET_KEYS.get(region)
+    if not key:
+        raise ValueError(f"Unknown region '{region}'. Valid options: {', '.join(SPREADSHEET_KEYS)}")
+    return key
+
+
+def _fetch_worksheet_records(worksheet_name: str, region: str = "tickets") -> list:
     """整表抓取，帶短 TTL 快取（見 SHEETS_CACHE_TTL_SECONDS 的說明）。
-    快取過期或未命中時才真的打 Sheets API。WorksheetNotFound 照常拋出。"""
+    快取過期或未命中時才真的打 Sheets API。WorksheetNotFound 照常拋出。
+    快取 key 帶上 region，避免不同試算表的同名工作表互相污染（例如 TW / HK
+    兩份表都可能有一張 "Metrics List"）。"""
+    cache_key = f"{region}:{worksheet_name}"
     now = time.monotonic()
-    cached = _worksheet_fetch_cache.get(worksheet_name)
+    cached = _worksheet_fetch_cache.get(cache_key)
     if cached is not None and now - cached[0] < SHEETS_CACHE_TTL_SECONDS:
         return cached[1]
 
     gc = get_gspread_client()
-    spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
+    spreadsheet = gc.open_by_key(_resolve_spreadsheet_key(region))
     worksheet = spreadsheet.worksheet(worksheet_name)
     all_records = get_all_records_safe(worksheet)
-    _worksheet_fetch_cache[worksheet_name] = (now, all_records)
-    _cached_data[worksheet_name] = all_records
+    _worksheet_fetch_cache[cache_key] = (now, all_records)
+    _cached_data[cache_key] = all_records
     return all_records
 
 
-def _load_worksheet_dataframe(worksheet_name: str) -> tuple[pd.DataFrame, int]:
-    all_records = _fetch_worksheet_records(worksheet_name)
+def _load_worksheet_dataframe(worksheet_name: str, region: str = "tickets") -> tuple[pd.DataFrame, int]:
+    all_records = _fetch_worksheet_records(worksheet_name, region=region)
     if not all_records:
         return pd.DataFrame(), 0
     df = _drop_empty_columns(pd.DataFrame(all_records))
@@ -204,43 +226,50 @@ def _load_worksheet_dataframe(worksheet_name: str) -> tuple[pd.DataFrame, int]:
 try:
     if os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"):
         print("\n✅ Analyst 憑證已從 GOOGLE_SERVICE_ACCOUNT_JSON 環境變數載入")
-        print(f"   Spreadsheet Key: {SPREADSHEET_KEY}")
+        print(f"   Spreadsheet Keys: {SPREADSHEET_KEYS}")
     else:
         _keyfiles = glob.glob("*.json") + glob.glob("backend/*.json")
         _keyfiles = [f for f in _keyfiles if "package" not in f and "lock" not in f]
         if _keyfiles:
             print(f"\n✅ Analyst 憑證已找到: {_keyfiles[0]}")
-            print(f"   Spreadsheet Key: {SPREADSHEET_KEY}")
+            print(f"   Spreadsheet Keys: {SPREADSHEET_KEYS}")
         else:
             print("Warning: Analyst Agent JSON keyfile not found.")
 except Exception:
     pass
 
 @tool
-def list_worksheets() -> str:
+def list_worksheets(region: str = "tickets") -> str:
     """
-    列出 Google Sheet 中所有可用的工作表名稱。
+    列出指定試算表中所有可用的工作表名稱。
     當用戶想知道有哪些工作表可以查詢時使用此工具。
+
+    參數:
+    - region: 要查哪一份試算表。"tickets"（預設）= 工單/Request 追蹤表；
+      "TW" = 台灣 App 數據指標表；"HK" = 香港 App 數據指標表。
     """
     try:
         gc = get_gspread_client()
-        spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
+        spreadsheet = gc.open_by_key(_resolve_spreadsheet_key(region))
         worksheet_titles = [ws.title for ws in spreadsheet.worksheets()]
-        return f"Available worksheets in this Google Sheet: {', '.join(worksheet_titles)}"
+        return f"Available worksheets in the '{region}' Google Sheet: {', '.join(worksheet_titles)}"
     except Exception as e:
         return f"Failed to list worksheets: {str(e)}"
 
 @tool
-def get_worksheet_structure(worksheet_name: str) -> str:
+def get_worksheet_structure(worksheet_name: str, region: str = "tickets") -> str:
     """
     獲取指定工作表的結構信息，包括欄位名稱、資料行數等基本信息。
-    當用戶想了解工作表的架構或有哪些欄位時使用此工具。
-    
+    當用戶想了解工作表的架構或有哪些欄位時使用此工具。也用這個工具讀取
+    "Metrics List" 工作表，了解 App 指標（TW/HK）的計算方式定義。
+
     參數:
     - worksheet_name: 工作表的名稱
+    - region: 要查哪一份試算表。"tickets"（預設）= 工單/Request 追蹤表；
+      "TW" = 台灣 App 數據指標表；"HK" = 香港 App 數據指標表。
     """
     try:
-        all_records = _fetch_worksheet_records(worksheet_name)
+        all_records = _fetch_worksheet_records(worksheet_name, region=region)
 
         if not all_records:
             return f"Worksheet '{worksheet_name}' is empty."
@@ -819,6 +848,7 @@ def query_request_tickets_structured(
 def query_worksheet_data(
     worksheet_name: str,
     query_description: str,
+    region: str = "tickets",
     wants_chart: bool = False,
     chart_type: str = "",
     group_by_column: str = "",
@@ -829,7 +859,13 @@ def query_worksheet_data(
     """
     根據查詢需求從指定工作表中檢索和分析資料，用於 Request 以外的 worksheet，
     或 query_request_tickets_structured 無法覆蓋的自由文字分析（跨欄位篩選、
-    duration/reason 分析、任意工作表的欄位分布）。
+    duration/reason 分析、任意工作表的欄位分布）。也用這個工具查詢 TW/HK 的
+    App 數據指標表（App 統計、評分、crash、NAV 數據、評論）。
+
+    - region: 要查哪一份試算表。"tickets"（預設）= 工單/Request 追蹤表；
+      "TW" = 台灣 App 數據指標表；"HK" = 香港 App 數據指標表。使用者問 App
+      相關統計/評分/crash/NAV/評論時，必須根據問題文字判斷是 TW 還是 HK；
+      如果問題沒有講清楚地區，先反問使用者，不要用猜的。
 
     請把你已經判斷好的意圖填入下列具名參數，不要只寫進 query_description 讓
     工具重新用關鍵字猜測：
@@ -853,11 +889,18 @@ def query_worksheet_data(
          chart_type="bar",
          group_by_column="Market",
       )
+
+    範例：使用者問「台灣3月的App評分趨勢」
+    → query_worksheet_data(
+         worksheet_name="02_App_ratings_daily",
+         region="TW",
+         query_description="2026年3月的評分趨勢",
+      )
     """
     try:
         # 走短 TTL 快取抓整表：同一輪對話的多次呼叫共用一次 Sheets API 往返，
         # TTL 過期後自然重抓，答案仍然反映近期的 Google Sheet 內容。
-        all_records = _fetch_worksheet_records(worksheet_name)
+        all_records = _fetch_worksheet_records(worksheet_name, region=region)
 
         if not all_records:
             return f"Worksheet '{worksheet_name}' has no data." + _format_source_footer(worksheet_name, 0)
@@ -878,7 +921,7 @@ def query_worksheet_data(
         effective_wants_reason_analysis = wants_reason_analysis or _wants_duration_reason_analysis(query_description)
         normalized_chart_type = chart_type.strip().lower() if chart_type.strip().lower() in {"bar", "line", "pie"} else ""
 
-        result = f"Worksheet: {worksheet_name} | Total rows: {total_rows}\n\n"
+        result = f"Worksheet: {worksheet_name} (region: {region}) | Total rows: {total_rows}\n\n"
 
         # ── Step 1：偵測日期欄位 ──────────────────────────────
         date_cols = _detect_date_columns(df)

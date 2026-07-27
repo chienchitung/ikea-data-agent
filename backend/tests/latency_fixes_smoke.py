@@ -81,7 +81,7 @@ def test_detail_row_cap():
         for i in range(200)
     ]
     original = analyst._fetch_worksheet_records
-    analyst._fetch_worksheet_records = lambda name: records
+    analyst._fetch_worksheet_records = lambda name, region="tickets": records
     try:
         output = analyst.query_worksheet_data.invoke({
             "worksheet_name": "Request",
@@ -123,9 +123,12 @@ def test_worksheet_fetch_ttl_cache():
         assert first == second == [{"Ticket No.": "REQ0001"}]
         assert fetch_count[0] == 1, f"expected 1 fetch within TTL, got {fetch_count[0]}"
 
-        # Expire the cache entry and confirm a refetch happens.
-        fetched_at, cached_records = analyst._worksheet_fetch_cache["Request"]
-        analyst._worksheet_fetch_cache["Request"] = (
+        # Expire the cache entry and confirm a refetch happens. Cache key is
+        # "{region}:{worksheet_name}" (region defaults to "tickets") so that
+        # the same worksheet name in a different spreadsheet doesn't collide.
+        cache_key = "tickets:Request"
+        fetched_at, cached_records = analyst._worksheet_fetch_cache[cache_key]
+        analyst._worksheet_fetch_cache[cache_key] = (
             fetched_at - analyst.SHEETS_CACHE_TTL_SECONDS - 1,
             cached_records,
         )
