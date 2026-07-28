@@ -156,9 +156,9 @@ LangChain / LangGraph 官方多 Agent 指南也提醒：不是每個複雜任務
 
 ---
 
-## 7. Prompt、Context、Loop、Graph、Harness Engineering：是同一件事的五個層次
+## 7. Prompt、Context、Loop、Graph、Harness Engineering：五個詞彙的來源與對照
 
-2025–2026 開始，業界冒出一連串「XX Engineering」新詞——這一節整理目前搜尋到的最新討論，並回答一個實際的問題：**Data Machi 現在做的事，算不算 Graph Engineering？**
+2025–2026 開始，業界冒出一連串「XX Engineering」新詞——這一節整理目前查證到的來源與時間線，並回答一個實際的問題：**Data Machi 現在做的事，算不算 Graph Engineering？**下面會先給一個社群常見的「五層」整理方式，再用有名有姓、有日期的時間線檢驗這個框架本身站不站得住腳——結論是：技術演進是真的，但「乾淨的五層」是編輯性的簡化，不是業界定論。
 
 ### 五層定義
 
@@ -170,7 +170,21 @@ LangChain / LangGraph 官方多 Agent 指南也提醒：不是每個複雜任務
 | **Context Engineering** | 這一次呼叫，模型「看得到」什麼？ | `messages` 組裝、`turn_context`、meeting context 的字數上限控制 |
 | **Loop Engineering** | 讓 AI 自主跑「觀察→執行→檢查→重試」到達成目標為止 | `should_continue` 條件邊構成的重試迴圈 |
 | **Graph Engineering** | 任務太複雜時，把多個 Agent／Loop 組織成一張有向圖 | `coordinator.py` 的 `StateGraph`（`agent`／`action` 節點 + 條件路由） |
-| **Harness Engineering** | 幫模型搭建防護欄、工具調用介面、驗證與監控環境，讓長時間自主任務不失控 | 回答查核（Zero Hallucination Policy）、`emit_progress` 可觀測性、`conversation_store` 狀態持久化——但還沒有正式的 generator/evaluator 驗證迴圈 |
+| **Harness Engineering** | 幫模型搭建防護欄、工具調用介面、驗證與監控環境，讓長時間自主任務不失控 | 見下方「對照 Data Machi」——這一層在專案裡的對應最勉強，不要照單全收 |
+
+### 每個詞真正的提出者是誰？（有名有姓、有連結的時間線）
+
+不要照單全收上面那張表背後的敘事——它是社群整理出來的框架，不是誰的正式規格。實際查證下來，這五個詞是過去六年、由不同人在不同場合分別提出的，彼此之間**沒有誰刻意設計成一套分層架構**：
+
+| 詞彙 | 提出者 | 時間 | 來源 |
+| :--- | :--- | :--- | :--- |
+| Prompt Engineering | 概念可溯源至 Salesforce 的 McCann et al. 論文；詞彙普遍歸功於 Gwern Branwen（另有 Karpathy／Richard Socher 的說法），眾說紛紜 | 概念 2018，詞彙 ~2020 | 未找到單一可直接引用的原始文獻，本文不列為正式參考文獻 |
+| Context Engineering | Tobi Lütke（Shopify CEO）先提出偏好，Andrej Karpathy 六天後在 X 上給出定義並帶起討論 | 2025/6/19（Lütke）、2025/6/25（Karpathy） | 見第 10 節第 22 項 |
+| Harness Engineering | Mitchell Hashimoto（Terraform／Vagrant 作者）部落格最早提出；OpenAI 的 Ryan Lopopolo 六天內發表官方文章「制度化」；Thoughtworks 的 Birgitta Böckeler 在 martinfowler.com 提出目前最嚴謹的「Guides and Sensors」框架 | 2026/2/5（Hashimoto）、2026/2/11（OpenAI）、~2026/4（Fowler/Böckeler） | 見第 10 節第 23–25 項 |
+| Loop Engineering | 據多篇二手報導綜合：Peter Steinberger（OpenClaw 作者）與 Boris Cherny（Anthropic，Claude Code 作者）先後發言，Addy Osmani（Google Chrome）整理成正式詞彙 | 2026/6 | 未找到可直接引用的原始貼文連結，本文僅依搜尋結果轉述，建議讀者自行查證 |
+| Graph Engineering | 據多篇二手報導綜合：同樣是 Peter Steinberger 發文引爆討論；LangChain 官方部落格則是把這個詞套用回自己 2024/1 就存在的 LangGraph 實作 | 詞彙 ~2026/7，實作 2024/1 | LangChain 部分見第 10 節第 19 項；Steinberger 發文同樣未找到可直接引用的連結 |
+
+**這張表比上面那張「五層定義表」更接近事實**：Prompt／Context Engineering 是真正站穩腳步、多年下來被廣泛使用的詞；Loop／Graph／Harness Engineering 全部是 2026 上半年才冒出來、由一小群人在部落格／社群媒體上接力提出的新詞，彼此之間沒有先後設計關係，也還沒有沉澱出公認定義——尤其 Graph Engineering 這個詞，距離現在只有幾週歷史。
 
 ### 這是演進，還是社群造詞？
 
@@ -182,19 +196,25 @@ LangChain / LangGraph 官方多 Agent 指南也提醒：不是每個複雜任務
 
 該篇文章最後的結論也偏向正面：這些不是「一代淘汰上一代」，而是**工程的關注點持續向上遷移**——從「控制模型輸出」走向「組織智能協作」，反映的是 AI 工程能力層級的真實上升，不是純粹的造詞遊戲。這也解釋了為什麼上表把 Loop 放在 Graph 前面而不是對立面：套用軟體工程師 David Khourshid 的說法，**「Loop 只是一種有向、循環的 Graph」（a loop is just a directed, cyclic graph）**——Loop 是 Graph 的簡化特例，Graph 則是把好幾個 Loop 連接成一個有平行分支、共享狀態的完整系統。
 
-### Harness Engineering：Anthropic 官方怎麼做的
+### Harness Engineering：源頭其實不是 Anthropic
 
-2026/3/24，Anthropic 工程團隊發表《Harness design for long-running application development》，直接示範了「Harness」這一層具體在做什麼——目標是讓 Claude 能自主跑長達數小時的軟體開發任務而不跑偏：
+先更正一件事：這詞不是 Anthropic 提出的。實際順序是 Hashimoto（2026/2/5）先提出概念，OpenAI 的 Lopopolo（2026/2/11）發官方文章把它「正式化」，Anthropic 2026/3/24 發表的《Harness design for long-running application development》是**在詞彙已經存在一個半月後，示範怎麼把它做得更精細**的案例，不是源頭：
 
 * **三代理人架構**（Planner / Generator / Evaluator，靈感來自 GAN）：Generator 負責產出，Evaluator 扮演「懷疑論者」，依設計品質、原創性、工藝、功能性四項標準嚴格打分，甚至用 Playwright MCP 實際操作網頁後給回饋，一輪批評迴圈跑 5–15 次。
 * **Initializer agent**：讓多個 session 之間的長任務保持連貫，搭配 context reset、結構化 feature list、progress log，避免長任務中途「提早結案」或 context window 漂移。
 * Claude Code 內建的 `/goal` 指令，就是把這套 generator/evaluator 迴圈直接做成產品功能。
 
-**Graph 跟 Harness 的關係**：Harness 是比 Graph 更大的框——Graph（節點/邊/條件路由）通常是 Harness 裡負責控制流的那一層，Harness 還多了驗證迴圈、跨 session 狀態持久化、權限與可觀測性這些維運層的東西。
+目前看起來最嚴謹的版本，是 Thoughtworks 的 Böckeler 在 martinfowler.com 提出的**「Guides and Sensors」**框架：**Guides**（事前引導，例如 AGENTS.md、code mods、skills）負責在 Agent 行動「之前」導正方向；**Sensors**（事後偵測，例如 linter、結構化測試、AI code review）負責在「之後」抓出問題、回饋修正，還進一步分成 computational controls（linter/測試這種確定性工具）跟 inferential controls（LLM 語意判斷）。
 
-### 對照 Data Machi：五層踩了幾層？
+### 對照 Data Machi：老實說，不是每一層都對得上
 
-把這套框架套回這個專案：**Prompt、Context、Loop、Graph 四層都已經扎實做了**（詳見上表），第五層 Harness 有雛形（回答查核、`emit_progress`、`conversation_store`）但還沒有正式的 generator/evaluator 驗證迴圈——如果未來想再往上一層走，這會是具體的下一步。
+**Prompt、Context、Loop、Graph 這四層，直接對到具體程式碼，沒什麼好爭議的**（見上方五層定義表）。但 **Harness 這一層，套到這個專案上其實有點勉強**，不必硬凹成「五層都做到了」：
+
+* 「回答查核」是**單次**驗證，不是 Anthropic 那種跑 5–15 輪的 Generator/Evaluator 迭代批評迴圈，也沒有 linter、測試這類 **Sensor**。
+* `emit_progress` 是單向回報給使用者看，不會回饋去修正 Agent 行為，嚴格說也不算 Sensor。
+* 系統提示詞（`hard_constraints.md` 等）勉強算 **Guide**，但這其實跟第一層 Prompt Engineering 高度重疊——Harness 框架裡的「Guides」半邊，某種程度上就是換個名字重講一次 Prompt Engineering，不是真正獨立的新東西。
+
+比較誠實的講法是：這個專案穩穩踩了四層，第五層目前沒有做，也不需要為了湊滿五層而勉強宣稱有。
 
 ---
 
@@ -341,9 +361,26 @@ workflow.add_edge("action", "agent")
     * **出處**：[3 Years of Graph Engineering with LangGraph](https://www.langchain.com/blog/3-years-of-graph-engineering-with-langgraph)
 
 20. **Anthropic: Harness design for long-running application development**（2026/3/24 發表）：
-    * **論點**：第 7 節「Harness Engineering」小節的主要依據。示範用 Planner/Generator/Evaluator 三代理人架構（靈感來自 GAN）搭配 Initializer agent、context reset、progress log，讓 Claude 能自主完成長達數小時的軟體開發任務而不跑偏，並已內建成 Claude Code 的 `/goal` 指令。
+    * **論點**：第 7 節「Harness Engineering」小節引用的實作案例，示範用 Planner/Generator/Evaluator 三代理人架構（靈感來自 GAN）搭配 Initializer agent、context reset、progress log，讓 Claude 能自主完成長達數小時的軟體開發任務而不跑偏，並已內建成 Claude Code 的 `/goal` 指令。**注意**：這篇不是「Harness Engineering」一詞的源頭，發表時間點在 Hashimoto（第 23 項）與 OpenAI（第 24 項）之後一個半月，見第 7 節的更正說明。
     * **出處**：[Harness design for long-running application development](https://www.anthropic.com/engineering/harness-design-long-running-apps)
 
 21. **iThome 鐵人賽：從 Prompt Engineering 到 Graph Engineering，Harness/Loop Engineering 是演進還是造詞？**（中文社群觀點，2026）：
     * **論點**：本文第 7 節五層架構表與「官方收編」判準的主要參考來源，提出「這些詞不是世代淘汰，而是一層包一層，工程關注點持續向上遷移」的結論。（原文網頁對自動化工具擋下直接讀取，本文引用內容為透過搜尋引擎索引摘要交叉比對而來，非逐字轉載，建議讀者直接參閱原文確認細節。）
+    * **出處**：[從 Prompt Engineering 到 Graph Engineering：Harness Engineering、Loop Engineering 是演進還是造詞？](https://ithelp.ithome.com.tw/articles/10397462)
+
+22. **Andrej Karpathy / Tobi Lütke：Context Engineering 的起點**：
+    * **論點**：Shopify CEO Tobi Lütke 在 X 上表達偏好「context engineering」勝過「prompt engineering」，六天後 Andrej Karpathy 跟進並給出被廣泛引用的定義：「filling the context window with just the right information for the next step」。是第 7 節時間線表格裡 Context Engineering 一列的直接來源。
+    * **出處**：[Andrej Karpathy on X (2025/6/25)](https://x.com/karpathy/status/1937902205765607626)
+
+23. **Mitchell Hashimoto: My AI Adoption Journey**（2026/2/5 發表）：
+    * **論點**：目前查證到「Harness Engineering」概念最早的公開文字紀錄。Hashimoto（HashiCorp 共同創辦人、Terraform／Vagrant 作者）提出的定義很直白：「每次發現 Agent 犯錯，就把解法工程化到環境裡，讓那個錯誤結構性地不可能再發生」。是第 7 節「源頭其實不是 Anthropic」更正說明的直接依據。
+    * **出處**：[My AI Adoption Journey](https://mitchellh.com/writing/my-ai-adoption-journey)
+
+24. **OpenAI: Harness engineering — leveraging Codex in an agent-first world**（2026/2/11 發表）：
+    * **論點**：Ryan Lopopolo 發表，把 Hashimoto 六天前才提出的概念正式寫成官方文章，記錄 OpenAI 團隊如何用「零人工手寫程式碼」在五個月內、超過 1,500 個 PR 全部由 Codex 撰寫／審查／合併，產出約百萬行程式碼，核心標語是「Humans steer. Agents execute.」。是把 Harness Engineering 從個人部落格「制度化」的關鍵一步。
+    * **出處**：[Harness engineering: leveraging Codex in an agent-first world](https://openai.com/index/harness-engineering/)
+
+25. **Martin Fowler（Birgitta Böckeler）: Harness engineering for coding agent users**（2026 年發表）：
+    * **論點**：目前針對 Harness Engineering 最嚴謹的具體框架，提出「Guides and Sensors」的分類：Guides 是行動前的引導（如 AGENTS.md、code mods、skills），Sensors 是事後偵測並回饋修正（如 linter、結構化測試、AI code review），並進一步分成 computational controls（確定性工具）與 inferential controls（LLM 語意判斷）。是第 7 節指出 Data Machi「Harness 這層對不太上」的判斷依據。
+    * **出處**：[Harness engineering for coding agent users](https://martinfowler.com/articles/harness-engineering.html)
     * **出處**：[從 Prompt Engineering 到 Graph Engineering：Harness Engineering、Loop Engineering 是演進還是造詞？](https://ithelp.ithome.com.tw/articles/10397462)
