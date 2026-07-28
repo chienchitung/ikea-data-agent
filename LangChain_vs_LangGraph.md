@@ -1,4 +1,5 @@
 # 從 LangChain 到 LangGraph：Multi-Agent 架構的演進之路
+*（涵蓋 LangGraph 架構設計、Multi-Agent 常見迷思、以及 2025–2026 AI Engineering 術語體系）*
 
 近年來，隨大型語言模型 (LLM) 能力的躍升，開發者們開始從「讓 LLM 單打獨鬥回答問題」，轉向「打造多個具備專業職能的 AI 智能體（Multi-Agent），讓它們互相協作」。
 
@@ -54,7 +55,7 @@
 
 ---
 
-## 3.5 2026 官方文件補充：LangGraph 不只是「畫流程圖」
+## 4. 2026 官方文件補充：LangGraph 不只是「畫流程圖」
 
 對照 LangGraph 官方文件，目前（2026）它被定位為一個**低階的 Agent Orchestration Runtime**，重點不只是把流程畫成節點與邊，而是讓長時間、可恢復、可觀測的 Agent 工作流可以進入 production。
 
@@ -102,7 +103,140 @@ LangChain / LangGraph 官方多 Agent 指南也提醒：不是每個複雜任務
 
 ---
 
-## 4. 結語：為什麼 Data Machi 專案要擁抱 LangGraph？
+## 5. 常見迷思：Multi-Agent 與 RAG 是一樣的東西嗎？
+
+許多人在打造 AI 應用時，常會把 **RAG (檢索增強生成)** 與 **Multi-Agent (多智能體協作)** 混為一談。雖然兩者都是為了解決 LLM 幻覺（Hallucination）與知識不足的問題，但它們在核心架構與能做的事情上有著決定性的不同。
+
+### RAG (Retrieval-Augmented Generation) - 「帶書考試的好學生」
+* **本質**：一種**單向的資訊檢索管道（Data Pipeline）**。
+* **運作模式**：接收問題 ➔ 把問題向量化 ➔ 去資料庫（如 FAISS、Pinecone）撈出前 5 篇相關文章 ➔ 把文章和問題一起丟給 LLM ➔ 生成最終答案。
+* **特點**：它是一個**有向無環圖 (DAG - Directed Acyclic Graph)**，流程永遠是往前走的，不能回頭。如果撈出來的 5 篇文章根本沒有答案，LLM 也只能瞎掰或是回答不知道。
+* **比喻**：就像一個圖書館員，你向他要資料，他去書架找幾本丟給你，然後就結案了。
+
+### Multi-Agent (如 LangGraph) - 「獨立思考的跨部門專案小組」
+* **本質**：一種**具備決策能力與輪迴反思的認知架構（Cognitive Architecture）**。
+* **運作模式**：Agent 接收問題 ➔ 自行思考（Reasoning）該怎麼辦 ➔ 決定呼叫 `RAG_Tool` 找規範 ➔ 發現 RAG 給的資料不夠 ➔ 決定換個關鍵字再查一次，或是決定去呼叫 `Trello_Tool` 直接問專案負責人 ➔ 統整資料 ➔ 生成最終答案。
+* **特點**：不僅限於「讀取（Read）」，它還可以「行動（Action/Write）」，例如更新卡片狀態、發送 Email。系統允許多次「大腦思考 ➔ 行動 ➔ 再思考」的**循環 (Cyclic Processing)**。
+* **比喻**：就像一個完整的專案辦公室。Data Machi（協調者）接到任務後，判斷該指派給 Document Agent (做 RAG)、Trello Agent (去看進度) 還是 Analyst Agent (去算報表)，甚至能審視小弟們的回報覺得不夠好，退件要求重做。
+
+> **小結**：**RAG 只是 Agent 手中的一項「工具（Tool）」**。在你的專案中，`search_document_base` 這個函式就是在執行 RAG；而 `coordinator.py` 和其他的 Agents 才是那個擁有「思考如何運用這項工具」大腦的主體。
+
+---
+
+## 6. 名詞釐清：Agentic AI 與 Multi-Agent 是一樣的嗎？（2026 觀點）
+
+在 2026 年的當下，產業溝通經常會聽到 **Agentic AI（具備代理能力的 AI）** 與 **Multi-Agent（多智能體系統）** 這兩個熱門詞彙。許多人會將它們混為一談，但它們在概念與技術層次上其實有著明顯的區別。
+
+### 什麼是 Agentic AI？（代理性 AI / 代理工作流）
+**Agentic AI 是一種「系統屬性」或「設計哲學」。**
+* 它指的是一個 AI 系統擁有「**自主性 (Autonomy)**」和「**行動力 (Agency)**」。
+* 如果一個語言模型不再只是被動地「一問一答」，而是能夠：
+  1. 主動理解使用者的模糊目標（規劃 Planning）。
+  2. 遇到錯誤時懂得暫停並反思（自我糾錯 Reflection）。
+  3. 自動去搜尋外部工具或操作周邊系統（工具使用 Tool Use）。
+* 那麼，這個系統就可以被稱為 **Agentic (具備代理性的)**。
+* **重點是**：即使是**單一個 LLM**，只要我們在外面幫它包上一層「思考 ➔ 嘗試 ➔ 觀察 ➔ 修正」的迴圈，它也是一個 Agentic AI！
+
+### 什麼是 Multi-Agent？（多智能體系統）
+**Multi-Agent 是一種「架構模式」或「實作方法」。**
+* 它指的是系統由「**多個獨立的 AI 節點（Agents）**」所組成。每個節點可能有不同的 Prompt、不同的工具權限，甚至底層用不同的 LLM 模型。
+* 這些 Agents 透過對話或特定的狀態機（例如 LangGraph）互相傳遞訊息、指派任務、審查彼此的產出。
+* **重點是**：它是為了**分工與降噪**而生的架構，專門對付那些「單一個 Agent 無法兼顧」的極度複雜任務。
+
+### 兩者的關係：如何互相作用？
+用一張圖來理解：**Multi-Agent 是實現強大 Agentic AI 的重要路徑之一，但不是唯一道路。**
+
+根據著名 AI 領袖吳恩達 (Andrew Ng) 等人在 2024–2026 年所確立的共識，實現 Agentic Workflows 主要有四大設計模式 (Design Patterns)：
+1. **Tool Use**（讓 AI 使用網路或 API，如你的 Confluence 搜尋）。
+2. **Reflection**（讓 AI 檢查自己是否寫錯了並重寫）。
+3. **Planning**（給 AI 複雜任務後，讓它自己先寫計畫書再逐步執行）。
+4. **Multi-Agent Collaboration**（👉 **多智能體協作，也就是你的 IKEA Data Agent 採用的架構**）。
+
+也就是說：**你的專案正在透過「Multi-Agent 架構」來打造出一個強大的「Agentic AI 系統」。**
+
+---
+
+## 7. Prompt、Context、Loop、Graph、Harness Engineering：是同一件事的五個層次
+
+2025–2026 開始，業界冒出一連串「XX Engineering」新詞——這一節整理目前搜尋到的最新討論，並回答一個實際的問題：**Data Machi 現在做的事，算不算 Graph Engineering？**
+
+### 五層定義
+
+這五個詞不是互相取代的「世代」，而是**一層包住一層**，各自關注不同的問題：
+
+| 層次 | 關注的問題 | 對應到 Data Machi |
+| :--- | :--- | :--- |
+| **Prompt Engineering** | 這一句話該怎麼寫，模型才聽得懂？ | 各 Agent 的 System Prompt（`backend/prompts/*.md`） |
+| **Context Engineering** | 這一次呼叫，模型「看得到」什麼？ | `messages` 組裝、`turn_context`、meeting context 的字數上限控制 |
+| **Loop Engineering** | 讓 AI 自主跑「觀察→執行→檢查→重試」到達成目標為止 | `should_continue` 條件邊構成的重試迴圈 |
+| **Graph Engineering** | 任務太複雜時，把多個 Agent／Loop 組織成一張有向圖 | `coordinator.py` 的 `StateGraph`（`agent`／`action` 節點 + 條件路由） |
+| **Harness Engineering** | 幫模型搭建防護欄、工具調用介面、驗證與監控環境，讓長時間自主任務不失控 | 回答查核（Zero Hallucination Policy）、`emit_progress` 可觀測性、`conversation_store` 狀態持久化——但還沒有正式的 generator/evaluator 驗證迴圈 |
+
+### 這是演進，還是社群造詞？
+
+這是個值得認真看待的問題，不必照單全收業界的行銷詞彙。台灣開發者社群（iThome 鐵人賽）有一篇文章直接把這個問題當標題：《從 Prompt Engineering 到 Graph Engineering：Harness Engineering、Loop Engineering 是演進還是造詞？》，給了一個具體的判準：
+
+> Graph Engineering 有沒有被官方收編——LangChain、Anthropic、OpenAI 任何一家發出「定義性文章」，這個詞就從一句反問升級成候選實踐；一直沒有，它多半會像大多數社群造詞一樣退場。
+
+以「Graph Engineering」來說，這個判準**已經被跨過了**：LangChain 官方部落格直接發過一篇《3 Years of Graph Engineering with LangGraph》，用這個詞描述 LangGraph 三年來一直在做的事（目前每月下載量超過 6500 萬次），只是這個「圖編排」的做法本身不是 2026 年才發明的——LangGraph 從 2023 年就長這樣，是詞彙現在才被明確拿出來命名、跟更簡單的「Loop」拉開距離。
+
+該篇文章最後的結論也偏向正面：這些不是「一代淘汰上一代」，而是**工程的關注點持續向上遷移**——從「控制模型輸出」走向「組織智能協作」，反映的是 AI 工程能力層級的真實上升，不是純粹的造詞遊戲。這也解釋了為什麼上表把 Loop 放在 Graph 前面而不是對立面：套用軟體工程師 David Khourshid 的說法，**「Loop 只是一種有向、循環的 Graph」（a loop is just a directed, cyclic graph）**——Loop 是 Graph 的簡化特例，Graph 則是把好幾個 Loop 連接成一個有平行分支、共享狀態的完整系統。
+
+### Harness Engineering：Anthropic 官方怎麼做的
+
+2026/3/24，Anthropic 工程團隊發表《Harness design for long-running application development》，直接示範了「Harness」這一層具體在做什麼——目標是讓 Claude 能自主跑長達數小時的軟體開發任務而不跑偏：
+
+* **三代理人架構**（Planner / Generator / Evaluator，靈感來自 GAN）：Generator 負責產出，Evaluator 扮演「懷疑論者」，依設計品質、原創性、工藝、功能性四項標準嚴格打分，甚至用 Playwright MCP 實際操作網頁後給回饋，一輪批評迴圈跑 5–15 次。
+* **Initializer agent**：讓多個 session 之間的長任務保持連貫，搭配 context reset、結構化 feature list、progress log，避免長任務中途「提早結案」或 context window 漂移。
+* Claude Code 內建的 `/goal` 指令，就是把這套 generator/evaluator 迴圈直接做成產品功能。
+
+**Graph 跟 Harness 的關係**：Harness 是比 Graph 更大的框——Graph（節點/邊/條件路由）通常是 Harness 裡負責控制流的那一層，Harness 還多了驗證迴圈、跨 session 狀態持久化、權限與可觀測性這些維運層的東西。
+
+### 對照 Data Machi：五層踩了幾層？
+
+把這套框架套回這個專案：**Prompt、Context、Loop、Graph 四層都已經扎實做了**（詳見上表），第五層 Harness 有雛形（回答查核、`emit_progress`、`conversation_store`）但還沒有正式的 generator/evaluator 驗證迴圈——如果未來想再往上一層走，這會是具體的下一步。
+
+---
+
+## 8. 展望未來：Multi-Agent 與 Agentic AI 的下一步發展趨勢
+
+當我們把架構穩固在 LangGraph（狀態機與工作流）之後，整個 AI 和 Multi-Agent 社群目前正在往以下幾個「最前沿」的方向發展。這些也是你的 IKEA Data Agent 未來可以考慮升級的藍圖：
+
+### 1. 跨出 API 限制：具身智能與電腦操作 (Computer Use / Agentic RPA)
+* **現狀**：目前的 Agent 只能透過我們寫好的 Python 程式碼 (如 API) 來去操作 Trello 或 Confluence。
+* **未來**：隨 Anthropic 推出 `Computer Use` API，Agent 可以直接「看著螢幕、控制滑鼠與鍵盤」去操作那些沒有 API 或老舊的企業內部 ERP 系統，像人類一樣打開瀏覽器、填寫表單、點擊下載。Agent 不再只是回答問題的「聊天機器人」，而是真正的「虛擬點擊工」。
+  *(💡 業界案例：例如 OpenClaw 這類自架式個人 Agent 平台，主打把 Agent 接到 WhatsApp/Telegram/Discord 等日常入口。不過此類工具因為可能操作本機檔案、帳號、訊息與外部服務，企業使用前必須先評估安全邊界、權限隔離與審核機制。)*
+
+### 2. 擁有長期記憶與個人化 (Long-term Memory & Personalization)
+* **現狀**：現在的 Agent（即便用了 LangGraph）通常只有「短期記憶 (Session State)」，瀏覽器一關、對話結束，它就失憶了。
+* **未來**：各大框架正在導入基礎建設級別的「長期記憶夾 (Memories / Checkpointers)」。例如，Data Machi 會記得「Jacky 上週都在查 DY 的合約，今天問『進度』時，高機率是在問 DY 專案」，甚至能自我更新提示詞，達成千人千面的專屬助理體驗。
+
+### 3. 液態與動態生成的團隊 (Swarm Architectures)
+* **現狀**：在 LangGraph 中，開發者必須在寫程式時預先定義好有幾個 Agent、誰負責什麼（靜態圖：Trello 節點 ➔ Document 節點）。
+* **未來**：如同 OpenAI 曾開源的 `Swarm` 教學型概念（現已由正式的 OpenAI Agents SDK 接手），未來的系統會變成「液態的」。遇到極度複雜的任務時，Coordinator 可能會**在運行中動態建立並呼叫新的下屬 Agent** 來幫忙，任務結束後再將它們銷毀。正式企業系統仍需要權限控管、觀測性、審核點與持久化狀態，不能只靠教育型原型。
+
+### 4. 異構模型群 (Hybrid / Heterogeneous Model Swarms)
+* **現狀**：目前整個專案可能都依賴同一個模型（例如 Gemini）。
+* **未來**：針對不同的 Agent 節點，指派「最適合的」模型。
+  * `Coordinator` 使用能力較強、推理與工具選擇更穩定的模型來做決策。
+  * `Analyst_Agent` 使用專精爬蟲或數理的小模型。
+  * `Document_Agent` 甚至可以直接跑在本地的微型模型，不僅可以大幅降低 API 成本，還能提高特定領域的反應速度。
+
+### 5. 終端機與程式碼級的自主數位員工 (CLI Agents)
+我們正在從「AI 給建議，人類打字」的 Copilot 時代，跨入「AI 自行承攬專案、直接改 Code」的 Autonomous Worker 時代。
+*(💡 業界實例：Claude Code、Codex CLI 等 coding agents。它們不只是一個聊天視窗，而是直接活在工程師的 Terminal / IDE / repo 裡面，能讀 codebase、下指令跑測試、修改檔案，並在人工審核後交付 patch 或 commit。)*
+
+### 6. 企業級 Agent OS (智能體作業系統)
+未來的企業不再需要手動起 uvicorn 或設定 Docker 來養自己的 Agent，而是會出現類似「Agent OS」的平台，開發者只需宣告哪些職能的 Agent 存在，系統會自動處理它們的長期記憶、權限控管、甚至跨企業不同 Agent 的對接與通訊協議（見第 10 節參考文獻第 13、16 項的 MCP／A2A 這類開放標準）。
+
+### 7. 別忘了潑一盆冷水：不是每個專案都該急著上馬
+Gartner 預測到 2027 年底前，超過 40% 的 agentic AI 專案會被取消，主因是成本失控、商業價值不明確、風險控管不足；報告也點出「**agent washing**」現象——許多廠商把既有的 AI 助理、RPA、聊天機器人重新包裝成「agentic」。這份數據跟第 4 節「避免為拆而拆」的提醒互相呼應：技術方向正確，不代表每個功能都該急著做成 Agent。
+
+> **總結**：從 AgentExecutor 走向 LangGraph，我們解決了 **「控制力與穩定度」** 的問題；而未來的發展，則是朝向 **「無限延長記憶、打破 API 邊界操作實體軟體、以及動態無人團隊」** 的方向邁進——但同時也要對「agent washing」保持警覺，AI 要真正成為數位世界中的數位員工 (Digital Co-workers)，靠的是紮實的工程，不是換個名詞。
+
+---
+
+## 9. 結語：為什麼 Data Machi 專案要擁抱 LangGraph？
 
 在你的 IKEA Data Agent 專案中，你設計了多個專業的工具（Trello, Confluence, Document, Analyst）以及非常嚴格的「轉派策略 (Cross-Check)」與「查無結果協議 (Empty Result Protocol)」。
 
@@ -126,29 +260,9 @@ workflow.add_edge("action", "agent")
 
 ---
 
-## 5. 常見迷思：Multi-Agent 與 RAG 是一樣的東西嗎？
+## 10. 參考文獻與技術共識（Reference & Literature）
 
-許多人在打造 AI 應用時，常會把 **RAG (檢索增強生成)** 與 **Multi-Agent (多智能體協作)** 混為一談。雖然兩者都是為了解決 LLM 幻覺（Hallucination）與知識不足的問題，但它們在核心架構與能做的事情上有著決定性的不同。
-
-### RAG (Retrieval-Augmented Generation) - 「帶書考試的好學生」
-* **本質**：一種**單向的資訊檢索管道（Data Pipeline）**。
-* **運作模式**：接收問題 ➔ 把問題向量化 ➔ 去資料庫（如 FAISS、Pinecone）撈出前 5 篇相關文章 ➔ 把文章和問題一起丟給 LLM ➔ 生成最終答案。
-* **特點**：它是一個**有向無環圖 (DAG - Directed Acyclic Graph)**，流程永遠是往前走的，不能回頭。如果撈出來的 5 篇文章根本沒有答案，LLM 也只能瞎掰或是回答不知道。
-* **比喻**：就像一個圖書館員，你向他要資料，他去書架找幾本丟給你，然後就結案了。
-
-### Multi-Agent (如 LangGraph) - 「獨立思考的跨部門專案小組」
-* **本質**：一種**具備決策能力與輪迴反思的認知架構（Cognitive Architecture）**。
-* **運作模式**：Agent 接收問題 ➔ 自行思考（Reasoning）該怎麼辦 ➔ 決定呼叫 `RAG_Tool` 找規範 ➔ 發現 RAG 給的資料不夠 ➔ 決定換個關鍵字再查一次，或是決定去呼叫 `Trello_Tool` 直接問專案負責人 ➔ 統整資料 ➔ 生成最終答案。
-* **特點**：不僅限於「讀取（Read）」，它還可以「行動（Action/Write）」，例如更新卡片狀態、發送 Email。系統允許多次「大腦思考 ➔ 行動 ➔ 再思考」的**循環 (Cyclic Processing)**。
-* **比喻**：就像一個完整的專案辦公室。Data Machi（協調者）接到任務後，判斷該指派給 Document Agent (做 RAG)、Trello Agent (去看進度) 還是 Analyst Agent (去算報表)，甚至能審視小弟們的回報覺得不夠好，退件要求重做。
-
-> **小結**：**RAG 只是 Agent 手中的一項「工具（Tool）」**。在你的專案中，`search_document_base` 這個函式就是在執行 RAG；而 `coordinator.py` 和其他的 Agents 才是那個擁有「思考如何運用這項工具」大腦的主體。
-
----
-
-## 6. 參考文獻與技術共識（Reference & Literature）
-
-這套「從單純 Prompt 到 RAG，再進化到 Multi-Agent 工作流」的發展思路，是目前 (2024–2025) 全球 AI 業界與學界的強烈共識。以下列出幾個權威來源供參考：
+這套「從單純 Prompt 到 RAG，再進化到 Multi-Agent 工作流，乃至 Graph／Harness Engineering」的發展思路，是目前 (2024–2026) 全球 AI 業界與學界的強烈共識。以下列出幾個權威來源供參考：
 
 1. **Andrew Ng (吳恩達) 的 Agentic Workflows 宣言**：
    * **論點**：在 2024 年的多場演講中，吳恩達明確指出「AI 代理工作流將帶來的進展，會比單純升級 LLM 基礎模型還要巨大」。他強調了四大代理模式：反思 (Reflection)、工具使用 (Tool Use)、規劃 (Planning) 與 多智能體協作 (Multi-agent collaboration)。
@@ -191,7 +305,7 @@ workflow.add_edge("action", "agent")
     * **出處**：[OpenAI Swarm](https://github.com/openai/swarm)
 
 11. **Anthropic: Introducing Computer Use**：
-    * **論點**：Anthropic 官方發表，讓 Claude 具備直接讀取螢幕截圖、控制滑鼠與鍵盤操作電腦介面的能力，是第 7、8 節「跨出 API 限制、具身電腦操作」討論的官方出處。目前仍是 beta 功能，正式導入前需評估權限隔離與審核機制。
+    * **論點**：Anthropic 官方發表，讓 Claude 具備直接讀取螢幕截圖、控制滑鼠與鍵盤操作電腦介面的能力，是第 8 節「跨出 API 限制、具身電腦操作」討論的官方出處。目前仍是 beta 功能，正式導入前需評估權限隔離與審核機制。
     * **出處**：[Introducing computer use, a new Claude 3.5 Sonnet, and Claude 3.5 Haiku](https://www.anthropic.com/news/3-5-models-and-computer-use)、[Computer use tool（技術文件）](https://platform.claude.com/docs/en/agents-and-tools/tool-use/computer-use-tool)
 
 12. **Claude Code（Anthropic 官方 CLI Coding Agent）**：
@@ -203,7 +317,7 @@ workflow.add_edge("action", "agent")
     * **出處**：[Introducing the Model Context Protocol](https://www.anthropic.com/news/model-context-protocol)、[Linux Foundation Announces the Formation of the Agentic AI Foundation (AAIF)](https://www.linuxfoundation.org/press/linux-foundation-announces-the-formation-of-the-agentic-ai-foundation)
 
 14. **Anthropic: Building Effective Agents**（2024 年 12 月發表，持續是 2025–2026 agent 設計模式領域被引用最多的文章之一）：
-    * **論點**：Anthropic 匯整與數十個團隊合作打造 LLM Agent 的實務經驗，明確區分「Workflow（預先寫死的程式路徑）」與「Agent（LLM 動態決定下一步）」，並提醒：多數成功案例用的是簡單、可組合的模式，而不是複雜框架。這正好呼應第 3.5 節第 5 點「避免為拆而拆」——不是每個任務都需要真正的 Multi-Agent。
+    * **論點**：Anthropic 匯整與數十個團隊合作打造 LLM Agent 的實務經驗，明確區分「Workflow（預先寫死的程式路徑）」與「Agent（LLM 動態決定下一步）」，並提醒：多數成功案例用的是簡單、可組合的模式，而不是複雜框架。這正好呼應第 4 節第 5 點「避免為拆而拆」——不是每個任務都需要真正的 Multi-Agent。
     * **出處**：[Building Effective Agents](https://www.anthropic.com/engineering/building-effective-agents)
 
 15. **OpenAI Agents SDK**（2025 年 3 月發表，取代第 10 項的 Swarm 成為正式 production 框架）：
@@ -219,81 +333,17 @@ workflow.add_edge("action", "agent")
     * **出處**：[agents.md（官方網站與規格）](https://agents.md/)
 
 18. **Gartner: 超過 40% 的 Agentic AI 專案將於 2027 年底前被取消**（2025/6/25 發布，持續是 2026 年業界討論的重要提醒）：
-    * **論點**：Gartner 預測，多數目前的 agentic AI 專案仍停留在早期實驗或概念驗證階段，成本失控、商業價值不明確、風險控管不足是主要取消原因；報告也點出「**agent washing**」現象——許多廠商把既有的 AI 助理、RPA、聊天機器人重新包裝成「agentic」，Gartner 估計數千家宣稱做 agentic AI 的廠商中，只有約 130 家是真正名符其實的。同一份報告也預測到 2028 年，33% 的企業軟體會內建 agentic AI（2024 年不到 1%），日常工作決策有 15% 會由 agentic AI 自主完成（2024 年為 0%）。這份數據是本文第 3.5 節「避免為拆而拆」與第 7、8 節樂觀展望之間很好的平衡提醒：技術方向正確，不代表每個專案都該急著上馬。
+    * **論點**：Gartner 預測，多數目前的 agentic AI 專案仍停留在早期實驗或概念驗證階段，成本失控、商業價值不明確、風險控管不足是主要取消原因；報告也點出「**agent washing**」現象——許多廠商把既有的 AI 助理、RPA、聊天機器人重新包裝成「agentic」，Gartner 估計數千家宣稱做 agentic AI 的廠商中，只有約 130 家是真正名符其實的。同一份報告也預測到 2028 年，33% 的企業軟體會內建 agentic AI（2024 年不到 1%），日常工作決策有 15% 會由 agentic AI 自主完成（2024 年為 0%）。這份數據是本文第 4 節「避免為拆而拆」與第 8 節樂觀展望之間很好的平衡提醒：技術方向正確，不代表每個專案都該急著上馬。
     * **出處**：[Gartner Predicts Over 40% of Agentic AI Projects Will Be Canceled by End of 2027](https://www.gartner.com/en/newsroom/press-releases/2025-06-25-gartner-predicts-over-40-percent-of-agentic-ai-projects-will-be-canceled-by-end-of-2027)
 
----
+19. **LangChain: 3 Years of Graph Engineering with LangGraph**（2026 年發表）：
+    * **論點**：LangChain 官方部落格直接用「Graph Engineering」一詞描述 LangGraph 三年來的實踐，也是第 7 節「演進還是造詞」判準（是否有官方定義性文章）被跨過的直接證據。文中也提到「Loop 只是一種有向、循環的 Graph」（a loop is just a directed, cyclic graph）——呼應第 7 節把 Loop 視為 Graph 的簡化特例，而不是對立概念。
+    * **出處**：[3 Years of Graph Engineering with LangGraph](https://www.langchain.com/blog/3-years-of-graph-engineering-with-langgraph)
 
-## 7. 展望未來：Multi-Agent 的下一步發展趨勢
+20. **Anthropic: Harness design for long-running application development**（2026/3/24 發表）：
+    * **論點**：第 7 節「Harness Engineering」小節的主要依據。示範用 Planner/Generator/Evaluator 三代理人架構（靈感來自 GAN）搭配 Initializer agent、context reset、progress log，讓 Claude 能自主完成長達數小時的軟體開發任務而不跑偏，並已內建成 Claude Code 的 `/goal` 指令。
+    * **出處**：[Harness design for long-running application development](https://www.anthropic.com/engineering/harness-design-long-running-apps)
 
-當我們把架構穩固在 LangGraph（狀態機與工作流）之後，整個 AI 和 Multi-Agent 社群目前正在往以下幾個「最前沿」的方向發展。這些也是你的 IKEA Data Agent 未來可以考慮升級的藍圖：
-
-### 1. 跨出 API 限制：具身智能與電腦操作 (Computer Use / UI Automation)
-* **現狀**：目前的 Agent 只能透過我們寫好的 Python 程式碼 (如 API) 來去操作 Trello 或 Confluence。
-* **未來**：隨 Anthropic 推出 `Computer Use` API，未來的 Agent 可以直接「看著螢幕、控制滑鼠與鍵盤」去操作那些沒有 API 或老舊的企業內部 ERP 系統。Agent 不再只是回答問題的「聊天機器人」，而是真正的「虛擬點擊工」。
-
-### 2. 擁有長期記憶與個人化 (Long-term Memory & Personalization)
-* **現狀**：現在的 Agent（即便用了 LangGraph）通常只有「短期記憶 (Session State)」，瀏覽器一關、對話結束，它就失憶了。
-* **未來**：各大框架正在導入基礎建設級別的「長期記憶夾 (Memories / Checkpointers)」。例如，Data Machi 會記得「Jacky 上週都在查 DY 的合約，今天問『進度』時，高機率是在問 DY 專案」，甚至能自我更新提示詞，達成千人千面的專屬助理體驗。
-
-### 3. 液態與動態生成的團隊 (Swarm Architectures)
-* **現狀**：在 LangGraph 中，開發者必須在寫程式時預先定義好有幾個 Agent、誰負責什麼（靜態圖：Trello 節點 ➔ Document 節點）。
-* **未來**：如同 OpenAI 曾開源的 `Swarm` 教學型概念，未來的系統會變成「液態的」。遇到極度複雜的任務時，Coordinator 可能會**在運行中動態建立並呼叫新的下屬 Agent** 來幫忙，任務結束後再將它們銷毀。需要注意的是，Swarm 本身定位偏教育與原型探索，不應直接視為 production 架構保證；正式企業系統仍需要權限控管、觀測性、審核點與持久化狀態。
-
-### 4. 異構模型群 (Hybrid / Heterogeneous Model Swarms)
-* **現狀**：目前整個專案可能都依賴同一個模型（例如 Gemini 2.5 Pro）。
-* **未來**：針對不同的 Agent 節點，指派「最適合的」模型。
-  * `Coordinator` 使用能力較強、推理與工具選擇更穩定的模型來做決策。
-  * `Analyst_Agent` 使用專精爬蟲或數理的小模型。
-  * `Document_Agent` 甚至可以直接跑在本地的微型模型（如 Llama-3-8B），不僅可以大幅降低 API 成本，還能提高特定領域的反應速度。
-
-> **總結**：從 AgentExecutor 走向 LangGraph，我們解決了 **「控制力與穩定度」** 的問題；而未來的發展，則是朝向 **「無限延長記憶、打破 API 邊界操作實體軟體、以及動態無人團隊」** 的方向邁進，AI 將真正成為數位世界中的數位員工 (Digital Co-workers)。
-
----
-
-## 8. 2026 最新趨勢解析：Agentic AI 與 Multi-Agent 是一樣的嗎？
-
-在 2026 年的當下，產業溝通經常會聽到 **Agentic AI（具備代理能力的 AI）** 與 **Multi-Agent（多智能體系統）** 這兩個熱門詞彙。許多人會將它們混為一談，但它們在概念與技術層次上其實有著明顯的區別。
-
-### 什麼是 Agentic AI？（代理性 AI / 代理工作流）
-**Agentic AI 是一種「系統屬性」或「設計哲學」。**
-* 它指的是一個 AI 系統擁有「**自主性 (Autonomy)**」和「**行動力 (Agency)**」。
-* 如果一個語言模型不再只是被動地「一問一答」，而是能夠：
-  1. 主動理解使用者的模糊目標（規劃 Planning）。
-  2. 遇到錯誤時懂得暫停並反思（自我糾錯 Reflection）。
-  3. 自動去搜尋外部工具或操作周邊系統（工具使用 Tool Use）。
-* 那麼，這個系統就可以被稱為 **Agentic (具備代理性的)**。
-* **重點是**：即使是**單一個 LLM**，只要我們在外面幫它包上一層「思考 ➔ 嘗試 ➔ 觀察 ➔ 修正」的迴圈，它也是一個 Agentic AI！
-
-### 什麼是 Multi-Agent？（多智能體系統）
-**Multi-Agent 是一種「架構模式」或「實作方法」。**
-* 它指的是系統由「**多個獨立的 AI 節點（Agents）**」所組成。每個節點可能有不同的 Prompt、不同的工具權限，甚至底層用不同的 LLM 模型。
-* 這些 Agents 透過對話或特定的狀態機（例如 LangGraph）互相傳遞訊息、指派任務、審查彼此的產出。
-* **重點是**：它是為了**分工與降噪**而生的架構，專門對付那些「單一個 Agent 無法兼顧」的極度複雜任務。
-
-### 兩者的關係：如何互相作用？
-用一張圖來理解：**Multi-Agent 是實現強大 Agentic AI 的重要路徑之一，但不是唯一道路。**
-
-根據著名 AI 領袖吳恩達 (Andrew Ng) 等人在 2024–2026 年所確立的共識，實現 Agentic Workflows 主要有四大設計模式 (Design Patterns)：
-1. **Tool Use**（讓 AI 使用網路或 API，如你的 Confluence 搜尋）。
-2. **Reflection**（讓 AI 檢查自己是否寫錯了並重寫）。
-3. **Planning**（給 AI 複雜任務後，讓它自己先寫計畫書再逐步執行）。
-4. **Multi-Agent Collaboration**（👉 **多智能體協作，也就是你的 IKEA Data Agent 採用的架構**）。
-
-也就是說：**你的專案正在透過「Multi-Agent 架構」來打造出一個強大的「Agentic AI 系統」。**
-
-### 2026 年 Agentic AI 的三大最前沿進展
-在 2026 年，單純的聊天或查資料已經不再是 Agentic AI 的終點，產業界正朝向以下三個實體級別的應用突破：
-
-1. **從 API 操作進化到 Agentic RPA (具身電腦操作)**：
-   早期的 Agent (如 2024 年) 只能依賴工程師寫好的 API 溝通；到了 2026 年，藉由像 Anthropic 的 Computer Use，Agentic AI 可以直接控制使用者的 Windows/macOS 畫面，像是人類一樣打開瀏覽器、填寫表單、點擊下載。
-   *(💡 業界案例：例如 OpenClaw 這類自架式個人 Agent 平台，主打把 Agent 接到 WhatsApp/Telegram/Discord 等日常入口。不過此類工具因為可能操作本機檔案、帳號、訊息與外部服務，企業使用前必須先評估安全邊界、權限隔離與審核機制。)*
-
-2. **終端機與程式碼級的自主數位員工 (CLI Agents)**：
-   我們正在從「AI 給建議，人類打字」的 Copilot 時代，跨入「AI 自行承攬專案、直接改 Code」的 Autonomous Worker 時代。
-   *(💡 業界實例：Claude Code、Codex CLI 等 coding agents。它們不只是一個聊天視窗，而是直接活在工程師的 Terminal / IDE / repo 裡面，能讀 codebase、下指令跑測試、修改檔案，並在人工審核後交付 patch 或 commit。)*
-
-3. **企業級 Agent OS (智能體作業系統)**：
-   未來的企業不再需要手動起 uvicorn 或設定 Docker 來養自己的 Agent，而是會出現類似「Agent OS」的平台，開發者只需宣告哪些職能的 Agent 存在，系統會自動處理它們的長期記憶、權限控管、甚至跨企業不同 Agent 的對接與通訊協議。
-
-> **結語**：不論是你的 `coordinator.py`、幫工程師寫扣的 **Claude Code**、還是幫你回訊息的 **OpenClaw**，它們背後的核心哲學都是一致的——賦予 AI「**思考、規劃與行動（行動包含修改檔案、打 API、點擊畫面）**」的能力。而要讓這些行動不失控，**Multi-Agent 工作流（如 LangGraph）** 就是目前最堅實的地基。
+21. **iThome 鐵人賽：從 Prompt Engineering 到 Graph Engineering，Harness/Loop Engineering 是演進還是造詞？**（中文社群觀點，2026）：
+    * **論點**：本文第 7 節五層架構表與「官方收編」判準的主要參考來源，提出「這些詞不是世代淘汰，而是一層包一層，工程關注點持續向上遷移」的結論。（原文網頁對自動化工具擋下直接讀取，本文引用內容為透過搜尋引擎索引摘要交叉比對而來，非逐字轉載，建議讀者直接參閱原文確認細節。）
+    * **出處**：[從 Prompt Engineering 到 Graph Engineering：Harness Engineering、Loop Engineering 是演進還是造詞？](https://ithelp.ithome.com.tw/articles/10397462)
