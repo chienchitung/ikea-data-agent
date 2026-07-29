@@ -258,9 +258,57 @@ workflow.add_conditional_edges("agent", should_continue)
 workflow.add_edge("action", "agent")
 ```
 
+畫成圖會更直觀——這就是上面那段程式碼實際跑起來的樣子：
+
+```mermaid
+flowchart TD
+    Start(["START"]) --> Agent["agent 節點\nLLM 決定下一步"]
+    Agent -->|"只有規劃文字、未呼叫工具"| Retry{"重試次數\n≤ 上限？"}
+    Retry -->|"是，退回重試"| Agent
+    Retry -->|"否，強制結束"| Finish(["END"])
+    Agent -->|"有 tool_calls"| Action["action 節點\nparallel_tool_node（並行執行）"]
+    Agent -->|"已產出最終答案"| Finish
+    Action -->|"ToolMessage"| Agent
+```
+
 `should_continue` 這條 Edge 就是第 1 節提到「LLM 固執己見、開發者難以強制介入」問題的具體解法：如果 LLM 呼叫了工具，路由到 `action` 執行；如果 LLM 只輸出了規劃文字、卻沒有真的呼叫工具（`_is_interim_response`），Python 會強制把對話送回 `agent` 重試，最多重試 `_MAX_INTERIM_RETRIES` 次，而不是任由模型用文字敷衍過關。這是程式邏輯（Edge）在把關，不是靠 Prompt 祈禱模型自律。
 
 這才是現今企業級 Multi-Agent 開發的主流共識：**不只要有聰明的 AI，更要有確定性的工程流程。**
+
+### 完整請求流程：一個 agent 節點，扁平的工具箱
+
+上面的 Graph 只畫出了 `agent`／`action` 這兩個節點內部的迴圈，還沒回答一個問題：Trello、Confluence、Document、Analyst 這幾個「Agent」實際上長在 Graph 的哪裡？答案是——**它們都不是獨立的 Graph 節點**，而是被打平成同一份工具清單，全部綁在同一個 `agent` 節點上（見第 4 節第 5 點「避免為拆而拆」）。這跟不少公開的 LangGraph 多代理圖（Supervisor 節點分派給各自獨立的 Agent 節點/子圖）長得不一樣，是刻意的選擇，不是簡化。下圖補上這整條路徑，從使用者訊息一路到回覆：
+
+```mermaid
+flowchart TD
+    U["使用者訊息"] --> Router["Turn-Context Router\nsuggest_clarifications()\n快速模型・Graph 之外"]
+    Router -->|"缺口會明顯影響查詢"| Clarify["釐清選項面板\n（不進入 Graph）"]
+    Router -->|"脈絡足夠，進入 Graph"| Agent2
+
+    subgraph SG["coordinator_executor（LangGraph StateGraph）"]
+        Agent2["agent 節點"]
+        Action2["action 節點\nparallel_tool_node"]
+        Agent2 -->|"tool_calls"| Action2
+        Action2 -->|"ToolMessage"| Agent2
+    end
+
+    Action2 -.->|"呼叫"| Trello["Trello 工具\nagents/trello.py"]
+    Action2 -.->|"呼叫"| Confluence["Confluence 工具\nagents/confluence.py"]
+    Action2 -.->|"呼叫"| Document["Document 工具\nagents/document.py"]
+    Action2 -.->|"呼叫"| Analyst["Analyst 工具\nagents/analyst.py"]
+
+    Analyst --> Tickets[("Request 工單\nGoogle Sheet")]
+    Analyst --> TW[("TW App Metrics\nGoogle Sheet")]
+    Analyst --> HK[("HK App Metrics\nGoogle Sheet")]
+
+    Agent2 -->|"最終答案"| Answer["回覆使用者"]
+
+    Meeting["會議記錄管線\nagents/meeting.py\n（獨立線性流程，不在 Graph 內）"]
+    U -.->|"上傳錄音"| Meeting
+    Meeting --> MeetingOut["逐字稿 + 會議記錄 .docx"]
+```
+
+會議記錄管線刻意畫在 Graph 外面，不是遺漏：`agents/meeting.py` 是由 FastAPI SSE 端點驅動的線性 pipeline（正規化音檔 → Groq Whisper 轉錄 → Gemini 生成結構化會議記錄），完全不會經過 `coordinator_executor`，跟其他四個工具域走的是不同的執行路徑。
 
 ---
 
