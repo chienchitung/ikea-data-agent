@@ -300,14 +300,47 @@ def _drop_empty_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df.loc[:, df.apply(lambda col: col.replace('', pd.NA).notna().any())]
 
 
+_GENERIC_DATE_NAME_HINTS = ['date', 'time', '日期', '時間']
+
+
 def _detect_date_columns(df: pd.DataFrame) -> list:
-    """針對已知的 Google Sheet 欄位，強制將日期欄位轉換為 datetime"""
-    # 已知日期欄位
-    date_cols = ['Creation Date', 'Start Date', 'Due Date', 'Modified']
-    existing_cols = [col for col in date_cols if col in df.columns]
+    """將日期欄位轉換為 datetime，回傳偵測到的欄位名稱清單。
+
+    先處理工單表已知的固定欄位名稱，再泛化偵測其他工作表（例如 TW/HK
+    App 指標表）裡看起來像日期的欄位——這些表的真實欄位名稱未知，不能
+    只認得工單表的 4 個固定名稱，否則這些表的日期篩選、月度統計、圖表
+    會整組默默失效（找不到日期欄位就直接跳過，不會報錯，容易被誤以為
+    是資料本身沒有對應時間範圍的資料）。"""
+    known_date_cols = ['Creation Date', 'Start Date', 'Due Date', 'Modified']
+    existing_cols = [col for col in known_date_cols if col in df.columns]
     for col in existing_cols:
         df[col] = pd.to_datetime(df[col], errors='coerce', format='mixed')
+
+    for col in df.columns:
+        if col in existing_cols:
+            continue
+        if not any(hint in str(col).lower() for hint in _GENERIC_DATE_NAME_HINTS):
+            continue
+        non_null = df[col].astype(str).str.strip().replace('', pd.NA).notna()
+        if non_null.sum() == 0:
+            continue
+        parsed = pd.to_datetime(df[col], errors='coerce', format='mixed')
+        # 欄名像日期還不夠——至少一半非空值真的能被解析成日期，才當作日期
+        # 欄位，避免把純文字欄位（例如「Update Notes」）誤判成日期欄位。
+        if parsed.notna().sum() / non_null.sum() >= 0.5:
+            df[col] = parsed
+            existing_cols.append(col)
+
     return existing_cols
+
+
+def _first_generic_date_column(df: pd.DataFrame) -> Optional[str]:
+    """退回機制：找任何已被 _detect_date_columns 轉換成 datetime 的欄位，
+    供沒有工單表那 4 個固定欄位名稱的工作表使用（例如 TW/HK App 指標表）。"""
+    for col in df.columns:
+        if pd.api.types.is_datetime64_any_dtype(df[col]):
+            return col
+    return None
 
 
 def _extract_date_range(query: str):
@@ -410,7 +443,10 @@ def _choose_month_date_column(df: pd.DataFrame, query: str) -> Optional[str]:
         actual_col = _resolve_column(df, col)
         if actual_col and pd.api.types.is_datetime64_any_dtype(df[actual_col]):
             return actual_col
-    return None
+
+    # 上面這份清單是工單表的固定欄位名稱；TW/HK App 指標表沒有這些欄位，
+    # 退回使用 _detect_date_columns 泛化偵測到的任何日期欄位。
+    return _first_generic_date_column(df)
 
 
 def _choose_filter_date_column(df: pd.DataFrame, query: str) -> Optional[str]:
@@ -430,7 +466,9 @@ def _choose_filter_date_column(df: pd.DataFrame, query: str) -> Optional[str]:
         actual_col = _resolve_column(df, col)
         if actual_col and pd.api.types.is_datetime64_any_dtype(df[actual_col]):
             return actual_col
-    return None
+
+    # 同上：退回泛化偵測到的日期欄位，讓 App 指標表也能套用日期區間篩選。
+    return _first_generic_date_column(df)
 
 
 def _wants_duration_reason_analysis(query: str) -> bool:

@@ -156,6 +156,41 @@ def test_unknown_region_returns_error_string_not_exception():
     print("PASS: an unknown region fails gracefully with an error string, not an unhandled exception")
 
 
+def test_date_range_filter_works_on_non_ticket_schema():
+    """
+    Regression test for a real bug report: a TW/HK App-metrics worksheet
+    (e.g. "06_App_reviews") has its own date column name (e.g. "Review
+    Date"), not one of the ticket sheet's fixed names ("Creation Date",
+    "Start Date", "Due Date", "Modified"). Before the generic date-column
+    fallback, _choose_filter_date_column() always returned None for such
+    sheets, so a "give me 2026 data" query silently skipped date filtering
+    entirely and fell through to an untruncated/oldest-first row dump --
+    the LLM then had to eyeball a partial table and could easily conclude
+    "no 2026 records" even when they existed further down the sheet.
+    """
+    records = (
+        [{"Review Date": "2021-06-09", "Rating": "3", "Comment": "old review"}] * 3
+        + [{"Review Date": "2026-06-15", "Rating": "5", "Comment": "new review"}] * 2
+    )
+    original = analyst._fetch_worksheet_records
+    analyst._fetch_worksheet_records = lambda name, region="HK": records
+    try:
+        output = analyst.query_worksheet_data.invoke({
+            "worksheet_name": "06_App_reviews",
+            "query_description": "2026年1月到2026年6月的評論",
+            "region": "HK",
+            "wants_detail_rows": True,
+        })
+    finally:
+        analyst._fetch_worksheet_records = original
+
+    assert "Total rows: 5" in output, output[:200]
+    assert "Date filter: 2026-01-01 to 2026-06-30 (Review Date), 2 rows" in output, output[:400]
+    assert "new review" in output
+    assert "old review" not in output
+    print("PASS: date-range filter auto-detects a non-ticket-schema date column (e.g. App-metrics 'Review Date')")
+
+
 def main_test():
     test_resolve_spreadsheet_key_covers_all_three_regions()
     test_fetch_worksheet_records_routes_to_the_right_spreadsheet()
@@ -163,6 +198,7 @@ def main_test():
     test_cache_key_is_isolated_per_region()
     test_list_worksheets_tool_routes_by_region()
     test_unknown_region_returns_error_string_not_exception()
+    test_date_range_filter_works_on_non_ticket_schema()
     print("analyst region-routing smoke tests passed")
 
 
