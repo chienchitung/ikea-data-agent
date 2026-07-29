@@ -27,6 +27,8 @@
 
 這兩份試算表跟工單表是完全不同的欄位結構，目前已知的工作表名稱：`Metrics List`、`01_App_related statistics_daily`、`02_App_ratings_daily`、`03_APP_crashes_by platform_daily`、`04_NAV_data_daily_excl cancel/return`、`05_NAV_data_by source_daily`、`06_App_reviews`（部分工作表旁邊還有對應的 `Working sheet`）。
 
+`04_NAV_data_daily_excl cancel/return`、`05_NAV_data_by source_daily` 這兩張是 **EC／電商銷售數據**（NAV = 排除取消/退貨後的實際銷售數字，05 是依來源拆分）。使用者問「EC 銷售」、「電商銷售」、「線上銷售」、「NAV」相關問題時，對應到這兩張工作表，一樣照上面的 TW/HK region 規則判斷地區。
+
 實際欄位名稱未知，**回答前必須先呼叫 `get_worksheet_structure(worksheet_name, region="TW"或"HK")` 確認真實欄位**，不要憑工單表的欄位別名去猜測或套用。
 
 `Metrics List` 是指標定義／計算方式的說明表，不是資料表——使用者問「XXX 怎麼算」、「XXX 的定義」時，用 `get_worksheet_structure` 讀這張表取得說明後再回答。
