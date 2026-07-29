@@ -45,4 +45,19 @@ describe('ChatMessage rendering', () => {
         // Inline usage should NOT get the block/display treatment.
         expect(document.querySelector('.katex-display')).toBeNull();
     });
+
+    it('renders a literal <br> inside a table cell as an actual line break', async () => {
+        renderMessage(
+            '| 項目 | 具體行動 |\n' +
+            '| --- | --- |\n' +
+            '| 1 | 排查購物車 403 錯誤。<br>2. 修復行動支付跳轉 |\n'
+        );
+
+        const cell = await screen.findByText(/排查購物車 403 錯誤/);
+        // The literal "<br>" text must not survive into the rendered cell —
+        // it should have become a real <br> element splitting the content.
+        expect(cell.textContent).not.toContain('<br>');
+        expect(cell.querySelector('br')).not.toBeNull();
+        expect(screen.getByText(/修復行動支付跳轉/)).toBeInTheDocument();
+    });
 });

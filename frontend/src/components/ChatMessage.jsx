@@ -424,7 +424,47 @@ function InteractiveChart({ code }) {
 }
 
 // ── Markdown components override ──────────────────────────
+// GFM table cells can't contain a real newline (it would break the row),
+// so the model sometimes falls back to a literal "<br>" to force a line
+// break inside a cell (e.g. numbering multiple action steps in one cell).
+// react-markdown doesn't parse embedded raw HTML by default (rehype-raw
+// isn't in the pipeline — see the ReactMarkdown call below), so that text
+// renders as the literal string "<br>" instead of an actual line break.
+// Splitting on it here, scoped to table cells only, fixes that without
+// turning on general raw-HTML rendering (which would need sanitizing to
+// stay XSS-safe and risks interfering with the KaTeX math pipeline).
+function renderWithLineBreaks(children) {
+    const nodes = Array.isArray(children) ? children : [children];
+    const result = [];
+    nodes.forEach((node, index) => {
+        if (typeof node !== 'string') {
+            result.push(node);
+            return;
+        }
+        const parts = node.split(/<br\s*\/?>/gi);
+        parts.forEach((part, partIndex) => {
+            if (part) result.push(part);
+            if (partIndex < parts.length - 1) {
+                result.push(<br key={`br-${index}-${partIndex}`} />);
+            }
+        });
+    });
+    return result;
+}
+
 const markdownComponents = {
+    td: (props) => {
+        const cellProps = { ...props };
+        delete cellProps.node;
+        delete cellProps.children;
+        return <td {...cellProps}>{renderWithLineBreaks(props.children)}</td>;
+    },
+    th: (props) => {
+        const cellProps = { ...props };
+        delete cellProps.node;
+        delete cellProps.children;
+        return <th {...cellProps}>{renderWithLineBreaks(props.children)}</th>;
+    },
     a: (props) => {
         const anchorProps = { ...props };
         delete anchorProps.node;
