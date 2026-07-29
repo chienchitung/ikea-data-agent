@@ -842,7 +842,7 @@ function App() {
         const sorted = conversations.slice().sort((a, b) => {
             if (a.pinned && !b.pinned) return -1;
             if (!a.pinned && b.pinned) return 1;
-            return b.createdAt - a.createdAt;
+            return (b.updatedAt || b.createdAt) - (a.updatedAt || a.createdAt);
         });
         const query = convSearchQuery.trim().toLowerCase();
         if (!query) return sorted.map((conv) => ({ conv, snippet: null }));
@@ -1688,7 +1688,7 @@ function App() {
                                                 .sort((a, b) => {
                                                     if (a.pinned && !b.pinned) return -1;
                                                     if (!a.pinned && b.pinned) return 1;
-                                                    return b.createdAt - a.createdAt;
+                                                    return (b.updatedAt || b.createdAt) - (a.updatedAt || a.createdAt);
                                                 })
                                                 .map(conv => {
                                                     const isLoading = loadingConvIds.has(conv.id);
@@ -1720,7 +1720,7 @@ function App() {
                                                                 <p className="text-xs text-[#767676] mt-0.5">
                                                                     {isLoading ? (
                                                                         <span className="text-[#0058A3] font-medium">Responding…</span>
-                                                                    ) : formatRelativeTime(conv.createdAt)}
+                                                                    ) : formatRelativeTime(conv.updatedAt || conv.createdAt)}
                                                                 </p>
                                                             </div>
 
@@ -2437,7 +2437,7 @@ function App() {
                                         <div className="flex-1 min-w-0">
                                             <p className="text-sm font-medium text-[#111111] truncate">{conv.title}</p>
                                             <p className="text-xs text-[#767676] mt-0.5 truncate">
-                                                {snippet || formatRelativeTime(conv.createdAt)}
+                                                {snippet || formatRelativeTime(conv.updatedAt || conv.createdAt)}
                                             </p>
                                         </div>
                                     </button>
