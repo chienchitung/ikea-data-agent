@@ -46,6 +46,29 @@ describe('ChatMessage rendering', () => {
         expect(document.querySelector('.katex-display')).toBeNull();
     });
 
+    it('renders two currency amounts as plain text, not as an accidental math span', async () => {
+        renderMessage(
+            'Total Sales：4,510,459（Web Sales $2,891,368 / App Sales $1,619,091）'
+        );
+
+        // Both full amounts must appear as plain text...
+        expect(await screen.findByText(/Web Sales \$2,891,368/)).toBeInTheDocument();
+        expect(screen.getByText(/App Sales \$1,619,091/)).toBeInTheDocument();
+        // ...and remark-math must never have swallowed the text between the
+        // two "$" into a KaTeX span (the reported bug: "2,891,368 / App
+        // Sales" rendered in KaTeX's italic math font).
+        expect(document.querySelector('.katex')).toBeNull();
+    });
+
+    it('still renders genuine $$formula$$ math even in a message that also has plain currency', async () => {
+        renderMessage('營收 $1,000 元，公式：$$x = \\frac{a}{b}$$');
+
+        await waitFor(() => {
+            expect(document.querySelector('.katex')).not.toBeNull();
+        });
+        expect(screen.getByText(/\$1,000 元/)).toBeInTheDocument();
+    });
+
     it('renders a literal <br> inside a table cell as an actual line break', async () => {
         renderMessage(
             '| 項目 | 具體行動 |\n' +

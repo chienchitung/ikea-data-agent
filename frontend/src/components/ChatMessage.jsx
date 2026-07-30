@@ -8,7 +8,7 @@ import remarkCjkFriendly from 'remark-cjk-friendly';
 import clsx from 'clsx';
 import { Copy, Edit2, Check, BarChart3, LineChart, PieChart } from 'lucide-react';
 import assistantAvatar from '../assets/img/ikea-assistant.webp';
-import { normalizeInlineDisplayMath } from '../utils/mathText';
+import { normalizeInlineDisplayMath, escapeStrayDollarSigns } from '../utils/mathText';
 
 // remark-math/rehype-katex/katex 一起打包大約 250KB+（KaTeX 本體 + 字型），
 // 但大多數回答完全沒有數學公式——不該讓每個使用者都下載這包只為了聊天。
@@ -659,7 +659,7 @@ export function ChatMessage({ message, userAvatar, debugMode = false, onUpdate, 
                                 rehypePlugins={shouldRenderMath ? [mathPlugins.rehypeKatex] : []}
                                 components={markdownComponents}
                             >
-                                {preprocessContent(normalizeInlineDisplayMath(message.content))}
+                                {preprocessContent(normalizeInlineDisplayMath(escapeStrayDollarSigns(message.content)))}
                             </ReactMarkdown>
                         </div>
                     )}
