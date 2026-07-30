@@ -134,6 +134,13 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
                         const audioContext = new AudioContext();
                         audioContextRef.current = audioContext;
                         const destination = audioContext.createMediaStreamDestination();
+                        // Both sources are mono voice, so mix down to one
+                        // channel explicitly -- a MediaStreamAudioDestinationNode
+                        // otherwise defaults to stereo once two sources are
+                        // connected to it, unlike the mic-only path (which stays
+                        // mono end to end), for no benefit here.
+                        destination.channelCount = 1;
+                        destination.channelCountMode = 'explicit';
                         audioContext.createMediaStreamSource(micStream).connect(destination);
                         audioContext.createMediaStreamSource(new MediaStream([displayAudioTrack])).connect(destination);
                         recordingStream = destination.stream;
