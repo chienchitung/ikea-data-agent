@@ -201,6 +201,42 @@ function CodeBlock({ language, code }) {
     );
 }
 
+// Large chart values (e.g. sales in the millions) are hard to scan as raw
+// digits, and a long unformatted number can widen a hover tooltip enough to
+// clip against the chart card's edge. Compact past the usual "hard to read"
+// thresholds; a moderate value (e.g. a single day's order count, typically
+// hundreds to a few thousand) stays as plain digits with thousand
+// separators instead of being force-compacted into an awkward "1.5K" --
+// the 10K floor for "K" (not 1K) is specifically so that range reads as a
+// real number rather than getting compacted just because it crossed 1,000.
+function formatChartValue(value) {
+    if (!Number.isFinite(value)) return String(value);
+    const abs = Math.abs(value);
+    if (abs >= 1_000_000) {
+        return `${trimTrailingZero((value / 1_000_000).toFixed(1))}M`;
+    }
+    if (abs >= 10_000) {
+        return `${trimTrailingZero((value / 1_000).toFixed(1))}K`;
+    }
+    return value.toLocaleString('en-US');
+}
+
+function trimTrailingZero(str) {
+    return str.endsWith('.0') ? str.slice(0, -2) : str;
+}
+
+// The tooltip is horizontally centered on the hovered point by default
+// (translateX(-50%)) -- fine in the middle of the chart, but a point near
+// either edge centers a (possibly wide, e.g. the combo chart's two-metric
+// tooltip) box partly outside the chart card, which clips it since
+// .chart-card has overflow: hidden for its rounded corners. Flip the
+// anchor near the edges instead of always centering.
+function tooltipTransform(xPercent) {
+    if (xPercent < 15) return 'translate(0%, calc(-100% - 12px))';
+    if (xPercent > 85) return 'translate(-100%, calc(-100% - 12px))';
+    return 'translate(-50%, calc(-100% - 12px))';
+}
+
 // Combo format (two metrics sharing one x-axis, e.g. Sales as bars + Orders
 // as a line): { series: [{key, name, type: 'bar'}, {key, name, type: 'line'}],
 // data: [{label, [barKey]: num, [lineKey]: num}, ...] }. Distinct from the
@@ -362,19 +398,23 @@ function ComboChart({ spec }) {
                             ))}
                         </svg>
                     </div>
-                    {hovered && (
-                        <div
-                            className="chart-tooltip"
-                            style={{
-                                left: `${Math.min(94, Math.max(6, (hovered.x / width) * 100))}%`,
-                                top: `${(hovered.y / height) * 100}%`,
-                            }}
-                        >
-                            <strong>{hovered.item.label}</strong>
-                            <span>{spec.barName}: {hovered.item.barValue}</span>
-                            <span>{spec.lineName}: {hovered.item.lineValue}</span>
-                        </div>
-                    )}
+                    {hovered && (() => {
+                        const xPercent = (hovered.x / width) * 100;
+                        return (
+                            <div
+                                className="chart-tooltip"
+                                style={{
+                                    left: `${Math.min(98, Math.max(2, xPercent))}%`,
+                                    top: `${(hovered.y / height) * 100}%`,
+                                    transform: tooltipTransform(xPercent),
+                                }}
+                            >
+                                <strong>{hovered.item.label}</strong>
+                                <span>{spec.barName}: {formatChartValue(hovered.item.barValue)}</span>
+                                <span>{spec.lineName}: {formatChartValue(hovered.item.lineValue)}</span>
+                            </div>
+                        );
+                    })()}
                 </div>
             </div>
             <div className="chart-legend">
@@ -439,7 +479,7 @@ function InteractiveChart({ code }) {
                     return (
                         <g key={item.label} onMouseEnter={() => setHovered(anchor)} onMouseLeave={() => setHovered(null)}>
                             <rect x={x} y={y} width={barWidth} height={barHeight} rx="3" fill={fill} className="chart-bar" />
-                            <text x={x + barWidth / 2} y={y - 6} textAnchor="middle" className="chart-value">{item.value}</text>
+                            <text x={x + barWidth / 2} y={y - 6} textAnchor="middle" className="chart-value">{formatChartValue(item.value)}</text>
                             <text x={x + barWidth / 2} y={padding.top + chartHeight + 18} textAnchor="middle" className="chart-label">
                                 {item.label.length > 10 ? `${item.label.slice(0, 10)}…` : item.label}
                             </text>
@@ -515,7 +555,7 @@ function InteractiveChart({ code }) {
                         />
                     );
                 })}
-                <text x={cx} y={cy} textAnchor="middle" className="chart-total">{total}</text>
+                <text x={cx} y={cy} textAnchor="middle" className="chart-total">{formatChartValue(total)}</text>
                 <text x={cx} y={cy + 20} textAnchor="middle" className="chart-label">total</text>
             </svg>
         );
@@ -526,7 +566,7 @@ function InteractiveChart({ code }) {
             <div className="chart-header">
                 <div>
                     <p className="chart-title">{spec.title}</p>
-                    <p className="chart-subtitle">{spec.data.length} categories · total {total}</p>
+                    <p className="chart-subtitle">{spec.data.length} categories · total {formatChartValue(total)}</p>
                 </div>
                 <div className="chart-controls" aria-label="Chart type">
                     {allowedTypes.includes('bar') && <button type="button" className={selectedType === 'bar' ? 'active' : ''} onClick={() => setActiveType('bar')} title="Bar chart"><BarChart3 size={16} /></button>}
@@ -541,18 +581,22 @@ function InteractiveChart({ code }) {
                         {selectedType === 'line' && renderLineChart()}
                         {selectedType === 'pie' && renderPieChart()}
                     </div>
-                    {hovered && (
-                        <div
-                            className="chart-tooltip"
-                            style={{
-                                left: `${Math.min(94, Math.max(6, (hovered.x / width) * 100))}%`,
-                                top: `${(hovered.y / height) * 100}%`,
-                            }}
-                        >
-                            <strong>{hovered.label}</strong>
-                            <span>{hovered.value}</span>
-                        </div>
-                    )}
+                    {hovered && (() => {
+                        const xPercent = (hovered.x / width) * 100;
+                        return (
+                            <div
+                                className="chart-tooltip"
+                                style={{
+                                    left: `${Math.min(98, Math.max(2, xPercent))}%`,
+                                    top: `${(hovered.y / height) * 100}%`,
+                                    transform: tooltipTransform(xPercent),
+                                }}
+                            >
+                                <strong>{hovered.label}</strong>
+                                <span>{formatChartValue(hovered.value)}</span>
+                            </div>
+                        );
+                    })()}
                 </div>
             </div>
             {!isSequential && (

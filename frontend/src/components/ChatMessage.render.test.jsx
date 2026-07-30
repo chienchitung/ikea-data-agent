@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { ChatMessage } from './ChatMessage';
 
 function renderMessage(content, role = 'assistant') {
@@ -96,6 +96,57 @@ describe('ChatMessage rendering', () => {
         // the bar/line/pie toggle buttons from the single-metric chart must
         // not appear here.
         expect(document.querySelector('.chart-controls')).toBeNull();
+    });
+
+    it('formats large chart values compactly and moderate ones with thousand separators', async () => {
+        const chartSpec = {
+            title: 'Sales by Channel',
+            type: 'bar',
+            xKey: 'label',
+            yKey: 'value',
+            data: [
+                { label: 'Web', value: 19418458 },
+                { label: 'App', value: 1500 },
+            ],
+        };
+        renderMessage('```chart\n' + JSON.stringify(chartSpec) + '\n```');
+
+        expect(await screen.findByText('19.4M')).toBeInTheDocument();
+        expect(screen.getByText('1,500')).toBeInTheDocument();
+    });
+
+    it('anchors the combo chart tooltip away from center near the edges so it cannot clip off the card', async () => {
+        const chartSpec = {
+            title: 'EC Sales & Orders',
+            xKey: 'label',
+            series: [
+                { key: 'Sales', name: 'Sales', type: 'bar' },
+                { key: 'Orders', name: 'Orders', type: 'line' },
+            ],
+            isSequential: true,
+            data: [
+                { label: '2026-01', Sales: 19418458, Orders: 10680239 },
+                { label: '2026-02', Sales: 15000000, Orders: 9000000 },
+            ],
+        };
+        renderMessage('```chart\n' + JSON.stringify(chartSpec) + '\n```');
+        await screen.findByText('EC Sales & Orders');
+
+        // The first bar sits near the chart's left edge — centering a wide
+        // two-metric tooltip on it (the old behavior) would push part of it
+        // past the card's boundary and clip it.
+        fireEvent.mouseEnter(document.querySelector('.chart-bar'));
+
+        const tooltip = await waitFor(() => {
+            const el = document.querySelector('.chart-tooltip');
+            expect(el).not.toBeNull();
+            return el;
+        });
+        expect(tooltip.style.transform).not.toContain('-50%');
+        // Values must be compacted (readable + short enough not to force
+        // the tooltip wide), not raw unformatted digits.
+        expect(tooltip.textContent).toContain('19.4M');
+        expect(tooltip.textContent).toContain('10.7M');
     });
 
     it('renders a literal <br> inside a table cell as an actual line break', async () => {
