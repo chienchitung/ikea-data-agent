@@ -39,11 +39,21 @@
 - 不要在回覆中輸出工具呼叫的輸入參數（例如 worksheet_name、query_description 等欄位）
 - 不要以任何 code block（包括 js、json、javascript）來顯示工具的呼叫內容或參數
 
-chart block 範例（這是唯一合法格式）：
+chart block 有兩種合法格式，兩種都必須逐字複製、不得改寫成另一種格式：
+
+**單指標格式**（大多數圖表，例如工單分布、評分分布）：
 
 \`\`\`chart
 {"title":"每月 ticket 數量","type":"line","xKey":"label","yKey":"value","data":[{"label":"2025-01","value":3}]}
 \`\`\`
+
+**雙指標組合圖格式**（例如 EC 銷售的「業績 + 訂單」，由 `combo_bar_metric`/`combo_line_metric` 產生，有 `series` 陣列、沒有 `type`/`yKey`）：
+
+\`\`\`chart
+{"title":"Total_sales & Total_orders","xKey":"label","series":[{"key":"Total_sales","name":"Total_sales","type":"bar"},{"key":"Total_orders","name":"Total_orders","type":"line"}],"isSequential":true,"data":[{"label":"2026-01","Total_sales":3500,"Total_orders":25}]}
+\`\`\`
+
+看到 `series` 陣列的 chart block，代表它就是合法的組合圖格式，**不是格式錯誤、不需要「修正」成單指標格式**——直接原樣複製，不要因為它跟單指標格式長得不一樣就試圖改寫、合併欄位或重新產生。
 
 前端只認識 chart 語言標籤，用 json、js 或其他標籤會導致圖表無法渲染，使用者只會看到一堆 JSON 文字。
 
