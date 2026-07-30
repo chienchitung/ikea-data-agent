@@ -432,6 +432,13 @@ function App() {
     const currentConvIdRef = useRef(null);
     const conversationsRef = useRef([]);
     const messagesRef = useRef([]);
+    // Lags one render behind currentConvId (unlike currentConvIdRef, which
+    // switchConversation() updates eagerly, in sync with the state setters)
+    // so the messages-save effect below can tell "messages changed because
+    // the user switched to a different, already-saved conversation" apart
+    // from "messages changed because this conversation's content actually
+    // changed" -- see that effect for why the distinction matters.
+    const lastSavedConvIdRef = useRef(null);
     const recognitionRef = useRef(null);
     const speechBaseInputRef = useRef("");
     const speechTranscriptRef = useRef("");
@@ -509,8 +516,23 @@ function App() {
     }, [documents, conversations]);
 
     // ── messages 變動時自動存檔 ───────────────────────────
+    // switchConversation() loads an existing conversation's own messages
+    // into this same `messages` state var, which fires this effect exactly
+    // like a genuine content change would -- without the isSwitch check
+    // below, merely clicking an older conversation in the sidebar stamped
+    // it with a fresh updatedAt and bounced it to the top of the
+    // (activity-sorted) list, even though nothing about it actually changed.
     useEffect(() => {
+        // No `!== null` guard: the very first time this effect sees a real
+        // currentConvId (e.g. resuming the last-open conversation on page
+        // load) is exactly the same kind of "just switched into view, no
+        // new content" case as clicking a different conversation, so it
+        // must skip the save the same way.
+        const isSwitch = lastSavedConvIdRef.current !== currentConvId;
+        lastSavedConvIdRef.current = currentConvId;
+
         if (messages.length === 0) return;
+        if (isSwitch) return;
 
         setConversations(prev => {
             let updated;
