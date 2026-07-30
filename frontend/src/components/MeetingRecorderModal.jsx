@@ -33,6 +33,16 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
     const [recordedUrl, setRecordedUrl] = useState(null);
     const [isRecording, setIsRecording] = useState(false);
     const [recordingSeconds, setRecordingSeconds] = useState(0);
+    // Mic-only recording never picks up the other side of an online meeting
+    // when the user is on headphones (their audio never reaches the room's
+    // air, so the mic can't catch it). This opts into also capturing a
+    // shared browser tab's audio (e.g. the Meet/Teams tab) and mixing it
+    // with the mic — see startRecording(). Only reliably supported in
+    // Chrome/Edge, and only for meetings running as a browser tab (not a
+    // desktop app), so it's an opt-in, not the default.
+    const [includeTabAudio, setIncludeTabAudio] = useState(false);
+    const [tabAudioNotice, setTabAudioNotice] = useState('');
+    const tabAudioSupported = typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getDisplayMedia;
 
     const [meetingTitle, setMeetingTitle] = useState('');
     const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
@@ -53,16 +63,36 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
 
     const mediaRecorderRef = useRef(null);
     const streamRef = useRef(null);
+    const displayStreamRef = useRef(null);
+    const audioContextRef = useRef(null);
     const chunksRef = useRef([]);
     const timerRef = useRef(null);
     const elapsedTimerRef = useRef(null);
     const abortControllerRef = useRef(null);
 
+    // Releases every capture resource a recording may have acquired: the mic
+    // stream (always), and — only when includeTabAudio was used — the shared
+    // tab's stream and the AudioContext that mixed the two together. Stopping
+    // tracks on destination.stream (the mixed output) wouldn't release the
+    // underlying mic/tab hardware capture; that requires stopping tracks on
+    // the original streams themselves, which is why both are kept in
+    // separate refs instead of only tracking the stream MediaRecorder sees.
+    const releaseRecordingResources = () => {
+        streamRef.current?.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
+        displayStreamRef.current?.getTracks().forEach((track) => track.stop());
+        displayStreamRef.current = null;
+        if (audioContextRef.current) {
+            audioContextRef.current.close().catch(() => {});
+            audioContextRef.current = null;
+        }
+    };
+
     useEffect(() => {
         return () => {
             clearInterval(timerRef.current);
             clearInterval(elapsedTimerRef.current);
-            streamRef.current?.getTracks().forEach((track) => track.stop());
+            releaseRecordingResources();
             if (recordedUrl) URL.revokeObjectURL(recordedUrl);
             abortControllerRef.current?.abort();
         };
@@ -78,14 +108,49 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
 
     const startRecording = async () => {
         setErrorMessage('');
+        setTabAudioNotice('');
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            streamRef.current = stream;
+            const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            streamRef.current = micStream;
             chunksRef.current = [];
+
+            let recordingStream = micStream;
+
+            if (includeTabAudio && tabAudioSupported) {
+                try {
+                    // video: true is required for Chrome's tab picker to offer
+                    // "Chrome Tab" as a source at all (it's the only source
+                    // type that exposes a "Share tab audio" checkbox) — the
+                    // video track itself is immediately discarded below since
+                    // only the audio is wanted.
+                    const displayStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+                    displayStream.getVideoTracks().forEach((track) => track.stop());
+                    const displayAudioTrack = displayStream.getAudioTracks()[0];
+
+                    if (!displayAudioTrack) {
+                        setTabAudioNotice('The shared source had no audio (pick "Chrome Tab" and check "Share tab audio" next time) — only your microphone was recorded.');
+                    } else {
+                        displayStreamRef.current = displayStream;
+                        const audioContext = new AudioContext();
+                        audioContextRef.current = audioContext;
+                        const destination = audioContext.createMediaStreamDestination();
+                        audioContext.createMediaStreamSource(micStream).connect(destination);
+                        audioContext.createMediaStreamSource(new MediaStream([displayAudioTrack])).connect(destination);
+                        recordingStream = destination.stream;
+                    }
+                } catch (displayError) {
+                    // Cancelling the share picker or denying permission lands
+                    // here too — that's a normal choice, not a hard failure,
+                    // so recording continues with the mic alone instead of
+                    // aborting the whole thing.
+                    console.error('Tab/system audio capture failed or was cancelled:', displayError);
+                    setTabAudioNotice('Could not capture the meeting audio (permission denied or cancelled) — only your microphone was recorded.');
+                }
+            }
 
             const mimeType = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4']
                 .find((candidate) => window.MediaRecorder?.isTypeSupported?.(candidate));
-            const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+            const recorder = mimeType ? new MediaRecorder(recordingStream, { mimeType }) : new MediaRecorder(recordingStream);
 
             recorder.ondataavailable = (e) => {
                 if (e.data.size > 0) chunksRef.current.push(e.data);
@@ -95,8 +160,7 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
                 discardRecording();
                 setRecordedBlob(blob);
                 setRecordedUrl(URL.createObjectURL(blob));
-                streamRef.current?.getTracks().forEach((track) => track.stop());
-                streamRef.current = null;
+                releaseRecordingResources();
             };
 
             recorder.start();
@@ -107,6 +171,7 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
         } catch (error) {
             console.error('Microphone access failed:', error);
             setErrorMessage('Could not access the microphone. Please allow microphone permission in your browser and try again.');
+            releaseRecordingResources();
         }
     };
 
@@ -382,6 +447,25 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
                         <div className="mb-4 flex flex-col items-center gap-3 py-4">
                             {!recordedBlob ? (
                                 <>
+                                    {!isRecording && (
+                                        <div className="w-full max-w-xs text-center">
+                                            <label className="flex items-center justify-center gap-2 text-xs text-[#484848]">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={includeTabAudio}
+                                                    onChange={(e) => setIncludeTabAudio(e.target.checked)}
+                                                    disabled={!tabAudioSupported}
+                                                    className="rounded border-[#DFDFDF]"
+                                                />
+                                                Also capture an online meeting's audio (share a browser tab)
+                                            </label>
+                                            <p className="mt-1 text-[11px] text-[#767676]">
+                                                {tabAudioSupported
+                                                    ? 'Recording your mic alone misses the other side if you\'re on headphones. Chrome/Edge only — when prompted, pick the meeting\'s browser tab and check "Share tab audio".'
+                                                    : 'Not supported in this browser — try Chrome or Edge, with the meeting open in a browser tab.'}
+                                            </p>
+                                        </div>
+                                    )}
                                     <button
                                         type="button"
                                         onClick={isRecording ? stopRecording : startRecording}
@@ -397,6 +481,11 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
                                 </>
                             ) : (
                                 <div className="w-full flex flex-col items-center gap-2">
+                                    {tabAudioNotice && (
+                                        <p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 w-full">
+                                            {tabAudioNotice}
+                                        </p>
+                                    )}
                                     <audio controls src={recordedUrl} className="w-full" />
                                     <button
                                         type="button"
