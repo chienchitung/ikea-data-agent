@@ -69,6 +69,35 @@ describe('ChatMessage rendering', () => {
         expect(screen.getByText(/\$1,000 元/)).toBeInTheDocument();
     });
 
+    it('renders a two-metric combo chart (bar + line) from the analyst tool\'s chart block', async () => {
+        const chartSpec = {
+            title: 'EC Sales & Orders Trend',
+            xKey: 'label',
+            series: [
+                { key: 'Sales', name: 'Sales', type: 'bar' },
+                { key: 'Orders', name: 'Orders', type: 'line' },
+            ],
+            isSequential: true,
+            data: [
+                { label: '2026-01', Sales: 3500, Orders: 25 },
+                { label: '2026-02', Sales: 3000, Orders: 20 },
+            ],
+        };
+        renderMessage('```chart\n' + JSON.stringify(chartSpec) + '\n```');
+
+        expect(await screen.findByText('EC Sales & Orders Trend')).toBeInTheDocument();
+        // Both series must appear in the legend, distinctly.
+        expect(screen.getAllByText('Sales').length).toBeGreaterThan(0);
+        expect(screen.getAllByText('Orders').length).toBeGreaterThan(0);
+        // Two bars (one per month) and a single connecting line.
+        expect(document.querySelectorAll('.chart-bar').length).toBe(2);
+        expect(document.querySelector('.chart-line')).not.toBeNull();
+        // Combo charts are a fixed bar+line pairing, not a switchable type —
+        // the bar/line/pie toggle buttons from the single-metric chart must
+        // not appear here.
+        expect(document.querySelector('.chart-controls')).toBeNull();
+    });
+
     it('renders a literal <br> inside a table cell as an actual line break', async () => {
         renderMessage(
             '| 項目 | 具體行動 |\n' +

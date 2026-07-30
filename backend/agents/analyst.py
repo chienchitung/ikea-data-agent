@@ -672,6 +672,50 @@ def _build_chart_block(title: str, labels: list[str], values: list[int], chart_t
     return "\n\n```chart\n" + json.dumps(chart_spec, ensure_ascii=False, indent=2) + "\n```\n"
 
 
+def _coerce_numeric_series(series: pd.Series) -> pd.Series:
+    """Google Sheet 數值欄位常帶貨幣符號、千分位逗號、百分比符號等格式化
+    字元（例如 "$4,510,459"、"12.5%"），組合圖需要真正的數字才能加總/畫圖，
+    轉成 float 前先清掉這些字元，留下數字、小數點、負號。"""
+    cleaned = series.astype(str).str.replace(r'[^0-9.\-]', '', regex=True)
+    return pd.to_numeric(cleaned, errors='coerce')
+
+
+def _build_combo_chart_block(
+    title: str,
+    labels: list[str],
+    bar_name: str,
+    bar_values: list[float],
+    line_name: str,
+    line_values: list[float],
+    is_sequential: bool = False,
+) -> str:
+    """雙指標組合圖（一個長條 + 一個折線，共用同一組 x 軸標籤），例如
+    EC 銷售分析常見的「業績（長條）+ 訂單數（折線）」按月趨勢。跟
+    _build_chart_block() 的單指標 {label, value} 格式不同——這裡每個資料點
+    同時帶 bar_name 與 line_name 兩個數值欄位，並用 series 陣列告訴前端
+    哪個欄位對應長條、哪個對應折線；前端要能分辨兩種格式（見
+    ChatMessage.jsx 的 parseChartSpec）。"""
+    data = [
+        {
+            "label": str(label) if str(label).strip() else "(Blank)",
+            bar_name: bar_values[i],
+            line_name: line_values[i],
+        }
+        for i, label in enumerate(labels)
+    ]
+    chart_spec = {
+        "title": title,
+        "xKey": "label",
+        "series": [
+            {"key": bar_name, "name": bar_name, "type": "bar"},
+            {"key": line_name, "name": line_name, "type": "line"},
+        ],
+        "isSequential": is_sequential,
+        "data": data,
+    }
+    return "\n\n```chart\n" + json.dumps(chart_spec, ensure_ascii=False, indent=2) + "\n```\n"
+
+
 def _parse_iso_date(value: str, fallback_end: bool = False) -> Optional[pd.Timestamp]:
     raw = str(value or "").strip()
     if not raw:
@@ -893,6 +937,8 @@ def query_worksheet_data(
     wants_detail_rows: bool = False,
     wants_all_distributions: bool = False,
     wants_reason_analysis: bool = False,
+    combo_bar_metric: str = "",
+    combo_line_metric: str = "",
 ) -> str:
     """
     根據查詢需求從指定工作表中檢索和分析資料，用於 Request 以外的 worksheet，
@@ -908,12 +954,20 @@ def query_worksheet_data(
     請把你已經判斷好的意圖填入下列具名參數，不要只寫進 query_description 讓
     工具重新用關鍵字猜測：
     - wants_chart: 使用者要不要圖表/圖形/視覺化。
-    - chart_type: "bar" | "line" | "pie"；不確定就留空（工具會退回猜測）。
+    - chart_type: "bar" | "line" | "pie" | "combo"；不確定就留空（工具會退回猜測）。
     - group_by_column: 圖表或統計的主維度欄位名，例如 "Status"、"Market"、
       "Department"、"Assigned To"；月份用 "Month"。這是主維度，不是篩選條件。
     - wants_detail_rows: 是否要逐筆明細/資料表，而不是摘要統計。
     - wants_all_distributions: 是否要「所有欄位」分布，而不是重點欄位。
     - wants_reason_analysis: 是否在問耗時原因/延遲/bottleneck/root cause。
+    - combo_bar_metric / combo_line_metric: 使用者要「兩個指標一起看」時
+      （例如業績+訂單），設定 chart_type="combo"，並把兩個要比較的**數值**
+      欄位名分別填進這兩個參數（combo_bar_metric 畫成長條、combo_line_metric
+      畫成折線，共用同一組 group_by_column 當 x 軸，例如按月）。這兩個欄位
+      的原始值可以帶貨幣符號、千分位逗號、百分比符號，工具會自動清理成數字
+      再加總。圖表格式目前只支援「一個長條 + 一個折線」兩個指標，不支援
+      兩個以上指標疊在同一張圖——真的需要三個以上指標時，分開呼叫多次、
+      各自產出單指標圖表。
 
     query_description 仍用來描述：日期區間（相對時間詞彙請先轉換成明確西元
     年月區間，例如「今年」→「2026年1月到12月」）、欄位篩選條件（格式
@@ -933,6 +987,18 @@ def query_worksheet_data(
          worksheet_name="02_App_ratings_daily",
          region="TW",
          query_description="2026年3月的評分趨勢",
+      )
+
+    範例：使用者問「EC 銷售的業績和訂單趨勢，一個長條一個折線」
+    → query_worksheet_data(
+         worksheet_name="04_NAV_data_daily_excl cancel/return",
+         region="TW",
+         query_description="2026年1月到6月的業績與訂單趨勢",
+         wants_chart=True,
+         chart_type="combo",
+         group_by_column="Month",
+         combo_bar_metric="Sales",
+         combo_line_metric="Orders",
       )
     """
     try:
@@ -957,7 +1023,7 @@ def query_worksheet_data(
         effective_wants_detail_rows = wants_detail_rows or _wants_detail_rows(query_description)
         effective_wants_all_distributions = wants_all_distributions or _wants_all_distributions(query_description)
         effective_wants_reason_analysis = wants_reason_analysis or _wants_duration_reason_analysis(query_description)
-        normalized_chart_type = chart_type.strip().lower() if chart_type.strip().lower() in {"bar", "line", "pie"} else ""
+        normalized_chart_type = chart_type.strip().lower() if chart_type.strip().lower() in {"bar", "line", "pie", "combo"} else ""
 
         result = f"Worksheet: {worksheet_name} (region: {region}) | Total rows: {total_rows}\n\n"
 
@@ -1084,6 +1150,67 @@ def query_worksheet_data(
 
         # ── Step 6：輸出資料內容（Markdown 表格）────────────
         df = _drop_empty_columns(df)
+
+        # ── Step 5.5：雙指標組合圖（一個長條 + 一個折線）────────
+        # 跟下面的月度計數分支不同：那裡是「數列數」，這裡是把兩個真正的
+        # 數值欄位（例如 Sales、Orders）依 group_by_column 分組加總，用意是
+        # EC 銷售這類「業績 + 訂單一起看」的分析，不是單純的列數統計。
+        if normalized_chart_type == "combo" and combo_bar_metric.strip() and combo_line_metric.strip():
+            bar_col = _resolve_column(df, combo_bar_metric.strip())
+            line_col = _resolve_column(df, combo_line_metric.strip())
+            if not bar_col or not line_col:
+                missing = combo_bar_metric if not bar_col else combo_line_metric
+                result += (
+                    f"⚠️ Combo chart column not found: \"{missing}\". "
+                    f"Available columns: {', '.join(df.columns)}\n\n"
+                )
+            else:
+                normalized_group_by_name = group_by_column.strip().lower()
+                is_month_group = not group_by_column or normalized_group_by_name in {"month", "monthly", "月份", "月"}
+                group_col = (
+                    (analysis_intent.get('date_column') or _choose_month_date_column(df, query_description))
+                    if is_month_group
+                    else _resolve_column(df, group_by_column)
+                )
+
+                if not group_col:
+                    result += "No usable column was found to group the combo chart by.\n\n"
+                else:
+                    working = df.copy()
+                    working[bar_col] = _coerce_numeric_series(working[bar_col])
+                    working[line_col] = _coerce_numeric_series(working[line_col])
+
+                    if is_month_group:
+                        working = working.dropna(subset=[group_col])
+                        grouped = working.groupby(working[group_col].dt.to_period('M'))[[bar_col, line_col]].sum()
+                        grouped = grouped.sort_index()
+                        labels = [str(period) for period in grouped.index]
+                    else:
+                        grouped = working.groupby(group_col)[[bar_col, line_col]].sum()
+                        grouped = grouped.sort_values(bar_col, ascending=False).head(15)
+                        labels = [str(label) for label in grouped.index]
+
+                    if grouped.empty:
+                        result += "No numeric data was found to build the combo chart.\n\n"
+                    else:
+                        bar_values = [round(float(v), 2) for v in grouped[bar_col]]
+                        line_values = [round(float(v), 2) for v in grouped[line_col]]
+                        group_label = "month" if is_month_group else group_col
+                        result += f"### {bar_col} & {line_col} by {group_label}\n\n"
+                        result += ", ".join(
+                            f"{label}: {bar_col} {bv} / {line_col} {lv}"
+                            for label, bv, lv in zip(labels, bar_values, line_values)
+                        ) + "\n"
+                        result += _build_combo_chart_block(
+                            title=f"{bar_col} & {line_col}",
+                            labels=labels,
+                            bar_name=bar_col,
+                            bar_values=bar_values,
+                            line_name=line_col,
+                            line_values=line_values,
+                            is_sequential=is_month_group,
+                        )
+                        return result + _format_source_footer(worksheet_name, total_rows)
 
         if analysis_intent.get('group_by') == 'month' or _wants_monthly_counts(query_description):
             month_col = analysis_intent.get('date_column') or _choose_month_date_column(df, query_description)

@@ -10,6 +10,7 @@ monkeypatched with a fake client that just records which spreadsheet key
 it was asked to open, so this only tests the routing/caching logic.
 """
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -191,6 +192,69 @@ def test_date_range_filter_works_on_non_ticket_schema():
     print("PASS: date-range filter auto-detects a non-ticket-schema date column (e.g. App-metrics 'Review Date')")
 
 
+def test_combo_chart_sums_two_metrics_grouped_by_month():
+    """
+    Combo chart request (e.g. "EC 銷售的業績和訂單趨勢，一個長條一個折線"):
+    two numeric columns, currency/comma-formatted like real Google Sheet
+    values, summed per month and emitted as a two-series chart block.
+    """
+    records = [
+        {"Date": "2026-01-05", "Sales": "$1,000", "Orders": "10"},
+        {"Date": "2026-01-20", "Sales": "$2,500", "Orders": "15"},
+        {"Date": "2026-02-03", "Sales": "$3,000", "Orders": "20"},
+    ]
+    original = analyst._fetch_worksheet_records
+    analyst._fetch_worksheet_records = lambda name, region="TW": records
+    try:
+        output = analyst.query_worksheet_data.invoke({
+            "worksheet_name": "04_NAV_data_daily_excl cancel/return",
+            "query_description": "2026年1月到2月的業績與訂單趨勢",
+            "region": "TW",
+            "wants_chart": True,
+            "chart_type": "combo",
+            "group_by_column": "Month",
+            "combo_bar_metric": "Sales",
+            "combo_line_metric": "Orders",
+        })
+    finally:
+        analyst._fetch_worksheet_records = original
+
+    assert "```chart" in output, output
+    chart_json = output.split("```chart\n", 1)[1].split("\n```", 1)[0]
+    spec = json.loads(chart_json)
+    assert spec["series"] == [
+        {"key": "Sales", "name": "Sales", "type": "bar"},
+        {"key": "Orders", "name": "Orders", "type": "line"},
+    ], spec["series"]
+    assert spec["data"] == [
+        {"label": "2026-01", "Sales": 3500.0, "Orders": 25.0},
+        {"label": "2026-02", "Sales": 3000.0, "Orders": 20.0},
+    ], spec["data"]
+    print("PASS: combo chart sums two currency-formatted metrics grouped by month into a two-series chart block")
+
+
+def test_combo_chart_reports_missing_column_instead_of_crashing():
+    records = [{"Date": "2026-01-05", "Sales": "$1,000"}]
+    original = analyst._fetch_worksheet_records
+    analyst._fetch_worksheet_records = lambda name, region="TW": records
+    try:
+        output = analyst.query_worksheet_data.invoke({
+            "worksheet_name": "04_NAV_data_daily_excl cancel/return",
+            "query_description": "業績與訂單趨勢",
+            "region": "TW",
+            "chart_type": "combo",
+            "group_by_column": "Month",
+            "combo_bar_metric": "Sales",
+            "combo_line_metric": "Orders",
+        })
+    finally:
+        analyst._fetch_worksheet_records = original
+
+    assert "Combo chart column not found" in output, output
+    assert "Orders" in output, output
+    print("PASS: combo chart reports a missing metric column by name instead of crashing")
+
+
 def main_test():
     test_resolve_spreadsheet_key_covers_all_three_regions()
     test_fetch_worksheet_records_routes_to_the_right_spreadsheet()
@@ -199,6 +263,8 @@ def main_test():
     test_list_worksheets_tool_routes_by_region()
     test_unknown_region_returns_error_string_not_exception()
     test_date_range_filter_works_on_non_ticket_schema()
+    test_combo_chart_sums_two_metrics_grouped_by_month()
+    test_combo_chart_reports_missing_column_instead_of_crashing()
     print("analyst region-routing smoke tests passed")
 
 

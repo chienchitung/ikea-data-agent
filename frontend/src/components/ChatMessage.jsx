@@ -201,9 +201,43 @@ function CodeBlock({ language, code }) {
     );
 }
 
+// Combo format (two metrics sharing one x-axis, e.g. Sales as bars + Orders
+// as a line): { series: [{key, name, type: 'bar'}, {key, name, type: 'line'}],
+// data: [{label, [barKey]: num, [lineKey]: num}, ...] }. Distinct from the
+// single-metric { label, value } shape every other chart on this page uses,
+// so it's parsed into its own normalized shape (isCombo: true) rather than
+// forced into the single-value one.
+function parseComboChartSpec(spec) {
+    if (!Array.isArray(spec.series) || spec.series.length !== 2) return null;
+    const [barSeries, lineSeries] = spec.series;
+    if (!barSeries?.key || !lineSeries?.key) return null;
+    if (!Array.isArray(spec.data) || spec.data.length === 0) return null;
+
+    const data = spec.data
+        .map(item => ({
+            label: String(item[spec.xKey || 'label'] ?? item.label ?? ''),
+            barValue: Number(item[barSeries.key] ?? 0),
+            lineValue: Number(item[lineSeries.key] ?? 0),
+        }))
+        .filter(item => item.label && Number.isFinite(item.barValue) && Number.isFinite(item.lineValue));
+    if (data.length === 0) return null;
+
+    return {
+        title: spec.title || 'Chart',
+        isCombo: true,
+        isSequential: spec.isSequential === true,
+        barName: String(barSeries.name || barSeries.key),
+        lineName: String(lineSeries.name || lineSeries.key),
+        data,
+    };
+}
+
 function parseChartSpec(code) {
     try {
         const spec = JSON.parse(code);
+        const comboSpec = parseComboChartSpec(spec);
+        if (comboSpec) return comboSpec;
+
         const validType = ['bar', 'line', 'pie'].includes(spec.type) ? spec.type : 'bar';
         const base = {
             title: spec.title || 'Chart',
@@ -250,19 +284,128 @@ function parseChartSpec(code) {
     }
 }
 
+// Two metrics sharing one x-axis (e.g. Sales as bars + Orders as a line).
+// Each series gets its own vertical scale (maxBarValue / maxLineValue) so a
+// metric in the hundreds isn't flattened to a hairline next to one in the
+// millions -- there's no shared axis, only two independent scales mapped
+// onto the same chartHeight. Kept separate from InteractiveChart's
+// bar/line/pie switcher below: a fixed bar+line pairing isn't a "type" a
+// user picks between, it's the whole point of the chart.
+function ComboChart({ spec }) {
+    const [hoveredIndex, setHoveredIndex] = useState(null);
+
+    const width = 720;
+    const height = 300;
+    const padding = { top: 18, right: 24, bottom: 58, left: 54 };
+    const chartWidth = width - padding.left - padding.right;
+    const chartHeight = height - padding.top - padding.bottom;
+
+    const barColor = '#0058A3';
+    const lineColor = '#E94D2A';
+
+    const maxBarValue = Math.max(...spec.data.map(d => d.barValue), 1);
+    const maxLineValue = Math.max(...spec.data.map(d => d.lineValue), 1);
+
+    const gap = 10;
+    const barWidth = Math.max(18, (chartWidth - gap * (spec.data.length - 1)) / spec.data.length);
+    const barPoints = spec.data.map((item, idx) => {
+        const barHeight = (item.barValue / maxBarValue) * chartHeight;
+        const x = padding.left + idx * (barWidth + gap);
+        const y = padding.top + chartHeight - barHeight;
+        return { ...item, x, y, barHeight, centerX: x + barWidth / 2 };
+    });
+    const linePoints = spec.data.map((item, idx) => {
+        const x = padding.left + (spec.data.length === 1 ? chartWidth / 2 : (idx / (spec.data.length - 1)) * chartWidth);
+        const y = padding.top + chartHeight - (item.lineValue / maxLineValue) * chartHeight;
+        return { ...item, x, y };
+    });
+    const linePath = linePoints.map((p, idx) => `${idx === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
+
+    const hovered = hoveredIndex === null ? null : {
+        item: spec.data[hoveredIndex],
+        x: linePoints[hoveredIndex].x,
+        y: Math.min(barPoints[hoveredIndex].y, linePoints[hoveredIndex].y),
+    };
+
+    return (
+        <div className="chart-card">
+            <div className="chart-header">
+                <div>
+                    <p className="chart-title">{spec.title}</p>
+                    <p className="chart-subtitle">{spec.barName} &amp; {spec.lineName}</p>
+                </div>
+            </div>
+            <div className="chart-body">
+                <div className="chart-plot">
+                    <div className="chart-scroll-x">
+                        <svg viewBox={`0 0 ${width} ${height}`} className="chart-svg" role="img" aria-label={spec.title}>
+                            <line x1={padding.left} y1={padding.top + chartHeight} x2={width - padding.right} y2={padding.top + chartHeight} className="chart-axis" />
+                            <line x1={padding.left} y1={padding.top} x2={padding.left} y2={padding.top + chartHeight} className="chart-axis" />
+                            {barPoints.map((point, idx) => (
+                                <g key={`bar-${point.label}`} onMouseEnter={() => setHoveredIndex(idx)} onMouseLeave={() => setHoveredIndex(null)}>
+                                    <rect x={point.x} y={point.y} width={barWidth} height={point.barHeight} rx="3" fill={barColor} className="chart-bar" />
+                                    <text x={point.centerX} y={padding.top + chartHeight + 18} textAnchor="middle" className="chart-label">
+                                        {point.label.length > 10 ? `${point.label.slice(0, 10)}…` : point.label}
+                                    </text>
+                                </g>
+                            ))}
+                            <path d={linePath} className="chart-line" style={{ stroke: lineColor }} />
+                            {linePoints.map((point, idx) => (
+                                <circle
+                                    key={`dot-${point.label}`}
+                                    cx={point.x} cy={point.y} r="5"
+                                    className="chart-dot"
+                                    style={{ stroke: lineColor }}
+                                    onMouseEnter={() => setHoveredIndex(idx)}
+                                    onMouseLeave={() => setHoveredIndex(null)}
+                                />
+                            ))}
+                        </svg>
+                    </div>
+                    {hovered && (
+                        <div
+                            className="chart-tooltip"
+                            style={{
+                                left: `${Math.min(94, Math.max(6, (hovered.x / width) * 100))}%`,
+                                top: `${(hovered.y / height) * 100}%`,
+                            }}
+                        >
+                            <strong>{hovered.item.label}</strong>
+                            <span>{spec.barName}: {hovered.item.barValue}</span>
+                            <span>{spec.lineName}: {hovered.item.lineValue}</span>
+                        </div>
+                    )}
+                </div>
+            </div>
+            <div className="chart-legend">
+                <span><i style={{ backgroundColor: barColor }} />{spec.barName}</span>
+                <span><i style={{ backgroundColor: lineColor }} />{spec.lineName}</span>
+            </div>
+        </div>
+    );
+}
+
 function InteractiveChart({ code }) {
     const spec = parseChartSpec(code);
+
     // Sequential (time-series) data: bar + line only, single color
     // Categorical data: bar + pie (if ≤8 items), palette colors
     const isSequential = spec?.isSequential === true;
-    const allowedTypes = !spec || spec.data.length === 0
+    const allowedTypes = !spec || spec.isCombo || spec.data.length === 0
         ? ['bar']
         : isSequential
         ? ['bar', 'line']
         : spec.data.length <= 8 ? ['bar', 'pie'] : ['bar'];
     const defaultType = spec && allowedTypes.includes(spec.type) ? spec.type : allowedTypes[0];
+    // Hooks must run unconditionally on every render (Rules of Hooks) --
+    // both branches below return early, so these have to come first even
+    // though the combo branch doesn't use activeType/hovered at all.
     const [activeType, setActiveType] = useState(defaultType);
     const [hovered, setHovered] = useState(null);
+
+    if (spec?.isCombo) {
+        return <ComboChart spec={spec} />;
+    }
 
     if (!spec || spec.data.length === 0) {
         return <CodeBlock language="json" code={code} />;
