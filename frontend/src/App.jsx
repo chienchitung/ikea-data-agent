@@ -145,6 +145,55 @@ function formatRelativeTime(ts) {
     return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
+const CONV_DATE_GROUP_ORDER = ['Today', 'Yesterday', 'Previous 7 Days', 'Previous 30 Days', 'Older'];
+
+// Calendar-day based, not a raw hour cutoff -- a chat from 12:30am today and
+// one from 11:30pm today are both "Today" even though they're ~23 hours
+// apart, and a chat from 11:59pm yesterday is still "Yesterday" even though
+// it's under an hour old. Matches how a person actually thinks about "today"
+// vs "yesterday", not a sliding 24-hour window.
+function startOfDay(date) {
+    const d = new Date(date);
+    d.setHours(0, 0, 0, 0);
+    return d;
+}
+
+function getConversationDateGroup(timestamp) {
+    if (!timestamp) return 'Older';
+    const diffDays = Math.round((startOfDay(Date.now()) - startOfDay(timestamp)) / 86400000);
+    if (diffDays <= 0) return 'Today';
+    if (diffDays === 1) return 'Yesterday';
+    if (diffDays <= 7) return 'Previous 7 Days';
+    if (diffDays <= 30) return 'Previous 30 Days';
+    return 'Older';
+}
+
+// Pinned conversations keep floating above everything else, unaffected by
+// date grouping (matches the existing pin behavior). Everything else is
+// bucketed by last-activity date, ChatGPT-style, so a long history reads as
+// a few short, scannable sections instead of one long undifferentiated list.
+function groupConversationsForSidebar(conversations) {
+    const sorted = conversations.slice().sort((a, b) => {
+        if (a.pinned && !b.pinned) return -1;
+        if (!a.pinned && b.pinned) return 1;
+        return (b.updatedAt || b.createdAt) - (a.updatedAt || a.createdAt);
+    });
+
+    const pinned = sorted.filter((c) => c.pinned);
+    const buckets = new Map(CONV_DATE_GROUP_ORDER.map((label) => [label, []]));
+    sorted.filter((c) => !c.pinned).forEach((conv) => {
+        buckets.get(getConversationDateGroup(conv.updatedAt || conv.createdAt)).push(conv);
+    });
+
+    const groups = [];
+    if (pinned.length > 0) groups.push({ label: 'Pinned', conversations: pinned });
+    CONV_DATE_GROUP_ORDER.forEach((label) => {
+        const items = buckets.get(label);
+        if (items.length > 0) groups.push({ label, conversations: items });
+    });
+    return groups;
+}
+
 // Used by the conversation search panel: when a match comes from message
 // content rather than the title (already shown as the result's heading),
 // this gives a short "why this matched" preview centered on the hit instead
@@ -855,6 +904,14 @@ function App() {
         switchConversation(conv);
         closeConvSearch();
     };
+
+    // Sidebar list only -- the search panel below stays a flat,
+    // relevance-ordered list (query results, not a browsing view), so date
+    // headers there would just fragment already-filtered matches.
+    const groupedConversations = useMemo(
+        () => groupConversationsForSidebar(conversations),
+        [conversations]
+    );
 
     // Matches title OR any message's content (not just the title, unlike the
     // plain sidebar list) — same pinned-then-recency ordering as the sidebar
@@ -1701,72 +1758,77 @@ function App() {
                                     </div>
                                 )}
                                 <div className="max-h-[280px] overflow-y-auto -mr-1 pr-1">
-                                    <div className="space-y-0.5">
-                                        {conversations.length === 0 ? (
-                                            <p className="text-sm text-[#767676] text-center py-4">No conversations yet</p>
-                                        ) : (
-                                            conversations
-                                                .slice()
-                                                .sort((a, b) => {
-                                                    if (a.pinned && !b.pinned) return -1;
-                                                    if (!a.pinned && b.pinned) return 1;
-                                                    return (b.updatedAt || b.createdAt) - (a.updatedAt || a.createdAt);
-                                                })
-                                                .map(conv => {
-                                                    const isLoading = loadingConvIds.has(conv.id);
-                                                    const isActive = conv.id === currentConvId;
-                                                    const isSelected = selectedConvIds.has(conv.id);
-                                                    return (
-                                                        <div
-                                                            key={conv.id}
-                                                            onClick={() => isSelectingConvs ? toggleConvSelection(conv.id) : switchConversation(conv)}
-                                                            className={`group flex items-center gap-2 px-2 py-2 rounded-lg cursor-pointer transition-colors ${(isActive && !isSelectingConvs) || isSelected ? 'bg-white' : 'hover:bg-white'} ${conv.pinned ? 'border-l-2 border-[#0058A3]' : ''}`}
-                                                        >
-                                                            {/* Icon: checkbox (select mode) → loading spinner → pin → chat bubble */}
-                                                            {isSelectingConvs ? (
-                                                                <div className={`w-3.5 h-3.5 rounded border-2 flex-shrink-0 ${isSelected ? 'border-[#0058A3] bg-[#0058A3]' : 'border-[#CCCCCC]'} flex items-center justify-center`}>
-                                                                    {isSelected && <Check className="w-2.5 h-2.5 text-white" />}
+                                    {conversations.length === 0 ? (
+                                        <p className="text-sm text-[#767676] text-center py-4">No conversations yet</p>
+                                    ) : (
+                                        groupedConversations.map((group) => (
+                                            <div key={group.label} className="mb-2 last:mb-0">
+                                                {/* Date-grouped like ChatGPT (Today / Yesterday / Previous 7
+                                                    Days / ...) so a long history reads as a few short,
+                                                    scannable sections instead of one undifferentiated list.
+                                                    Pinned conversations get their own group above the rest,
+                                                    unaffected by date. */}
+                                                <p className="px-2 pt-1 pb-1 text-[10px] font-semibold text-[#AAAAAA] tracking-wider uppercase">
+                                                    {group.label}
+                                                </p>
+                                                <div className="space-y-0.5">
+                                                    {group.conversations.map(conv => {
+                                                        const isLoading = loadingConvIds.has(conv.id);
+                                                        const isActive = conv.id === currentConvId;
+                                                        const isSelected = selectedConvIds.has(conv.id);
+                                                        return (
+                                                            <div
+                                                                key={conv.id}
+                                                                onClick={() => isSelectingConvs ? toggleConvSelection(conv.id) : switchConversation(conv)}
+                                                                className={`group flex items-center gap-2 px-2 py-2 rounded-lg cursor-pointer transition-colors ${(isActive && !isSelectingConvs) || isSelected ? 'bg-white' : 'hover:bg-white'} ${conv.pinned ? 'border-l-2 border-[#0058A3]' : ''}`}
+                                                            >
+                                                                {/* Icon: checkbox (select mode) → loading spinner → pin → chat bubble */}
+                                                                {isSelectingConvs ? (
+                                                                    <div className={`w-3.5 h-3.5 rounded border-2 flex-shrink-0 ${isSelected ? 'border-[#0058A3] bg-[#0058A3]' : 'border-[#CCCCCC]'} flex items-center justify-center`}>
+                                                                        {isSelected && <Check className="w-2.5 h-2.5 text-white" />}
+                                                                    </div>
+                                                                ) : isLoading ? (
+                                                                    <Loader2 className="w-3.5 h-3.5 flex-shrink-0 text-[#0058A3] animate-spin" />
+                                                                ) : conv.pinned ? (
+                                                                    <Pin className="w-3.5 h-3.5 flex-shrink-0 text-[#0058A3]" />
+                                                                ) : (
+                                                                    <MessageSquare className={`w-3.5 h-3.5 flex-shrink-0 ${isActive ? 'text-[#484848]' : 'text-[#767676]'}`} />
+                                                                )}
+
+                                                                <div className="flex-1 min-w-0">
+                                                                    <p className={`text-sm font-medium truncate ${isActive ? 'text-[#484848]' : 'text-[#111111]'}`}>
+                                                                        {conv.title}
+                                                                    </p>
+                                                                    <p className="text-xs text-[#767676] mt-0.5">
+                                                                        {isLoading ? (
+                                                                            <span className="text-[#0058A3] font-medium">Responding…</span>
+                                                                        ) : formatRelativeTime(conv.updatedAt || conv.createdAt)}
+                                                                    </p>
                                                                 </div>
-                                                            ) : isLoading ? (
-                                                                <Loader2 className="w-3.5 h-3.5 flex-shrink-0 text-[#0058A3] animate-spin" />
-                                                            ) : conv.pinned ? (
-                                                                <Pin className="w-3.5 h-3.5 flex-shrink-0 text-[#0058A3]" />
-                                                            ) : (
-                                                                <MessageSquare className={`w-3.5 h-3.5 flex-shrink-0 ${isActive ? 'text-[#484848]' : 'text-[#767676]'}`} />
-                                                            )}
 
-                                                            <div className="flex-1 min-w-0">
-                                                                <p className={`text-sm font-medium truncate ${isActive ? 'text-[#484848]' : 'text-[#111111]'}`}>
-                                                                    {conv.title}
-                                                                </p>
-                                                                <p className="text-xs text-[#767676] mt-0.5">
-                                                                    {isLoading ? (
-                                                                        <span className="text-[#0058A3] font-medium">Responding…</span>
-                                                                    ) : formatRelativeTime(conv.updatedAt || conv.createdAt)}
-                                                                </p>
+                                                                {/* Three-dot menu trigger (hidden while selecting) */}
+                                                                {!isSelectingConvs && (
+                                                                    <button
+                                                                        onClick={(e) => {
+                                                                            e.stopPropagation();
+                                                                            if (openMenuConvId === conv.id) { setOpenMenuConvId(null); return; }
+                                                                            const rect = e.currentTarget.getBoundingClientRect();
+                                                                            setMenuPosition({ top: rect.bottom + 4, left: rect.left - 128 });
+                                                                            setOpenMenuConvId(conv.id);
+                                                                        }}
+                                                                        className={`flex-shrink-0 p-1 rounded transition-all hover:bg-[#DFDFDF] ${openMenuConvId === conv.id ? 'opacity-100 bg-[#DFDFDF]' : 'opacity-0 group-hover:opacity-100'}`}
+                                                                        title="More options"
+                                                                    >
+                                                                        <MoreHorizontal className="w-3.5 h-3.5 text-[#767676]" />
+                                                                    </button>
+                                                                )}
                                                             </div>
-
-                                                            {/* Three-dot menu trigger (hidden while selecting) */}
-                                                            {!isSelectingConvs && (
-                                                                <button
-                                                                    onClick={(e) => {
-                                                                        e.stopPropagation();
-                                                                        if (openMenuConvId === conv.id) { setOpenMenuConvId(null); return; }
-                                                                        const rect = e.currentTarget.getBoundingClientRect();
-                                                                        setMenuPosition({ top: rect.bottom + 4, left: rect.left - 128 });
-                                                                        setOpenMenuConvId(conv.id);
-                                                                    }}
-                                                                    className={`flex-shrink-0 p-1 rounded transition-all hover:bg-[#DFDFDF] ${openMenuConvId === conv.id ? 'opacity-100 bg-[#DFDFDF]' : 'opacity-0 group-hover:opacity-100'}`}
-                                                                    title="More options"
-                                                                >
-                                                                    <MoreHorizontal className="w-3.5 h-3.5 text-[#767676]" />
-                                                                </button>
-                                                            )}
-                                                        </div>
-                                                    );
-                                                })
-                                        )}
-                                    </div>
+                                                        );
+                                                    })}
+                                                </div>
+                                            </div>
+                                        ))
+                                    )}
                                 </div>
                             </>
                         )}
