@@ -145,7 +145,7 @@ function formatRelativeTime(ts) {
     return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
-const CONV_DATE_GROUP_ORDER = ['Today', 'Yesterday', 'Previous 7 Days', 'Previous 30 Days', 'Older'];
+const CONV_DATE_GROUP_ORDER = ['Today', 'Yesterday', 'Previous 7 Days', 'Previous 30 Days'];
 
 // Calendar-day based, not a raw hour cutoff -- a chat from 12:30am today and
 // one from 11:30pm today are both "Today" even though they're ~23 hours
@@ -158,14 +158,17 @@ function startOfDay(date) {
     return d;
 }
 
+// "Previous 30 Days" is the catch-all for everything past a week, not a
+// strict 8-30-day band -- there's no separate "Older" group, so a
+// conversation from a year ago still lands here rather than disappearing
+// into an unlabeled bucket.
 function getConversationDateGroup(timestamp) {
-    if (!timestamp) return 'Older';
+    if (!timestamp) return 'Previous 30 Days';
     const diffDays = Math.round((startOfDay(Date.now()) - startOfDay(timestamp)) / 86400000);
     if (diffDays <= 0) return 'Today';
     if (diffDays === 1) return 'Yesterday';
     if (diffDays <= 7) return 'Previous 7 Days';
-    if (diffDays <= 30) return 'Previous 30 Days';
-    return 'Older';
+    return 'Previous 30 Days';
 }
 
 // Pinned conversations keep floating above everything else, unaffected by
