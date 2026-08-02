@@ -42,6 +42,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/health")
+async def health_check():
+    # Deliberately does nothing but return 200 — no DB/model/API calls. Used
+    # both as an uptime probe and as a target for the frontend's proactive
+    # "wake up the Render instance" ping fired before the user submits
+    # anything (see MeetingRecorderModal.jsx), so it needs to respond as soon
+    # as the process is up, not after any heavier dependency has initialized.
+    return {"status": "ok"}
+
+
 class Message(BaseModel):
     role: str
     content: str

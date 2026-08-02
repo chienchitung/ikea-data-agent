@@ -18,6 +18,55 @@ const PROGRESS_LABELS = {
 // stages" hint before the server has reported any real progress.
 const GROQ_CHUNKING_THRESHOLD_BYTES = 20 * 1024 * 1024;
 
+// Render's free tier spins the backend down after inactivity; the first
+// request after that can take 30-60s+ just to get a response header back,
+// with nothing in between to show the user. Without a cap, fetch() just
+// hangs there indefinitely (only the user's own Cancel button would ever
+// resolve it) and the UI is stuck on "Uploading recording…" with no
+// indication anything is happening. COLD_START_TIMEOUT_MS bounds how long we
+// wait for that first response before assuming this is a cold start and
+// retrying once with a clear message — chosen comfortably above normal
+// network latency but well under how long a real Render cold start takes, so
+// a slow-but-alive server gets one retry instead of the user staring at a
+// silent spinner for a minute.
+const COLD_START_TIMEOUT_MS = 25000;
+const WAKEUP_RETRY_NOTICE = "The server had gone to sleep from inactivity, so this took longer than usual. It's awake now and retrying automatically.";
+
+class ColdStartTimeoutError extends Error {}
+
+// Races `promise` against a timer; on timeout rejects with
+// ColdStartTimeoutError instead of leaving `promise` to resolve/reject
+// whenever it eventually does (that original call is left running in the
+// background — harmless, and it's what actually wakes Render up, so the
+// retry below usually lands on an already-warm server).
+function withTimeout(promise, ms) {
+    let timer;
+    const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new ColdStartTimeoutError('cold_start_timeout')), ms);
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+// Wraps fetch() so a Render cold start gets one automatic retry with clear
+// status messaging instead of hanging forever. Only the header-arrival phase
+// (the part `fetch()` itself resolves on) is time-boxed — SSE body streaming
+// afterwards can take as long as it needs, since that's real, expected work
+// (transcription, minute-drafting), not a cold-start symptom. A genuine
+// network/HTTP error (rejects before the timeout) is NOT retried here — it
+// propagates immediately so the existing error handling in handleSubmit
+// still applies.
+async function fetchWithWakeupRetry(url, options, onRetrying) {
+    try {
+        return await withTimeout(fetch(url, options), COLD_START_TIMEOUT_MS);
+    } catch (error) {
+        if (error instanceof ColdStartTimeoutError) {
+            onRetrying?.();
+            return fetch(url, options);
+        }
+        throw error;
+    }
+}
+
 function formatSeconds(totalSeconds) {
     const minutes = Math.floor(totalSeconds / 60);
     const seconds = totalSeconds % 60;
@@ -53,6 +102,14 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
 
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [progressLabel, setProgressLabel] = useState('');
+    // Separate from progressLabel deliberately: the retried request's own SSE
+    // stream immediately sends its own "uploading"/"preparing" progress event
+    // once it succeeds, which would instantly clobber a one-shot
+    // setProgressLabel(...) message before the user ever saw it (confirmed
+    // via a live timing test). This banner instead persists for the rest of
+    // the submission once a retry has happened, independent of whatever
+    // progressLabel does afterward.
+    const [wakeupNotice, setWakeupNotice] = useState('');
     // null = indeterminate (no chunk-level progress to report yet, e.g. short
     // recordings that transcribe in a single request); 0-100 = determinate.
     const [progressPercent, setProgressPercent] = useState(null);
@@ -87,6 +144,18 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
             audioContextRef.current = null;
         }
     };
+
+    // Fire-and-forget: ping the backend the moment this modal opens (i.e. the
+    // moment the user starts interacting with meeting recording), well before
+    // they've picked a file or finished recording. If Render's instance is
+    // asleep, this gives it a head start waking up in the background so the
+    // real upload later is more likely to land on an already-warm server.
+    // Failures are silently ignored — this is purely a best-effort nudge, not
+    // something the UI depends on.
+    useEffect(() => {
+        fetch(`${apiUrl}/health`).catch(() => {});
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     useEffect(() => {
         return () => {
@@ -254,6 +323,7 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
         setIsSubmitting(true);
         setErrorMessage('');
         setErrorDetails('');
+        setWakeupNotice('');
         setProgressLabel('Uploading recording…');
         setProgressPercent(null);
         setElapsedSeconds(0);
@@ -284,11 +354,11 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
         let meetingId = null;
 
         try {
-            const prepResponse = await fetch(`${apiUrl}/meetings/prepare-audio/stream`, {
-                method: 'POST',
-                body: buildAudioFormData(),
-                signal: controller.signal,
-            });
+            const prepResponse = await fetchWithWakeupRetry(
+                `${apiUrl}/meetings/prepare-audio/stream`,
+                { method: 'POST', body: buildAudioFormData(), signal: controller.signal },
+                () => setWakeupNotice(WAKEUP_RETRY_NOTICE),
+            );
             if (!prepResponse.ok) {
                 const data = await prepResponse.json().catch(() => null);
                 throw new Error(data?.detail?.message || data?.message || `Request failed with status ${prepResponse.status}`);
@@ -301,11 +371,11 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
             if (!prepFinal?.meeting_id) throw new Error('Audio preparation ended without a result.');
             meetingId = prepFinal.meeting_id;
 
-            const genResponse = await fetch(`${apiUrl}/meetings/generate/stream`, {
-                method: 'POST',
-                body: buildMetadataFormData(meetingId),
-                signal: controller.signal,
-            });
+            const genResponse = await fetchWithWakeupRetry(
+                `${apiUrl}/meetings/generate/stream`,
+                { method: 'POST', body: buildMetadataFormData(meetingId), signal: controller.signal },
+                () => setWakeupNotice(WAKEUP_RETRY_NOTICE),
+            );
             if (!genResponse.ok) {
                 const data = await genResponse.json().catch(() => null);
                 const failure = new Error(data?.detail?.message || data?.message || `Request failed with status ${genResponse.status}`);
@@ -574,6 +644,11 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
                                     {progressPercent != null
                                         ? 'This is a long recording, so this runs in stages — it can take a few minutes. The percentage above updates as each stage finishes.'
                                         : 'This is a long recording — it can take a little while before the percentage above starts moving.'}
+                                </p>
+                            )}
+                            {wakeupNotice && (
+                                <p className="mt-2 text-xs text-[#0058A3] bg-blue-50 border border-blue-100 rounded-lg px-2 py-1.5">
+                                    {wakeupNotice}
                                 </p>
                             )}
                         </div>
