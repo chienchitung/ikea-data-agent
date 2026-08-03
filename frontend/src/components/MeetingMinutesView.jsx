@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { X, Loader2, ChevronDown, Edit2, Download, Kanban } from 'lucide-react';
 import { getMeetingRecord, updateMeetingRecordData, getMeetingAudioBlob } from '../utils/meetingStore';
 import { hasImportedActionsForMeeting, syncActionItemsFromMeeting } from '../utils/actionItemStore';
@@ -10,7 +10,36 @@ function formatTimestamp(totalSeconds) {
     return `${minutes}:${String(seconds).padStart(2, '0')}`;
 }
 
-function EditableTable({ headers, fields, rows, onChange, disabled }) {
+// Grows to fit its content via scrollHeight rather than counting '\n'
+// characters — a naive "rows = number of \n" calculation under-sizes text
+// that wraps onto multiple visual lines without an explicit line break
+// (very common in a narrow table column), leaving the extra wrapped lines
+// clipped/overlapping instead of pushing the row taller.
+function AutoGrowTextarea({ value, onChange }) {
+    const ref = useRef(null);
+    useLayoutEffect(() => {
+        const el = ref.current;
+        if (!el) return;
+        el.style.height = 'auto';
+        el.style.height = `${el.scrollHeight}px`;
+    }, [value]);
+
+    return (
+        <textarea
+            ref={ref}
+            value={value}
+            onChange={onChange}
+            rows={1}
+            className="w-full bg-transparent focus:outline-none text-[#111111] resize-none block leading-normal overflow-hidden"
+        />
+    );
+}
+
+// columnWidths (optional): CSS width per header column (e.g. '8%'), for
+// tables whose text columns (item/agenda descriptions) need much more room
+// than short ones (No., dates) — without it, columns split space evenly and
+// the long-text column ends up too narrow, forcing heavy wrapping.
+function EditableTable({ headers, fields, rows, onChange, disabled, columnWidths }) {
     const updateCell = (rowIndex, field, value) => {
         onChange(rows.map((row, idx) => (idx === rowIndex ? { ...row, [field]: value } : row)));
     };
@@ -24,7 +53,13 @@ function EditableTable({ headers, fields, rows, onChange, disabled }) {
 
     return (
         <div className="markdown-table-scroll">
-            <table className="w-full text-sm border-collapse">
+            <table className="w-full text-sm border-collapse table-fixed">
+                {columnWidths && (
+                    <colgroup>
+                        {columnWidths.map((width, i) => <col key={i} style={{ width }} />)}
+                        {!disabled && <col style={{ width: '2rem' }} />}
+                    </colgroup>
+                )}
                 <thead>
                     <tr>
                         {headers.map((h) => (
@@ -46,13 +81,11 @@ function EditableTable({ headers, fields, rows, onChange, disabled }) {
                             {fields.map((field) => (
                                 <td key={field.key} className="border border-[#DFDFDF] px-2 py-1 align-top">
                                     {disabled ? (
-                                        <span className="text-[#111111] whitespace-pre-wrap">{row[field.key] || ''}</span>
+                                        <span className="text-[#111111] whitespace-pre-wrap break-words">{row[field.key] || ''}</span>
                                     ) : (
-                                        <textarea
+                                        <AutoGrowTextarea
                                             value={row[field.key] ?? ''}
                                             onChange={(e) => updateCell(rowIndex, field.key, e.target.value)}
-                                            rows={Math.max(1, String(row[field.key] ?? '').split('\n').length)}
-                                            className="w-full bg-transparent focus:outline-none text-[#111111] resize-none block leading-normal"
                                         />
                                     )}
                                 </td>
@@ -309,7 +342,7 @@ export function MeetingMinutesView({ apiUrl, meetingId, onClose }) {
 
     return (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
-            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
                 {isLoading ? (
                     <div className="p-10 flex justify-center"><Loader2 className="w-6 h-6 animate-spin text-[#0058A3]" /></div>
                 ) : loadError || !meetingData ? (
@@ -366,6 +399,7 @@ export function MeetingMinutesView({ apiUrl, meetingId, onClose }) {
                                     rows={meetingData.last_time_actions || []}
                                     onChange={(rows) => updateField('last_time_actions', rows)}
                                     disabled={!isEditing}
+                                    columnWidths={['8%', '42%', '25%', '25%']}
                                 />
                             </section>
 
@@ -377,6 +411,7 @@ export function MeetingMinutesView({ apiUrl, meetingId, onClose }) {
                                     rows={meetingData.agenda || []}
                                     onChange={(rows) => updateField('agenda', rows)}
                                     disabled={!isEditing}
+                                    columnWidths={['10%', '60%', '30%']}
                                 />
                             </section>
 
@@ -431,6 +466,7 @@ export function MeetingMinutesView({ apiUrl, meetingId, onClose }) {
                                     rows={meetingData.actions_review || []}
                                     onChange={(rows) => updateField('actions_review', rows)}
                                     disabled={!isEditing}
+                                    columnWidths={['8%', '42%', '25%', '25%']}
                                 />
                             </section>
 
