@@ -708,6 +708,7 @@ from agents.meeting import (
     delete_meeting_record,
     save_prepared_audio,
     load_prepared_audio,
+    GroqRateLimitError,
 )
 
 
@@ -911,10 +912,31 @@ async def generate_meeting_minutes_stream(
                         "percent": round(completed / total * 100) if total else None,
                     }))
 
+                async def on_transcription_rate_limited(wait_seconds: float, attempt: int, chunk_index: int, total_chunks: int) -> None:
+                    # Groq's per-key ASPH quota is shared across whatever else
+                    # is using that key concurrently, so this chunk isn't bad —
+                    # it just needs to wait its turn. Surfaced as its own phase
+                    # (not "transcribing") so the frontend shows this instead of
+                    # the static "Transcribing audio…" label overriding it.
+                    chunk_note = f" (chunk {chunk_index}/{total_chunks})" if total_chunks > 1 else ""
+                    await queue.put(("progress", {
+                        "phase": "transcription_rate_limited",
+                        "label": f"Groq rate limit reached{chunk_note} — retrying in {round(wait_seconds)}s",
+                        "wait_seconds": wait_seconds,
+                        "attempt": attempt,
+                        "current": chunk_index,
+                        "total": total_chunks,
+                        # Chunks before this one already finished; carries that
+                        # completion forward so the bar holds steady during the
+                        # wait instead of flickering to indeterminate and back.
+                        "percent": round((chunk_index - 1) / total_chunks * 100) if total_chunks else None,
+                    }))
+
                 transcription = await transcribe_audio(
                     normalized_path, groq_api_key,
                     on_chunk_done=on_transcription_chunk_done,
                     on_split_progress=on_split_progress,
+                    on_rate_limited=on_transcription_rate_limited,
                 )
                 transcript = transcription["text"]
                 segments = transcription["segments"]
@@ -961,6 +983,17 @@ async def generate_meeting_minutes_stream(
                 }))
             except asyncio.CancelledError:
                 raise
+            except GroqRateLimitError as e:
+                print(f"❌ Meeting pipeline error (Groq rate limited): {e}")
+                await queue.put(("error", product_error(
+                    "transcription_rate_limited",
+                    "Groq's transcription quota is temporarily exhausted",
+                    "This recording kept being rate-limited by Groq even after automatic retries. "
+                    "This is a temporary quota shared by your Groq API key, not a problem with this "
+                    "recording — it usually clears up within a few minutes.",
+                    ["Wait a few minutes and try again", "Avoid transcribing multiple long recordings at the same time"],
+                    str(e),
+                )))
             except Exception as e:
                 print(f"❌ Meeting pipeline error: {e}")
                 await queue.put(("error", product_error(

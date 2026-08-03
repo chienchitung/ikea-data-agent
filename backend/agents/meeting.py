@@ -334,19 +334,89 @@ def _segments_to_text(segments: list) -> str:
     return "\n".join(lines)
 
 
-async def _transcribe_bytes(audio_bytes: bytes, filename: str, groq_api_key: str) -> list:
-    async with httpx.AsyncClient(timeout=120) as client:
-        response = await client.post(
-            GROQ_TRANSCRIPTIONS_URL,
-            headers={"Authorization": f"Bearer {groq_api_key}"},
-            files={"file": (filename, audio_bytes)},
-            data={
-                "model": GROQ_TRANSCRIPTION_MODEL,
-                "response_format": "verbose_json",
-            },
-        )
-    response.raise_for_status()
-    return response.json().get("segments") or []
+GROQ_RATE_LIMIT_MAX_RETRIES = 2
+GROQ_RATE_LIMIT_DEFAULT_WAIT_SECONDS = 60.0
+
+
+class GroqRateLimitError(Exception):
+    """Raised when Groq's Whisper API is still rate-limiting a chunk after all retries are exhausted."""
+
+
+def _parse_retry_after_seconds(response: httpx.Response) -> float:
+    """
+    Groq sends a standard `Retry-After` header on 429s; fall back to parsing
+    the "...try again in 53s" text it also includes in the error body, in
+    case that header is ever missing, and finally a fixed default so a
+    malformed/unexpected error shape still backs off instead of hammering
+    the API immediately.
+    """
+    retry_after = response.headers.get("retry-after")
+    if retry_after:
+        try:
+            return max(float(retry_after), 0.0)
+        except ValueError:
+            pass
+    match = re.search(r"try again in ([\d.]+)s", response.text or "", re.IGNORECASE)
+    if match:
+        return max(float(match.group(1)), 0.0)
+    return GROQ_RATE_LIMIT_DEFAULT_WAIT_SECONDS
+
+
+async def _transcribe_bytes(
+    audio_bytes: bytes,
+    filename: str,
+    groq_api_key: str,
+    on_rate_limited: Optional[Callable[[float, int], Awaitable[None]]] = None,
+) -> list:
+    """
+    POSTs one chunk to Groq's Whisper endpoint. Groq enforces a per-key ASPH
+    (audio-seconds-per-hour) quota shared across whatever else is using that
+    key concurrently, so a 429 here doesn't mean this chunk is bad — it means
+    the quota needs a moment to free up. On 429, waits out the interval Groq
+    reports and retries the same chunk (not the whole file), up to
+    GROQ_RATE_LIMIT_MAX_RETRIES times before giving up.
+
+    `on_rate_limited(wait_seconds, attempt)` is awaited right before each
+    backoff sleep, so callers can surface a "rate limited, retrying in Ns"
+    status instead of the request just going quiet.
+    """
+    for attempt in range(GROQ_RATE_LIMIT_MAX_RETRIES + 1):
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.post(
+                GROQ_TRANSCRIPTIONS_URL,
+                headers={"Authorization": f"Bearer {groq_api_key}"},
+                files={"file": (filename, audio_bytes)},
+                data={
+                    "model": GROQ_TRANSCRIPTION_MODEL,
+                    "response_format": "verbose_json",
+                },
+            )
+        if response.status_code != 429:
+            response.raise_for_status()
+            return response.json().get("segments") or []
+
+        if attempt == GROQ_RATE_LIMIT_MAX_RETRIES:
+            raise GroqRateLimitError(
+                f"Groq transcription is still rate-limited after {GROQ_RATE_LIMIT_MAX_RETRIES} retries."
+            )
+        wait_seconds = _parse_retry_after_seconds(response)
+        if on_rate_limited:
+            await on_rate_limited(wait_seconds, attempt + 1)
+        await asyncio.sleep(wait_seconds)
+
+
+def _rate_limit_reporter(
+    on_rate_limited: Optional["RateLimitCallback"],
+    chunk_index: int,
+    total_chunks: int,
+) -> Optional[Callable[[float, int], Awaitable[None]]]:
+    if not on_rate_limited:
+        return None
+
+    async def _report(wait_seconds: float, attempt: int) -> None:
+        await on_rate_limited(wait_seconds, attempt, chunk_index, total_chunks)
+
+    return _report
 
 
 def _split_audio_ffmpeg(
@@ -406,6 +476,7 @@ def _split_audio_pydub(audio_path: str, file_size: int) -> list:
 
 
 ProgressCallback = Callable[[int, int], Awaitable[None]]
+RateLimitCallback = Callable[[float, int, int, int], Awaitable[None]]
 
 
 async def transcribe_audio(
@@ -413,6 +484,7 @@ async def transcribe_audio(
     groq_api_key: str,
     on_chunk_done: Optional[ProgressCallback] = None,
     on_split_progress: Optional[Callable[[int], None]] = None,
+    on_rate_limited: Optional[RateLimitCallback] = None,
 ) -> dict:
     """
     Returns {"segments": [{"start": seconds, "speaker": str, "text": str}, ...], "text": flat_text}.
@@ -434,13 +506,23 @@ async def transcribe_audio(
     done yet. It runs off the event loop (see asyncio.to_thread below), so
     unlike on_chunk_done it can't safely be an `await`-based callback itself;
     callers bridge it back to async code (e.g. via loop.call_soon_threadsafe).
+
+    `on_rate_limited(wait_seconds, attempt, chunk_index, total_chunks)` is
+    awaited whenever Groq responds 429 to a chunk, right before _transcribe_bytes
+    backs off and retries that chunk — see its docstring. If Groq keeps
+    rate-limiting a chunk past all retries, GroqRateLimitError propagates out
+    of this call instead of a generic exception, so callers can surface a
+    specific "Groq's quota is temporarily exhausted" message.
     """
     file_size = os.path.getsize(audio_path)
 
     if file_size <= GROQ_MAX_UPLOAD_BYTES:
         with open(audio_path, "rb") as f:
             audio_bytes = f.read()
-        raw_segments = await _transcribe_bytes(audio_bytes, os.path.basename(audio_path), groq_api_key)
+        raw_segments = await _transcribe_bytes(
+            audio_bytes, os.path.basename(audio_path), groq_api_key,
+            on_rate_limited=_rate_limit_reporter(on_rate_limited, 1, 1),
+        )
     elif FFMPEG_BIN:
         duration_seconds = _probe_duration_seconds(audio_path)
         bytes_per_second = file_size / duration_seconds if duration_seconds else 0
@@ -469,7 +551,10 @@ async def transcribe_audio(
                 actual_chunk_seconds = _probe_duration_seconds(chunk_path) or chunk_seconds
                 os.remove(chunk_path)
 
-                chunk_segments = await _transcribe_bytes(chunk_bytes, os.path.basename(chunk_path), groq_api_key)
+                chunk_segments = await _transcribe_bytes(
+                    chunk_bytes, os.path.basename(chunk_path), groq_api_key,
+                    on_rate_limited=_rate_limit_reporter(on_rate_limited, i, total_chunks),
+                )
                 for seg in chunk_segments:
                     raw_segments.append({**seg, "start": (seg.get("start") or 0) + offset_seconds})
 
@@ -485,7 +570,10 @@ async def transcribe_audio(
         chunks = _split_audio_pydub(audio_path, file_size)
         raw_segments = []
         for i, (offset_seconds, chunk_bytes) in enumerate(chunks, start=1):
-            chunk_segments = await _transcribe_bytes(chunk_bytes, f"chunk_{i}.{NORMALIZED_AUDIO_FORMAT}", groq_api_key)
+            chunk_segments = await _transcribe_bytes(
+                chunk_bytes, f"chunk_{i}.{NORMALIZED_AUDIO_FORMAT}", groq_api_key,
+                on_rate_limited=_rate_limit_reporter(on_rate_limited, i, len(chunks)),
+            )
             for seg in chunk_segments:
                 raw_segments.append({**seg, "start": (seg.get("start") or 0) + offset_seconds})
             if on_chunk_done:
