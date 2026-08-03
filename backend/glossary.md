@@ -95,6 +95,8 @@
 - **TST**：指的是 Tsim Sha Tsui（尖沙咀店）。
 - **TKS**：指的是 Tai Koo Shing（太古城店）。
 - **HH**：指的是 Hang Hau（坑口店）。
+- **DB**：指的是 Discovery Bay Close to you（愉景灣 Close to you）。
+- **OLP**：指的是 Olympic Close to you（奧運 Close to you）。
 
 ## 業績／財務指標
 
