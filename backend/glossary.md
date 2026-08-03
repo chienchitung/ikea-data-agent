@@ -450,7 +450,7 @@
 - **POC**：Packaging Original Client
 - **PQ**：Product Quality
 - **PQL**：Product Quality Leader
-- **PQR**：Product Quality Review（原文件此條目後方還有一段不明的「PUA」文字，來源不清楚，沒有一併收錄，避免誤導）
+- **PQR**：Product Quality Review
 - **PR&C**：Product Requirements and Compliance
 - **PRA**：Product Retail Area (number)
 - **PRA**：Product Requirement Average (KPI)
