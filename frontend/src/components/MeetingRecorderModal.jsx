@@ -374,10 +374,27 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
         let meetingId = null;
 
         try {
-            const prepResponse = await fetchWithWakeupRetry(
+            // The prepare-audio request carries the actual file — up to
+            // MAX_UPLOAD_BYTES (500MB) — so racing *that* fetch() against
+            // COLD_START_TIMEOUT_MS the way fetchWithWakeupRetry normally
+            // does would misread a large file's genuine upload time (which
+            // can legitimately run into minutes on a slow connection, video
+            // files especially) as a cold start and retry the whole upload
+            // from scratch. Cold-start detection belongs on a fast, bodyless
+            // request instead: confirm the server is awake with a /health
+            // check first (already time-boxed and retried by
+            // fetchWithWakeupRetry), then send the real upload as a plain,
+            // untimed fetch() — however long it takes once the server is
+            // confirmed awake is real transfer time, not a cold-start symptom.
+            await fetchWithWakeupRetry(
+                `${apiUrl}/health`,
+                { signal: controller.signal },
+                () => setWakeupNotice(WAKEUP_RETRY_NOTICE),
+            );
+
+            const prepResponse = await fetch(
                 `${apiUrl}/meetings/prepare-audio/stream`,
                 { method: 'POST', body: buildAudioFormData(), signal: controller.signal },
-                () => setWakeupNotice(WAKEUP_RETRY_NOTICE),
             );
             if (!prepResponse.ok) {
                 const data = await prepResponse.json().catch(() => null);
