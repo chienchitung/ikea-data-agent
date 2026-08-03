@@ -18,6 +18,13 @@ const PROGRESS_LABELS = {
 // stages" hint before the server has reported any real progress.
 const GROQ_CHUNKING_THRESHOLD_BYTES = 20 * 1024 * 1024;
 
+// Meeting uploads land on Render's disk — potentially a 1GB Persistent Disk
+// shared with PDFs and every other meeting record (see render.yaml) — so an
+// unbounded upload could fill it on its own. 500MB comfortably covers a
+// typical 45-90 minute screen-recorded meeting video at normal compression;
+// anything bigger is rejected client-side before it's ever sent.
+const MAX_UPLOAD_BYTES = 500 * 1024 * 1024;
+
 // Render's free tier spins the backend down after inactivity; the first
 // request after that can take 30-60s+ just to get a response header back,
 // with nothing in between to show the user. Without a cap, fetch() just
@@ -282,9 +289,22 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
         return formData;
     };
 
+    const handleFileSelect = (file) => {
+        if (file && file.size > MAX_UPLOAD_BYTES) {
+            setErrorMessage(
+                `This file is ${(file.size / (1024 * 1024)).toFixed(0)}MB, over the ${MAX_UPLOAD_BYTES / (1024 * 1024)}MB limit. Please choose a smaller file.`
+            );
+            setSelectedFile(null);
+            return;
+        }
+        setErrorMessage('');
+        setSelectedFile(file);
+    };
+
     const hasAudio = mode === 'upload' ? !!selectedFile : !!recordedBlob;
     const hasGroqKey = !!(groqApiKey || '').trim();
     const audioFileBytes = mode === 'upload' ? (selectedFile?.size || 0) : (recordedBlob?.size || 0);
+    const overSizeLimit = audioFileBytes > MAX_UPLOAD_BYTES;
 
     // Backdrop click / header X / footer Cancel all funnel through here. While
     // generation is running, a stray click (especially the backdrop, or the X
@@ -319,7 +339,7 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
     // second, separate-feeling wait after the first one instead of shortening
     // anything, so it's back to one click, one wait, one thing to watch.
     const handleSubmit = async () => {
-        if (!hasAudio || !hasGroqKey || isSubmitting) return;
+        if (!hasAudio || !hasGroqKey || isSubmitting || overSizeLimit) return;
         setIsSubmitting(true);
         setErrorMessage('');
         setErrorDetails('');
@@ -509,14 +529,17 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
                             <label className="flex flex-col items-center justify-center gap-2 border-2 border-dashed border-[#DFDFDF] rounded-lg py-6 cursor-pointer hover:bg-[#F5F5F5] transition-colors">
                                 <Upload className="w-6 h-6 text-[#767676]" />
                                 <span className="text-sm text-[#484848]">
-                                    {selectedFile ? selectedFile.name : 'Click to choose an audio file'}
+                                    {selectedFile ? selectedFile.name : 'Click to choose an audio or video file'}
+                                </span>
+                                <span className="text-xs text-[#767676]">
+                                    Video files work too — the audio track is extracted automatically. Up to {MAX_UPLOAD_BYTES / (1024 * 1024)}MB.
                                 </span>
                                 <input
                                     type="file"
-                                    accept="audio/*"
+                                    accept="audio/*,video/*"
                                     className="hidden"
                                     disabled={isSubmitting}
-                                    onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
+                                    onChange={(e) => handleFileSelect(e.target.files?.[0] || null)}
                                 />
                             </label>
                         </div>
@@ -683,7 +706,7 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
                         <button
                             type="button"
                             onClick={handleSubmit}
-                            disabled={!hasAudio || !hasGroqKey}
+                            disabled={!hasAudio || !hasGroqKey || overSizeLimit}
                             className="px-4 py-2 text-sm font-medium text-white bg-[#0058A3] hover:bg-[#004F93] rounded-lg transition-colors disabled:opacity-50"
                         >
                             Generate Meeting Minutes
