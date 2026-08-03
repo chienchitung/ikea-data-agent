@@ -23,7 +23,7 @@ SAMPLE_MEETING_DATA = {
     "apologies": "",
     "last_time_actions": [],
     "agenda": [
-        {"duration": "10 mins", "item": "Review last week's dashboard issue", "owner": "Kelly"},
+        {"no": 1, "item": "Review last week's dashboard issue", "owner": "Kelly"},
     ],
     "notes": [
         "Dashboard refresh was delayed due to a schema change in the Request worksheet.",
@@ -62,7 +62,7 @@ def test_build_docx_produces_valid_document():
     assert len(last_time_table) - 1 >= 3
 
     agenda_table = _table_texts(doc.tables[1])
-    assert agenda_table[0] == ["Duration", "Agenda items", "Presenter/Owner"]
+    assert agenda_table[0] == ["No.", "Agenda items", "Presenter/Owner"]
     assert agenda_table[1][1] == "Review last week's dashboard issue"
 
     actions_table = _table_texts(doc.tables[2])

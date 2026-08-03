@@ -92,7 +92,6 @@ export function formatMeetingRecordForContext(record) {
         data.agenda.forEach((item, idx) => {
             const parts = [item?.item || ''];
             if (item?.owner) parts.push(`負責人：${item.owner}`);
-            if (item?.duration) parts.push(`時長：${item.duration}`);
             lines.push(`${idx + 1}. ${parts.filter(Boolean).join('，')}`);
         });
     }

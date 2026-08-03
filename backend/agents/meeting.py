@@ -96,7 +96,7 @@ MINUTES_PROMPT_TEMPLATE = """你是 IKEA Data Team 的會議記錄整理助理�
   寫中文時一律使用繁體中文（台灣用語習慣），不要使用簡體字。
 - "executive_summary" 是整場會議的總結摘要：用 3~6 句完整敘述先交代會議目的、主要討論脈絡、
   達成的結論與最重要的後續方向，讓沒參加會議的人只讀這段就能掌握全貌。不要用條列式。
-- "agenda" 是這場會議實際討論到的議程項目，依討論順序列出；如果逐字稿沒有明確的時長，duration 留空字串。
+- "agenda" 是這場會議實際討論到的議程項目，依討論順序列出。
 - "notes" 是這場會議的重點討論內容，用條列式整理，每一條是一個獨立重點、決議或討論細節，愈詳細愈好，
   不要只寫一句空泛的話。
 - "actions_review" 是這場會議中新產生或提到的待辦事項/行動項目，包含負責人與期限（如果逐字稿有提到）；
@@ -106,7 +106,7 @@ MINUTES_PROMPT_TEMPLATE = """你是 IKEA Data Team 的會議記錄整理助理�
 輸出 JSON schema：
 {{
   "executive_summary": "...",
-  "agenda": [{{"duration": "", "item": "", "owner": ""}}],
+  "agenda": [{{"item": "", "owner": ""}}],
   "notes": ["..."],
   "actions_review": [{{"no": 1, "item": "", "assigned_to": "", "deadline": ""}}]
 }}
@@ -124,7 +124,6 @@ if GENAI_AVAILABLE:
     _AGENDA_ITEM_SCHEMA = genai_types.Schema(
         type=genai_types.Type.OBJECT,
         properties={
-            "duration": genai_types.Schema(type=genai_types.Type.STRING),
             "item": genai_types.Schema(type=genai_types.Type.STRING),
             "owner": genai_types.Schema(type=genai_types.Type.STRING),
         },
@@ -590,14 +589,18 @@ async def transcribe_audio(
 
 
 def _normalize_agenda(items) -> list:
+    # "no" is always this item's 1-based position in the list, not something
+    # the model is asked to produce — the prompt already has it list agenda
+    # items in discussion order, so list position *is* the chronological
+    # sequence number.
     if not isinstance(items, list):
         return []
     normalized = []
-    for item in items:
+    for index, item in enumerate(items, start=1):
         if not isinstance(item, dict):
             continue
         normalized.append({
-            "duration": _to_traditional(item.get("duration", "")).strip(),
+            "no": index,
             "item": _to_traditional(item.get("item", "")).strip(),
             "owner": _to_traditional(item.get("owner", "")).strip(),
         })
@@ -719,8 +722,8 @@ def build_docx(meeting_data: dict) -> bytes:
 
     doc.add_heading("Meeting Agenda", level=2)
     agenda = meeting_data.get("agenda") or []
-    agenda_rows = [[item.get("duration", ""), item.get("item", ""), item.get("owner", "")] for item in agenda]
-    _add_table(doc, ["Duration", "Agenda items", "Presenter/Owner"], agenda_rows, min_rows=3)
+    agenda_rows = [[item.get("no", ""), item.get("item", ""), item.get("owner", "")] for item in agenda]
+    _add_table(doc, ["No.", "Agenda items", "Presenter/Owner"], agenda_rows, min_rows=3)
 
     doc.add_heading("Executive Summary", level=2)
     doc.add_paragraph(str(meeting_data.get("executive_summary") or ""))

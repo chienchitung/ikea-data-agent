@@ -22,7 +22,7 @@ describe('formatMeetingRecordForContext', () => {
                 attendees: 'Alice, Bob',
                 apologies: 'Carol',
                 executive_summary: 'Discussed Q3 priorities.',
-                agenda: [{ item: 'Review Q3 goals', owner: 'Alice', duration: '15min' }],
+                agenda: [{ no: 1, item: 'Review Q3 goals', owner: 'Alice' }],
                 notes: ['Budget approved.'],
                 actions_review: [{ no: 1, item: 'Finalize API doc', assigned_to: 'Bob', deadline: '2026-08-01' }],
             },
@@ -37,7 +37,7 @@ describe('formatMeetingRecordForContext', () => {
         expect(text).toContain('摘要：');
         expect(text).toContain('Discussed Q3 priorities.');
         expect(text).toContain('議程：');
-        expect(text).toContain('1. Review Q3 goals，負責人：Alice，時長：15min');
+        expect(text).toContain('1. Review Q3 goals，負責人：Alice');
         expect(text).toContain('備註：');
         expect(text).toContain('- Budget approved.');
         expect(text).toContain('待辦事項：');

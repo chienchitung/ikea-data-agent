@@ -44,15 +44,15 @@ function EditableTable({ headers, fields, rows, onChange, disabled }) {
                     {rows.map((row, rowIndex) => (
                         <tr key={rowIndex}>
                             {fields.map((field) => (
-                                <td key={field.key} className="border border-[#DFDFDF] px-2 py-1">
+                                <td key={field.key} className="border border-[#DFDFDF] px-2 py-1 align-top">
                                     {disabled ? (
-                                        <span className="text-[#111111]">{row[field.key] || ''}</span>
+                                        <span className="text-[#111111] whitespace-pre-wrap">{row[field.key] || ''}</span>
                                     ) : (
-                                        <input
-                                            type="text"
+                                        <textarea
                                             value={row[field.key] ?? ''}
                                             onChange={(e) => updateCell(rowIndex, field.key, e.target.value)}
-                                            className="w-full bg-transparent focus:outline-none text-[#111111]"
+                                            rows={Math.max(1, String(row[field.key] ?? '').split('\n').length)}
+                                            className="w-full bg-transparent focus:outline-none text-[#111111] resize-none block leading-normal"
                                         />
                                     )}
                                 </td>
@@ -367,8 +367,8 @@ export function MeetingMinutesView({ apiUrl, meetingId, onClose }) {
                             <section>
                                 <h3 className="text-sm font-semibold text-[#111111] mb-2">Meeting Agenda</h3>
                                 <EditableTable
-                                    headers={['Duration', 'Agenda items', 'Presenter/Owner']}
-                                    fields={[{ key: 'duration' }, { key: 'item' }, { key: 'owner' }]}
+                                    headers={['No.', 'Agenda items', 'Presenter/Owner']}
+                                    fields={[{ key: 'no' }, { key: 'item' }, { key: 'owner' }]}
                                     rows={meetingData.agenda || []}
                                     onChange={(rows) => updateField('agenda', rows)}
                                     disabled={!isEditing}
