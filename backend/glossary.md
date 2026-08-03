@@ -1,6 +1,6 @@
 - **Data Team Toolbox**（又稱 IKEA Data Team Toolbox）：Data Team 的內部知識庫，存放於 Confluence，包含操作手冊、流程文件、名詞定義、dashboard 教學等。使用者提到「Toolbox」、「Data Team Toolbox」或「IKEA Data Team Toolbox」時，均指此 Confluence 空間，應使用 Confluence 相關工具查詢。
-- **IKEA NA** 或 **IKEA North Asia**：指的是**北亞區市場**。
-- **CEM**：指的是 Customer Experience Management (顧客體驗管理)。
+- **IKEA NA** 或 **IKEA North Asia**：指的是**北亞區市場**。⚠️ 注意：單獨的縮寫 **NA** 在 IKEA 全球採購/供應鏈情境下（見下方「IKEA 全球通用縮寫」章節）通常指 **North America（北美）**，跟「IKEA NA / North Asia」是兩個不同地區，遇到單獨的 NA 要依上下文判斷，不要直接當作北亞。
+- **CEM**：在 TW/HK 行銷情境下，指的是 Customer Experience Management (顧客體驗管理)。⚠️ 注意：在 IKEA 全球採購情境下，CEM 也可能指 **Category Execution Meeting**，需依上下文判斷。
 - **DY**：指的是 Dynamic Yield (個人化推薦工具)，目前台灣 (TW) 用於 EC 網站的商品推薦。
 - **Insider**：行銷自動化工具，TW/HK 共同使用，現階段用來發送 SMS、EDM 的實驗性行銷活動。
 - **BQ**：指的是 BigQuery (Google Cloud 數據倉儲)。
@@ -26,7 +26,7 @@
 - **CX**：指的是 Customer Experience（客戶體驗）。
 - **CRM**：指的是 Customer Relationship Management（客戶關係管理）。
 - **CAL**：指的是 Commercial Activity Leader，負責行銷活動規劃。
-- **CR**：指的是 Customer Relationship（客戶關係）。
+- **CR**：在 TW/HK 行銷情境下，指的是 Customer Relationship（客戶關係）。⚠️ 注意：在 IKEA 全球採購情境下，CR 也可能指 **Contract Review**，需依上下文判斷。
 - **CDP**：指的是 Centralized Data Platform（集中式資料平台），公司儲存顧客資料的地方，後端使用 GCP/AWS。
 - **CMP**：指的是 Customer meeting point（顧客接觸點）。
 - **SOW**：指的是 Statement of work，給廠商的技術文件。
@@ -138,9 +138,9 @@
 - **TRO**：指的是 Time restrict offer（商品限時特價）。
 - **RSP**：指的是 retail selling price（商品的價格）。
 - **Hotdog**：等同於 BTI，指最低價。
-- **BTI**：指的是 Breast taking item（倒抽一口氣的價格）。
+- **BTI**：指的是 Breath Taking Item（倒抽一口氣的價格）。（先前誤植為 Breast taking item，已依官方 IKEA Abbreviations 文件更正）
 - **Combo**：合購價。
-- **4A1K**：指 High-profit, Turnover, BTI (Breast taking item), Sustainability, Potential (King)，即高毛、高迴轉、屏息價格、永續性、潛力商品。
+- **4A1K**：指 High-profit, Turnover, BTI (Breath Taking Item), Sustainability, Potential (King)，即高毛、高迴轉、屏息價格、永續性、潛力商品。
 - **NLP**：指的是 new low price（再創低價）。
 - **ELP**：指的是 even low price（再創低價）。
 - **Tertial (T1/T2/T3)**：IKEA 訂的時間週期單位。T1（9-12月）、T2（1-4月）、T3（5-8月）。以 GP% 為例，會因為採購價格的時間不同，影響 GP% 的程度也會不一樣。
@@ -156,3 +156,438 @@
 - **OTW**：指的是 Open the wallet，刺激購物的黑色背板，用白粉筆寫產品價格。
 - **Streamer**：A4 懸掛的溝通物。
 - **Ptag**：指的是價格標籤（Price tag）。
+
+## IKEA 全球通用縮寫（來源：官方文件 IKEA Abbreviations）
+
+以下條目整理自 IKEA 官方內部文件《IKEA Abbreviations》，涵蓋範圍是全球通用的採購、供應鏈、物流、品質、永續等術語，跟上面 TW/HK 行銷/零售情境的縮寫不是同一份來源，情境不同時意思可能不同（例如 NA、CEM、CR 在這份文件裡的意思跟上面 TW/HK 章節不一樣，已在上面對應條目加註）。為求跟官方原文一致，這個章節的說明維持英文原文，不強行翻譯。
+
+### A
+
+- **ACT**：Activity article. Products classified with ACT are not part of the core IKEA offer. They are sold over a shorter period or a season.
+- **AP**：Asia Pacific
+- **AP**：Accounts payable
+- **APL**：Action Plan
+- **APL**：Action Plan List
+- **AR**：Accounts receivable
+
+### B
+
+- **BA**：Business Area
+- **BAS**：Normal article range in IKEA stores
+- **BCP**：Business Contingency Plan
+- **BD**：Business Developer
+- **BBD**：Best-before-date
+- **BC**：Buyer Claim
+- **BDM**：Business Development Manager
+- **BIFMA**：Business and Institutional Furniture Manufacturer's Association
+- **Blue store**：Stores under IKEA Group
+- **BOM**：Bill of materials
+- **BPL**：Business Plan
+- **BT**：Business Team
+- **BU**：Business Unit
+- **BW**：Basware (app)
+
+### C
+
+- **CA**：Category Area
+- **CAM**：Category Area Manager
+- **CAIS**：Customs Article Information Support
+- **Cap. Com**：capacity commitment
+- **CARB**：California Air Sources Board
+- **CASY**：Claim Case Support System
+- **CAT**：Category
+- **CAT range**：K-articles
+- **CBD**：Cost Breakdown
+- **CBF**：Core Business Franchise
+- **CBM**：Communication Business Partner
+- **CCC**：Customs Coordination Centre
+- **CCL**：Commercial Classification
+- **CCN**：Category Competence Network
+- **CCP**：Centralized Constrained Planning
+- **CDC**：Customer Distribution Center
+- **CDPS**：Cluster Delivery Planning System
+- **CDr**：Commit Driven
+- **CECQ**：Costumer Experience with Components Quality
+- **CEPQ**：Customer Experienced Product Quality
+- **CFF**：Customer Fulfillment
+- **CFS**：Container freight Station
+- **CIDS**：Customs Inventory & Declaration System
+- **CIM**：Invoice used in international railway traffic
+- **CIP**：Carrier Integration Program
+- **CIQ**：Commodity Inspection Quarantine
+- **CIS**：Customs Inventory System
+- **CM**：Category Manager
+- **CMG**：Compliance and Monitoring Group
+- **CMR**：Convention Merchandise Routine
+- **CMW**：Custom made worktops
+- **CNS**：Cargo Network System
+- **COA**：Certificate of Analysis
+- **CoC**：Certificate of Compliance
+- **COPQ**：Cost of Poor Quality (KPI)
+- **CORE**：Core article
+- **COSC**：Customs Operations Support Center
+- **CP**：Consolidation Point
+- **CPP**：Constrained Production Planning
+- **CPSA/CPSIA**：Consumer Product Safety (Improvement) Act
+- **CQL**：Category Quality Leader
+- **CRL**：Conditional Rules List, DoC - Declaration of Conformity
+- **CRPQ**：Customer Returned Product Quality
+- **CRS**：Customer Return System
+- **CRT**：Carton
+- **CS**：Combine Supply
+- **CSIM**：Cost Simulation
+- **CSM**：Consignment
+- **CSS**：Category Sourcing Specialist
+- **CTQ**：Critical To Quality
+- **CTY**：Country
+- **CVF**：Compliance Verification Function
+- **CY**：Container Yard
+- **CY**：Calendar Year
+
+### D
+
+- **DAF**：Delivery at Frontier
+- **DC**：Distribution Center
+- **DCG**：Distribution Center Group
+- **DD**：Direct delivery
+- **DD share**：Direct Delivery Share
+- **DDC**：Direct Delivery Customer
+- **DDP**：Delivery Duty Paid
+- **DDU**：Delivery Duty Unpaid
+- **Del Sec**：Delivery Security
+- **DES**：Delivery Schedule
+- **DFG**：Develop for growth
+- **DISC**：Discontinued Product
+- **DORS**：Define Optimal Replenishment Solution
+- **DP**：Demand Planner
+- **DPM**：Delivery planner manager
+- **DPOP**：Develop the product offer process
+- **DR**：Deviation Report
+- **DRP**：Distribution Requirements Planning
+- **DSP**：Demand & Supply Planning
+- **DT**：Distribution Terminal
+- **DWP**：Dimension Weight & Package
+- **DWP**：Digital Work Place
+
+### E
+
+- **ECHA**：European Chemical Agency
+- **ECIS**：Electronic Commerce for IKEA Supplier
+- **EDI**：Electronic Data Interchange
+- **EDS**：End date sales
+- **EEC**：Eastern European Countries
+- **ELF**：European Low Flow
+- **EPQ**：Everyday Product Quality
+- **EQL**：Engineering & Quality Leader
+- **EQU**：Equipment Utilization
+- **ESI**：Electronic Shipping Information
+- **ESP**：Enterprise Supply Planning
+- **ESP**：External Service Provider
+- **EU**：Europe
+
+### F
+
+- **FA**：Frame Agreement
+- **FAR**：Fixed annual (exchange) rate
+- **FB**：First buy
+- **FCA**：Free Carrier Agreement
+- **FCB**：Forecast based
+- **FCL**：Full Container Load
+- **FCO**：Furniture Component Object
+- **FCP**：Flow Capacity Planner
+- **FD**：First Delivery
+- **FDI**：Final Delivery Inspection
+- **FF**：Fulfilment (need calculation system)
+- **FMEA**：Failure Mode Effect Analysis
+- **FOB**：Foil on Board
+- **FPD**：Flow performance developer
+- **FR**：Filling Rate
+- **FR**：Fire Retardant
+- **FRD**：Flow replenishment developer
+- **FSC**：Forest Stewardship Council
+- **FTL**：Full Truck Load
+- **FY**：Fiscal Year (for IKEA: September 1 – August 31)
+
+### G
+
+- **GA**：General agreement
+- **GC**：Gate Check
+- **gFAR**：Group fixed annual (exchange) rate
+- **GFSI**：Global Food Safety Initiative
+- **GIT**：Goods in Transit
+- **GO/NOGO**：Decision of supplier to proceed/not proceed further
+- **GOG**：Growth on Growth
+- **GPC**：General Purchasing Conditions
+- **GPRR**：Global Product Requirement Review
+- **GPS**：Global Purchasing System
+- **GS1**：Global System of Supply Chain Standards
+- **GSP**：Global Service Protocol
+- **GTS**：Global Terminal System
+- **GWI**：Growth with Impact
+
+### H
+
+- **HFS**：Home Furnishing Supplier
+- **HM**：Handling Material
+
+### I
+
+- **IAP**：IKEA Asia Pacific
+- **IB**：IKEA Business
+- **ICC**：IKEA Common Client
+- **ICOM**：IKEA Communications AB
+- **ICOMP**：IKEA Components
+- **ICS**：IWAY Analysis Tool
+- **IFPM**：IKEA Franchising Project Marketing
+- **IFS**：IKEA Food Services
+- **IFSAG**：IKEA Food Supply AG
+- **IISBUD**：Inter IKEA System Business Unit Distribution
+- **IMS**：Indirect Material & Services
+- **IMT**：Inter Modal Terminal
+- **INGKA**：INGKA Holding B.V.
+- **IRT**：IKEA Risk Tool
+- **ISAB**：IKEA Svenska AB
+- **ISAG**：IKEA Supply AG
+- **ISCN**：IKEA Supply China
+- **ISDP**：Information Security & Data Privacy
+- **ISOS**：IKEA Supplier Operations Standard
+- **ISQS**：IKEA Supplier Quality Standard
+- **ITM**：IKEA Transport Management
+- **ITP**：IKEA Transit Point
+- **IWAY**：IKEA Way of Purchasing
+- **IWDS**：IWAY Well Develop Supplier
+
+### K
+
+- **KPI**：Key performance indicator
+
+### L
+
+- **LB**：Last buy
+- **LCD**：Logistic Cost Development
+- **LCL**：Less than Container Load
+- **LCR**：Logistics Cost Report
+- **LD**：Logistics Developer
+- **LL**：Loading Ledge
+- **LSC**：Local Service Centre
+- **LSCP**：Local Sustainability Compliance Partner
+- **LSP**：Logistics Service Provider
+- **LT**：Lead Time
+- **LTA**：Long Term Agreement
+- **LTL**：Less than Truck Load
+- **LUT**：Loading Unit Type
+
+### M
+
+- **MAN**：Mandatory article
+- **MCDN**：Multi-Channel Distribution Network
+- **MD**：Managing Director
+- **MDQ**：Minimum Delivery Quantity
+- **MDU**：Minimum Delivery Unit
+- **MIR**：Most Important Range
+- **MOQ**：Minimum Order Quantity
+- **MOT**：Mode of Transport
+- **MP**：Market Preference article
+- **MPQ**：Minimum Production Quantity
+- **MRU**：Mid-Receiver Unit
+- **MS**：Market specific article
+- **MSC**：Multi-Stop-Costs
+- **MSCP**：Main Sustainability Compliance Partner
+- **MSI**：Manage Supply Imbalance
+- **MSS**：More Sustainable Sources
+- **MTP**：Mid-term Planning
+
+### N
+
+- **NA**：North America
+- **NAC**：New Article Council
+- **NB**：New Business
+- **NCA**：Non-Conformity Advice
+- **NDA**：Non-Disclosure Agreement
+- **NDM**：New Distribution Mode
+- **NDU**：Non-Disclosure Undertaking
+- **NEW**：A product introduced into the product range
+- **NFP**：News forecast precision
+- **NP**：Need Planner
+
+### O
+
+- **O2C**：Order-to-cash
+- **OBP**：Order Based Planning
+- **OEE**：Overall Equipment Effectiveness
+- **OMS**：Order management system
+- **OPT**：Optional article
+- **OSC**：One Supply Chain
+- **OSCN**：Optimize Supply Chain Network
+- **OSCP**：One Supplier Capacity Process
+- **OTD**：On Time Delivery
+
+### P
+
+- **P&D**：Packaging and Distribution center
+- **P2P**：Procure-to-pay
+- **PBSS**：Plan and Balance Sales and Supply
+- **PC**：Payment Confirmation
+- **PC**：Product Council
+- **PCD**：Purchase cost development (KPI)（跟上面的 Product Change Date 是同一個縮寫的不同意思，需依上下文判斷）
+- **pcs**：Pieces
+- **PCS**：Product Compliance Specialist
+- **PD**：Purchasing Development
+- **PD**：Product Developer
+- **PD**：Price Development
+- **PDD**：Product Design Developer
+- **PDOC**：Product Documentation
+- **PDP**：Purchasing Development Process
+- **PE**：Product Engineer
+- **PET**：Recycled poly(ethylene terephthalate)
+- **PIA**：Product Information Assistance
+- **PIA**：Payment in Advance
+- **PL**：Project Leader
+- **PLA**：Purchasing & Logistics Area
+- **PM**：Purchasing Manual
+- **PNE**：Production Engineer
+- **POA**：Purchasing Operations Area
+- **POC**：Packaging Original Client
+- **PQ**：Product Quality
+- **PQL**：Product Quality Leader
+- **PQR**：Product Quality Review（原文件此條目後方還有一段不明的「PUA」文字，來源不清楚，沒有一併收錄，避免誤導）
+- **PR&C**：Product Requirements and Compliance
+- **PRA**：Product Retail Area (number)
+- **PRA**：Product Requirement Average (KPI)
+- **PRE**：Product Requirement Engineer
+- **PRF**：Product Requirement Fulfilment (KPI)
+- **PRRT**：Product Requirement Review Tool, known also as Bizagi
+- **PSP**：Price Steering Purchasing (app)
+- **PTE**：Product Engineer
+- **PuA**：Purchase Agreement
+
+### Q
+
+- **QCC**：Quality Compliance Commitment
+- **QCM**：Quality Compliance Manager
+- **QSC**：Quality Support Center
+
+### R
+
+- **RCA**：Root Cause Analysis
+- **Rcv**：Receiver
+- **RD**：Range Dimension (Local EDS)
+- **RDU**：Retail Distribution Unit
+- **Red store**：Retailer Out of IKEA Group
+- **RFI**：Request for Information
+- **RFP**：Request for Proposal
+- **RFQ**：Request for quotation
+- **RG**：Ready Goods
+- **RM**：Raw Material
+- **ROC**：Range Offer Classification
+- **ROIG**：Retailer Out of IKEA Group (IKEA stores in franchising)
+- **RS**：Retail Sales
+- **RSI**：Retail Supply Integration
+- **RST**：Regional Supply Team
+- **RU**：Retail Unit
+
+### S
+
+- **S&E**：Steer and enable (name of SA)
+- **S&T**：Scope & Terms
+- **S/I**：Shipping information
+- **S/O**：Shipping Order
+- **SA**：Sales agreement
+- **SA**：Solution area
+- **SAA**：Solution Access Agreement
+- **SAD**：Stock Available Date
+- **SAN**：Stock Availability Notification
+- **sb**：sofa bed
+- **SBI**：Self-Billing-Invoice
+- **SCA**：Sustainability Compliance Auditor
+- **SCCM**：Sub-contracting Chain Management
+- **SCD**：Supplier Costs Development (KPI)
+- **SCM**：Supply Chain Matrix & Distribution setup
+- **SCM**：Sustainability Compliance Manager
+- **SCM (System)**：Supply Chain Matrix & Distribution setup (JDA)
+- **SCO**：Supply Chain Operations
+- **SCP**：Sustainability Compliance Partner
+- **SCS**：Supply Chain Security
+- **SD**：Sourcing Developer
+- **SD**：Self-Declaration
+- **SD**：Sustainability Developer
+- **SDS**：Supply Developer Sender
+- **SDOP**：Service Provider Operations Developer
+- **SDP**：Supplier Delivery Performance
+- **SDP**：Supplier Development Process
+- **SDR**：Supply Development Receiver
+- **SEA**：Seasonal Range
+- **SEAS**：Mandatory Seasonal Article
+- **SHP**：Shipment
+- **SI**：System Instruction
+- **SIT**：Sustainability in Transport
+- **SL**：Sales Leader
+- **SL**：Service Level
+- **SLA**：Service Level Agreement
+- **SM**：Sustainability Manager
+- **SO**：Service Office
+- **SOD**：Supply Operations Developer
+- **SODM**：Supply operation developer manager
+- **SOM**：Supply Operation Manager
+- **SOS**：Supply Operation Specialist
+- **SP**：Service Provider
+- **SP**：Supply Planner
+- **SPI**：Supply plan information
+- **SPT**：Supplier Partnership Talk
+- **SQR**：Store Quality Report
+- **SRDB**：Supplier Review Database
+- **SSD**：Sales Start Date
+- **SSI**：Supplier Sustainability Index Tool
+- **SSTS**：Sub-suppliers Tracking System
+- **STMS**：Supply Transport Management Solution
+- **STO**：Store
+- **STO**：Store chosen article
+- **SU**：Superuser
+- **SUP**：Supplier
+- **SVHC**：Substance of very high concern
+
+### T
+
+- **TA**：Transport agreement
+- **TA**：Trading Area
+- **TAM**：Trading Area Manager
+- **TASE**：Trading Area South Europe
+- **TEC**：Travel and Expense Claim
+- **TED**：Technical Description
+- **TF**：Time fence
+- **TP**：Transit Point
+- **TP**：Transport Planner
+- **TPC**：Third Party Certificate
+- **TR**：Test Report
+- **Tran**：Transit
+- **TrZ**：Transport Zone
+- **TSO**：Trading Service Office
+- **TSP**：Transport Service Provider
+- **TSP**：Towards Seniority Program
+- **TSS**：Test Status Summary from CONNECT system
+
+### U
+
+- **UCC**：Union Customs Code
+- **UL**：Unit Load which consists of a number of consumer packages or multipacks
+- **ULL**：Unit Load Label
+- **UTG**：Discontinued product / Phase-out Products（跟上面 TW/HK 章節的「Outgoing（絕版品）」是同一個概念）
+
+### V
+
+- **VAT**：Value Added Tax
+- **VMI**：Vendor Managed Inventory
+- **VMR**：Vendor Managed Replenishment
+- **VOC**：Volatile Organic Compounds
+
+### W
+
+- **WH**：Warehouse
+- **WI**：Working Instruction
+- **WM**：Working method
+- **WS**：Wholesaler
+
+### Y
+
+- **YES**：Yearly Environmental Survey
+
