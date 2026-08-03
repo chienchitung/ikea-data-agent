@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Mic, Square, Upload, X, Loader2, RotateCcw } from 'lucide-react';
+import { Mic, Square, Upload, X, Loader2, RotateCcw, Download } from 'lucide-react';
 import { readSseStream } from '../utils/sse';
 import { saveMeetingRecord, saveMeetingAudio } from '../utils/meetingStore';
 
@@ -80,6 +80,16 @@ function formatSeconds(totalSeconds) {
     return `${minutes}:${String(seconds).padStart(2, '0')}`;
 }
 
+// Shared between buildAudioFormData (what gets uploaded) and
+// handleDownloadRecording (what the user can save locally) so both agree on
+// the same extension for a given recorder mimeType.
+function recordingFileExtension(mimeType) {
+    const isVideo = mimeType.startsWith('video/');
+    const isMp4 = mimeType.includes('mp4');
+    if (isVideo) return isMp4 ? 'mp4' : 'webm';
+    return isMp4 ? 'm4a' : 'webm';
+}
+
 // groqApiKey is set from the Meeting Records page, not here — this modal only
 // reads it (to send with the request and to disable submit when it's missing).
 export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose, onGenerated }) {
@@ -99,6 +109,12 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
     const [includeTabAudio, setIncludeTabAudio] = useState(false);
     const [tabAudioNotice, setTabAudioNotice] = useState('');
     const tabAudioSupported = typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getDisplayMedia;
+    // Only offered alongside tab-audio sharing, since it reuses the same
+    // getDisplayMedia() picker/stream — recording video is opt-in and off by
+    // default (bigger files, and it captures on-screen content, not just
+    // audio, so it shouldn't be silently bundled into "share tab audio").
+    const [includeVideo, setIncludeVideo] = useState(false);
+    const [showDiscardRecordingConfirm, setShowDiscardRecordingConfirm] = useState(false);
 
     const [meetingTitle, setMeetingTitle] = useState('');
     const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
@@ -182,6 +198,19 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
         setRecordingSeconds(0);
     };
 
+    // Lets the user keep the raw recording (video especially) even if they
+    // don't end up transcribing it here — reuses the same blob URL created
+    // in recorder.onstop rather than allocating a new one.
+    const handleDownloadRecording = () => {
+        if (!recordedBlob || !recordedUrl) return;
+        const link = document.createElement('a');
+        link.href = recordedUrl;
+        link.download = `recording-${new Date().toISOString().slice(0, 10)}.${recordingFileExtension(recordedBlob.type)}`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+    };
+
     const startRecording = async () => {
         setErrorMessage('');
         setTabAudioNotice('');
@@ -190,23 +219,34 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
             streamRef.current = micStream;
             chunksRef.current = [];
 
-            let recordingStream = micStream;
+            let mixedAudioTrack = micStream.getAudioTracks()[0];
+            let videoTrack = null;
 
             if (includeTabAudio && tabAudioSupported) {
                 try {
                     // video: true is required for Chrome's tab picker to offer
                     // "Chrome Tab" as a source at all (it's the only source
-                    // type that exposes a "Share tab audio" checkbox) — the
-                    // video track itself is immediately discarded below since
-                    // only the audio is wanted.
+                    // type that exposes a "Share tab audio" checkbox). The
+                    // video track is kept only when includeVideo is on;
+                    // otherwise it's stopped immediately since only the audio
+                    // was wanted.
                     const displayStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
-                    displayStream.getVideoTracks().forEach((track) => track.stop());
+                    // Tracked unconditionally (not just when audio pans out)
+                    // so releaseRecordingResources() always stops every track
+                    // this capture opened, video included.
+                    displayStreamRef.current = displayStream;
                     const displayAudioTrack = displayStream.getAudioTracks()[0];
+                    const displayVideoTrack = displayStream.getVideoTracks()[0];
+
+                    if (includeVideo && displayVideoTrack) {
+                        videoTrack = displayVideoTrack;
+                    } else {
+                        displayStream.getVideoTracks().forEach((track) => track.stop());
+                    }
 
                     if (!displayAudioTrack) {
                         setTabAudioNotice('The shared source had no audio (pick "Chrome Tab" and check "Share tab audio" next time) — only your microphone was recorded.');
                     } else {
-                        displayStreamRef.current = displayStream;
                         const audioContext = new AudioContext();
                         audioContextRef.current = audioContext;
                         const destination = audioContext.createMediaStreamDestination();
@@ -219,7 +259,7 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
                         destination.channelCountMode = 'explicit';
                         audioContext.createMediaStreamSource(micStream).connect(destination);
                         audioContext.createMediaStreamSource(new MediaStream([displayAudioTrack])).connect(destination);
-                        recordingStream = destination.stream;
+                        mixedAudioTrack = destination.stream.getAudioTracks()[0];
                     }
                 } catch (displayError) {
                     // Cancelling the share picker or denying permission lands
@@ -231,8 +271,14 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
                 }
             }
 
-            const mimeType = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4']
-                .find((candidate) => window.MediaRecorder?.isTypeSupported?.(candidate));
+            const recordingStream = videoTrack
+                ? new MediaStream([mixedAudioTrack, videoTrack])
+                : new MediaStream([mixedAudioTrack]);
+
+            const mimeCandidates = videoTrack
+                ? ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4']
+                : ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'];
+            const mimeType = mimeCandidates.find((candidate) => window.MediaRecorder?.isTypeSupported?.(candidate));
             const recorder = mimeType ? new MediaRecorder(recordingStream, { mimeType }) : new MediaRecorder(recordingStream);
 
             recorder.ondataavailable = (e) => {
@@ -267,8 +313,12 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
     const buildAudioFormData = () => {
         const formData = new FormData();
         if (mode === 'record' && recordedBlob) {
-            const ext = recordedBlob.type.includes('mp4') ? 'm4a' : 'webm';
-            formData.append('audio', recordedBlob, `recording.${ext}`);
+            // Sent under the same "audio" field name regardless of whether
+            // this is an audio-only or video recording — the backend's
+            // normalize_audio() already extracts the audio track from any
+            // container it's handed (see prepare_meeting_audio_stream),
+            // exactly like it does for an uploaded video file.
+            formData.append('audio', recordedBlob, `recording.${recordingFileExtension(recordedBlob.type)}`);
         } else if (selectedFile) {
             formData.append('audio', selectedFile);
         }
@@ -311,11 +361,26 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
     // in the corner right next to where the progress panel sits) shouldn't be
     // able to silently kill an in-flight transcription — so this only asks
     // for confirmation at that point instead of cancelling immediately.
-    // Before/after generation there's nothing to lose, so it still closes
-    // right away.
+    //
+    // A finished-but-unsubmitted recording gets the same treatment: nothing
+    // is written to IndexedDB until generation actually completes (see
+    // handleSubmit's "Saving to your browser…" step), so the recording only
+    // ever exists as an in-memory blob up to that point — closing without
+    // transcribing discards it for good, which is worth a confirmation,
+    // especially for video (bigger, more effort to redo than a quick voice
+    // memo). Only checked for 'record' mode: an unsubmitted upload isn't at
+    // risk the same way, since the original file is still sitting wherever
+    // the user picked it from.
+    //
+    // This dialog can't catch the browser tab/window itself being closed —
+    // only an in-app "beforeunload" prompt could, and this doesn't add one.
     const handleCancel = () => {
         if (isSubmitting) {
             setShowCancelConfirm(true);
+            return;
+        }
+        if (mode === 'record' && recordedBlob) {
+            setShowDiscardRecordingConfirm(true);
             return;
         }
         onClose();
@@ -328,6 +393,14 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
     const confirmCancelGeneration = () => {
         setShowCancelConfirm(false);
         abortControllerRef.current?.abort();
+        onClose();
+    };
+
+    // Only reachable via the discard-recording confirmation dialog. Doesn't
+    // need to manually revoke the blob URL or clear state itself — closing
+    // unmounts this modal, and the cleanup effect above already handles that.
+    const confirmDiscardRecordingAndClose = () => {
+        setShowDiscardRecordingConfirm(false);
         onClose();
     };
 
@@ -570,7 +643,13 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
                                                 <input
                                                     type="checkbox"
                                                     checked={includeTabAudio}
-                                                    onChange={(e) => setIncludeTabAudio(e.target.checked)}
+                                                    onChange={(e) => {
+                                                        setIncludeTabAudio(e.target.checked);
+                                                        // Video capture rides on the same shared-tab
+                                                        // stream, so it stops making sense once tab
+                                                        // sharing itself is turned off.
+                                                        if (!e.target.checked) setIncludeVideo(false);
+                                                    }}
                                                     disabled={!tabAudioSupported}
                                                     className="rounded border-[#DFDFDF]"
                                                 />
@@ -581,6 +660,17 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
                                                     ? 'Recording your mic alone misses the other side if you\'re on headphones. Chrome/Edge only — when prompted, pick the meeting\'s browser tab and check "Share tab audio".'
                                                     : 'Not supported in this browser — try Chrome or Edge, with the meeting open in a browser tab.'}
                                             </p>
+                                            {includeTabAudio && tabAudioSupported && (
+                                                <label className="mt-2 flex items-center justify-center gap-2 text-xs text-[#484848]">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={includeVideo}
+                                                        onChange={(e) => setIncludeVideo(e.target.checked)}
+                                                        className="rounded border-[#DFDFDF]"
+                                                    />
+                                                    Also record the shared tab's video
+                                                </label>
+                                            )}
                                         </div>
                                     )}
                                     <button
@@ -603,16 +693,31 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
                                             {tabAudioNotice}
                                         </p>
                                     )}
-                                    <audio controls src={recordedUrl} className="w-full" />
-                                    <button
-                                        type="button"
-                                        onClick={discardRecording}
-                                        disabled={isSubmitting}
-                                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-red-500 border border-red-200 rounded-lg hover:bg-red-50 hover:text-red-600 transition-colors disabled:opacity-50"
-                                    >
-                                        <RotateCcw className="w-3.5 h-3.5" />
-                                        Discard and record again
-                                    </button>
+                                    {recordedBlob.type.startsWith('video/') ? (
+                                        <video controls src={recordedUrl} className="w-full rounded-lg" />
+                                    ) : (
+                                        <audio controls src={recordedUrl} className="w-full" />
+                                    )}
+                                    <div className="flex items-center gap-2">
+                                        <button
+                                            type="button"
+                                            onClick={handleDownloadRecording}
+                                            disabled={isSubmitting}
+                                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#0058A3] border border-[#0058A3]/30 rounded-lg hover:bg-blue-50 transition-colors disabled:opacity-50"
+                                        >
+                                            <Download className="w-3.5 h-3.5" />
+                                            Download recording
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={discardRecording}
+                                            disabled={isSubmitting}
+                                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-red-500 border border-red-200 rounded-lg hover:bg-red-50 hover:text-red-600 transition-colors disabled:opacity-50"
+                                        >
+                                            <RotateCcw className="w-3.5 h-3.5" />
+                                            Discard and record again
+                                        </button>
+                                    </div>
                                 </div>
                             )}
                         </div>
@@ -769,6 +874,50 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
                             className="px-4 py-2 text-sm font-medium text-white bg-red-500 hover:bg-red-600 rounded-lg transition-colors"
                         >
                             Stop and discard
+                        </button>
+                    </div>
+                </div>
+            </div>
+        )}
+
+        {/* Confirm-before-discard: closing without transcribing is the only
+            way this recording is lost — nothing is saved to the browser
+            until generation finishes (see handleSubmit), so this is the
+            last chance to keep it via "Download recording" instead. */}
+        {showDiscardRecordingConfirm && (
+            <div
+                className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60] p-4"
+                onClick={() => setShowDiscardRecordingConfirm(false)}
+            >
+                <div
+                    role="alertdialog"
+                    aria-modal="true"
+                    aria-labelledby="discard-recording-heading"
+                    aria-describedby="discard-recording-description"
+                    className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6"
+                    onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => { if (e.key === 'Escape') setShowDiscardRecordingConfirm(false); }}
+                >
+                    <h3 id="discard-recording-heading" className="text-base font-semibold text-[#111111] mb-1">Discard this recording?</h3>
+                    <p id="discard-recording-description" className="text-sm text-[#767676] mb-5">
+                        You haven't generated meeting minutes from it. Closing now discards it for good —
+                        it isn't saved anywhere in your browser unless you transcribe it or download it first.
+                    </p>
+                    <div className="flex justify-end gap-2">
+                        <button
+                            type="button"
+                            autoFocus
+                            onClick={() => setShowDiscardRecordingConfirm(false)}
+                            className="px-4 py-2 text-sm font-medium text-[#111111] hover:bg-[#F5F5F5] rounded-lg transition-colors"
+                        >
+                            Keep recording
+                        </button>
+                        <button
+                            type="button"
+                            onClick={confirmDiscardRecordingAndClose}
+                            className="px-4 py-2 text-sm font-medium text-white bg-red-500 hover:bg-red-600 rounded-lg transition-colors"
+                        >
+                            Discard and close
                         </button>
                     </div>
                 </div>
