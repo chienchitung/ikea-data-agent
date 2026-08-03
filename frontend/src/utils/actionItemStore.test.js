@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
     listActionItems,
     hasImportedActionsForMeeting,
-    importActionItemsFromMeeting,
+    syncActionItemsFromMeeting,
     addActionItem,
     updateActionItem,
     moveActionItem,
@@ -10,56 +10,131 @@ import {
     deleteActionItem,
     ACTION_STATUSES,
 } from './actionItemStore';
+import { saveMeetingRecord } from './meetingStore';
 
-function meetingRecord(id, actions) {
-    return {
+// syncActionItemsFromMeeting persists backfilled action-item ids back onto
+// the meeting record (see its doc comment in actionItemStore.js), so —
+// unlike the old one-shot import — the record needs to actually exist in
+// IndexedDB first, the same way it does for real once minutes generation
+// finishes and saves it there.
+async function meetingRecord(id, actions) {
+    const record = {
         meeting_id: id,
         meeting_data: {
             meeting_title: `Meeting ${id}`,
             actions_review: actions,
         },
     };
+    await saveMeetingRecord(record);
+    return record;
 }
 
-describe('importActionItemsFromMeeting', () => {
+describe('syncActionItemsFromMeeting', () => {
     it('creates one To Do card per action item, tagged with the source meeting', async () => {
-        const record = meetingRecord('m-import-1', [
+        const record = await meetingRecord('m-import-1', [
             { no: 1, item: 'Finalize API doc', assigned_to: 'Bob', deadline: '2026-08-01' },
             { no: 2, item: 'Review budget', assigned_to: 'Alice', deadline: '2026-08-05' },
         ]);
 
-        const created = await importActionItemsFromMeeting(record);
-        expect(created).toHaveLength(2);
-        expect(created.every((c) => c.status === 'To Do')).toBe(true);
-        expect(created.every((c) => c.meeting_id === 'm-import-1')).toBe(true);
-        expect(created.every((c) => c.meeting_title === 'Meeting m-import-1')).toBe(true);
+        const result = await syncActionItemsFromMeeting(record);
+        expect(result.created).toBe(2);
+        expect(result.updated).toBe(0);
 
         const all = await listActionItems();
         const imported = all.filter((a) => a.meeting_id === 'm-import-1');
+        expect(imported.every((c) => c.status === 'To Do')).toBe(true);
+        expect(imported.every((c) => c.meeting_title === 'Meeting m-import-1')).toBe(true);
         expect(imported.map((a) => a.item).sort()).toEqual(['Finalize API doc', 'Review budget']);
     });
 
     it('skips action items with empty text', async () => {
-        const record = meetingRecord('m-import-2', [
+        const record = await meetingRecord('m-import-2', [
             { item: '', assigned_to: 'Nobody', deadline: '' },
             { item: '  ', assigned_to: 'Nobody', deadline: '' },
             { item: 'Real action', assigned_to: 'Carol', deadline: '2026-09-01' },
         ]);
-        const created = await importActionItemsFromMeeting(record);
-        expect(created).toHaveLength(1);
-        expect(created[0].item).toBe('Real action');
+        const result = await syncActionItemsFromMeeting(record);
+        expect(result.created).toBe(1);
+        const all = await listActionItems();
+        expect(all.filter((a) => a.meeting_id === 'm-import-2').map((a) => a.item)).toEqual(['Real action']);
     });
 
-    it('returns an empty array when the meeting has no actions_review', async () => {
-        expect(await importActionItemsFromMeeting(meetingRecord('m-import-3', []))).toEqual([]);
-        expect(await importActionItemsFromMeeting({ meeting_id: 'm-import-4', meeting_data: {} })).toEqual([]);
+    it('does nothing when the meeting has no actions_review', async () => {
+        const empty = await meetingRecord('m-import-3', []);
+        expect(await syncActionItemsFromMeeting(empty)).toEqual({ created: 0, updated: 0, record: empty });
+        const noActions = { meeting_id: 'm-import-4', meeting_data: {} };
+        expect(await syncActionItemsFromMeeting(noActions)).toEqual({ created: 0, updated: 0, record: noActions });
     });
 
     it('hasImportedActionsForMeeting reflects whether that meeting has been imported', async () => {
-        const record = meetingRecord('m-import-5', [{ item: 'Something', assigned_to: '', deadline: '' }]);
+        const record = await meetingRecord('m-import-5', [{ item: 'Something', assigned_to: '', deadline: '' }]);
         expect(await hasImportedActionsForMeeting('m-import-5')).toBe(false);
-        await importActionItemsFromMeeting(record);
+        await syncActionItemsFromMeeting(record);
         expect(await hasImportedActionsForMeeting('m-import-5')).toBe(true);
+    });
+
+    it('re-syncing the same meeting does not duplicate cards, and backfills a stable id per row', async () => {
+        const record = await meetingRecord('m-sync-1', [
+            { item: 'Track this', assigned_to: 'Dana', deadline: '2026-10-01' },
+        ]);
+
+        const first = await syncActionItemsFromMeeting(record);
+        expect(first.created).toBe(1);
+        expect(first.record.meeting_data.actions_review[0].id).toBeTruthy();
+
+        const second = await syncActionItemsFromMeeting(first.record);
+        expect(second.created).toBe(0);
+        expect(second.updated).toBe(1);
+
+        const all = await listActionItems();
+        expect(all.filter((a) => a.meeting_id === 'm-sync-1')).toHaveLength(1);
+    });
+
+    it('re-syncing after editing actions_review updates the linked card in place, preserving status/order', async () => {
+        const record = await meetingRecord('m-sync-2', [
+            { item: 'Original text', assigned_to: 'Alice', deadline: '2026-08-01' },
+        ]);
+        const first = await syncActionItemsFromMeeting(record);
+        const card = (await listActionItems()).find((a) => a.meeting_id === 'm-sync-2');
+
+        // Simulate work happening on the board before the meeting record's
+        // text is corrected: move it out of To Do.
+        await moveActionItem(card.id, 'Doing');
+
+        const editedRecord = {
+            ...first.record,
+            meeting_data: {
+                ...first.record.meeting_data,
+                actions_review: [{ ...first.record.meeting_data.actions_review[0], item: 'Corrected text', assigned_to: 'Bob' }],
+            },
+        };
+        const second = await syncActionItemsFromMeeting(editedRecord);
+        expect(second.created).toBe(0);
+        expect(second.updated).toBe(1);
+
+        const updatedCard = (await listActionItems()).find((a) => a.meeting_id === 'm-sync-2');
+        expect(updatedCard.item).toBe('Corrected text');
+        expect(updatedCard.assigned_to).toBe('Bob');
+        // status survives the sync — content changed, board progress didn't.
+        expect(updatedCard.status).toBe('Doing');
+    });
+
+    it('re-creates a card that was deleted from the board, without duplicating the ones that remain', async () => {
+        const record = await meetingRecord('m-sync-3', [
+            { item: 'Item A', assigned_to: '', deadline: '' },
+            { item: 'Item B', assigned_to: '', deadline: '' },
+        ]);
+        const first = await syncActionItemsFromMeeting(record);
+        const cards = (await listActionItems()).filter((a) => a.meeting_id === 'm-sync-3');
+        const toDelete = cards.find((c) => c.item === 'Item A');
+        await deleteActionItem(toDelete.id);
+
+        const second = await syncActionItemsFromMeeting(first.record);
+        expect(second.created).toBe(1); // Item A recreated
+        expect(second.updated).toBe(1); // Item B updated in place, not duplicated
+
+        const all = (await listActionItems()).filter((a) => a.meeting_id === 'm-sync-3');
+        expect(all.map((a) => a.item).sort()).toEqual(['Item A', 'Item B']);
     });
 });
 

@@ -614,6 +614,10 @@ def _normalize_notes(items) -> list:
 
 
 def _normalize_actions(items) -> list:
+    # "id" is a stable identity for this row, separate from "no" (the
+    # user-facing, freely-editable display number). The frontend uses it to
+    # recognize the same action item across edits when syncing to the Action
+    # Items board — text/assignee/deadline can change without losing the link.
     if not isinstance(items, list):
         return []
     normalized = []
@@ -621,6 +625,7 @@ def _normalize_actions(items) -> list:
         if not isinstance(item, dict):
             continue
         normalized.append({
+            "id": uuid.uuid4().hex,
             "no": item.get("no", index),
             "item": _to_traditional(item.get("item", "")).strip(),
             "assigned_to": _to_traditional(item.get("assigned_to", "")).strip(),

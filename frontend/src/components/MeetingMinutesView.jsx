@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { X, Loader2, ChevronDown, Edit2, Download, Kanban, Check } from 'lucide-react';
+import { X, Loader2, ChevronDown, Edit2, Download, Kanban } from 'lucide-react';
 import { getMeetingRecord, updateMeetingRecordData, getMeetingAudioBlob } from '../utils/meetingStore';
-import { hasImportedActionsForMeeting, importActionItemsFromMeeting } from '../utils/actionItemStore';
+import { hasImportedActionsForMeeting, syncActionItemsFromMeeting } from '../utils/actionItemStore';
 
 function formatTimestamp(totalSeconds) {
     const total = Math.max(0, Math.floor(totalSeconds || 0));
@@ -238,19 +238,24 @@ export function MeetingMinutesView({ apiUrl, meetingId, onClose }) {
         }
     };
 
-    // Imports actions_review as-saved on record, not draftData — importing
+    // Syncs actions_review as-saved on record, not draftData — syncing
     // mid-edit would ship unsaved changes to the board silently. The button
     // is disabled while isEditing (see below) so this path shouldn't be
-    // reachable, but guarding here too costs nothing.
+    // reachable, but guarding here too costs nothing. Safe to call
+    // repeatedly: syncActionItemsFromMeeting matches rows to existing cards
+    // by a stable id, so re-syncing updates already-linked cards in place
+    // and only creates new ones for rows that don't have a card yet (see
+    // its doc comment in actionItemStore.js).
     const handleImportActions = async () => {
-        if (!record || actionsImported) return;
+        if (!record) return;
         setIsImportingActions(true);
         try {
-            await importActionItemsFromMeeting(record);
+            const result = await syncActionItemsFromMeeting(record);
+            setRecord(result.record);
             setActionsImported(true);
         } catch (error) {
-            console.error('Failed to import action items:', error);
-            alert('Could not import action items to the board. Please try again.');
+            console.error('Failed to sync action items:', error);
+            alert('Could not sync action items to the board. Please try again.');
         } finally {
             setIsImportingActions(false);
         }
@@ -408,17 +413,15 @@ export function MeetingMinutesView({ apiUrl, meetingId, onClose }) {
                                         <button
                                             type="button"
                                             onClick={handleImportActions}
-                                            disabled={isImportingActions || actionsImported}
-                                            className={`flex items-center gap-1 text-xs font-medium transition-colors disabled:cursor-default ${actionsImported ? 'text-[#767676]' : 'text-[#0058A3] hover:underline'}`}
+                                            disabled={isImportingActions}
+                                            className="flex items-center gap-1 text-xs font-medium text-[#0058A3] hover:underline transition-colors disabled:cursor-default disabled:no-underline disabled:opacity-60"
                                         >
                                             {isImportingActions ? (
                                                 <Loader2 className="w-3 h-3 animate-spin" />
-                                            ) : actionsImported ? (
-                                                <Check className="w-3 h-3" />
                                             ) : (
                                                 <Kanban className="w-3 h-3" />
                                             )}
-                                            {actionsImported ? 'Imported to board' : 'Import to Action Items board'}
+                                            {actionsImported ? 'Sync to Action Items board' : 'Import to Action Items board'}
                                         </button>
                                     )}
                                 </div>

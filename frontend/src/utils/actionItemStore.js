@@ -10,6 +10,7 @@
 // by design, not a Trello view.
 
 import { openDb, promisifyRequest, promisifyTransaction, ACTION_ITEMS_STORE } from './db';
+import { updateMeetingRecordData } from './meetingStore';
 
 export const ACTION_STATUSES = ['To Do', 'Doing', 'Done'];
 
@@ -53,43 +54,113 @@ export async function hasImportedActionsForMeeting(meetingId) {
     return existing.length > 0;
 }
 
-// Imports every row in meetingRecord.meeting_data.actions_review as a new
-// "To Do" card, appended in order after whatever's already in that column.
-// Callers are expected to check hasImportedActionsForMeeting() first and
-// skip the call entirely if it's already true — this function itself does
-// not dedupe, so calling it twice for the same meeting creates duplicates.
-export async function importActionItemsFromMeeting(meetingRecord) {
+// Syncs meetingRecord.meeting_data.actions_review onto the Action Items
+// board — safe to call repeatedly (re-clicking "Sync" doesn't duplicate
+// cards) and self-healing after cards are deleted from the board.
+//
+// Each actions_review row is matched to a board card via a stable "id" on
+// the row (set by the backend when minutes are generated — see
+// _normalize_actions in meeting.py), not by matching text, so renaming a
+// card's content doesn't break the link. Rows from older meeting records
+// that predate this field get one assigned here on first sync, persisted
+// back to the record so the same row keeps the same id on every future
+// sync.
+//
+//   - Row has a linked card already on the board -> that card's item/
+//     assigned_to/deadline/meeting_title are overwritten with the meeting
+//     record's current values. status and order are left untouched, so
+//     board position/progress survives a sync.
+//   - Row has no linked card (new row, or its card was deleted) -> a new
+//     "To Do" card is created, appended after whatever's already in that
+//     column.
+//   - Cards on the board whose source row no longer exists in
+//     actions_review are left alone (not deleted) — sync only pushes
+//     forward, it never removes something the user might still want to
+//     track on the board.
+//
+// Known gap: cards imported before this field existed have no
+// source_action_id and won't be recognized on their first post-upgrade
+// sync, so that one sync can create a duplicate for each of them — a
+// one-time transition cost, not an ongoing issue once every card has a
+// linked id.
+export async function syncActionItemsFromMeeting(meetingRecord) {
     const actions = meetingRecord?.meeting_data?.actions_review;
-    if (!Array.isArray(actions) || actions.length === 0) return [];
+    if (!Array.isArray(actions) || actions.length === 0) {
+        return { created: 0, updated: 0, record: meetingRecord };
+    }
 
     const meetingId = meetingRecord.meeting_id;
     const meetingTitle = meetingRecord.meeting_data?.meeting_title || 'Meeting Notes';
-    const now = new Date().toISOString();
+
+    let idsChanged = false;
+    const actionsWithIds = actions.map((action) => {
+        if (action && !action.id) {
+            idsChanged = true;
+            return { ...action, id: generateId() };
+        }
+        return action;
+    });
+
+    let record = meetingRecord;
+    if (idsChanged) {
+        const updatedData = { ...meetingRecord.meeting_data, actions_review: actionsWithIds };
+        record = await updateMeetingRecordData(meetingId, updatedData);
+    }
+
     const existing = await getAllRaw();
+    const existingByActionId = new Map(
+        existing
+            .filter((card) => card.meeting_id === meetingId && card.source_action_id)
+            .map((card) => [card.source_action_id, card])
+    );
     let order = await nextOrderForStatus('To Do', existing);
 
-    const items = actions
-        .filter((action) => action && String(action.item || '').trim())
-        .map((action) => ({
-            id: generateId(),
-            meeting_id: meetingId,
-            meeting_title: meetingTitle,
-            item: String(action.item || '').trim(),
-            assigned_to: String(action.assigned_to || '').trim(),
-            deadline: String(action.deadline || '').trim(),
-            status: 'To Do',
-            order: order++,
-            created_at: now,
-            updated_at: now,
-        }));
-    if (items.length === 0) return [];
+    const now = new Date().toISOString();
+    const toWrite = [];
+    let created = 0;
+    let updated = 0;
 
-    const db = await openDb();
-    const tx = db.transaction(ACTION_ITEMS_STORE, 'readwrite');
-    const store = tx.objectStore(ACTION_ITEMS_STORE);
-    items.forEach((item) => store.put(item));
-    await promisifyTransaction(tx);
-    return items;
+    actionsWithIds
+        .filter((action) => action && String(action.item || '').trim())
+        .forEach((action) => {
+            const existingCard = existingByActionId.get(action.id);
+            if (existingCard) {
+                updated++;
+                toWrite.push({
+                    ...existingCard,
+                    item: String(action.item || '').trim(),
+                    assigned_to: String(action.assigned_to || '').trim(),
+                    deadline: String(action.deadline || '').trim(),
+                    meeting_title: meetingTitle,
+                    updated_at: now,
+                });
+            } else {
+                created++;
+                toWrite.push({
+                    id: generateId(),
+                    source_action_id: action.id,
+                    meeting_id: meetingId,
+                    meeting_title: meetingTitle,
+                    item: String(action.item || '').trim(),
+                    assigned_to: String(action.assigned_to || '').trim(),
+                    deadline: String(action.deadline || '').trim(),
+                    status: 'To Do',
+                    order: order++,
+                    created_at: now,
+                    updated_at: now,
+                });
+            }
+        });
+
+    if (toWrite.length > 0) {
+        const db = await openDb();
+        const tx = db.transaction(ACTION_ITEMS_STORE, 'readwrite');
+        const store = tx.objectStore(ACTION_ITEMS_STORE);
+        toWrite.forEach((item) => store.put(item));
+        await promisifyTransaction(tx);
+    }
+
+    return { created, updated, record };
 }
 
 export async function addActionItem({ item, assignedTo = '', deadline = '', status = 'To Do' }) {

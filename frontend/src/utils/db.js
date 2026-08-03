@@ -30,8 +30,8 @@ export function openDb() {
                 }
                 if (!db.objectStoreNames.contains(ACTION_ITEMS_STORE)) {
                     const store = db.createObjectStore(ACTION_ITEMS_STORE, { keyPath: 'id' });
-                    // Lets importActionItemsFromMeeting() check "has this meeting
-                    // already been imported" without scanning every row.
+                    // Lets syncActionItemsFromMeeting() find a meeting's existing
+                    // cards without scanning every row.
                     store.createIndex('by_meeting_id', 'meeting_id', { unique: false });
                 }
             };
