@@ -10,7 +10,7 @@
 // by design, not a Trello view.
 
 import { openDb, promisifyRequest, promisifyTransaction, ACTION_ITEMS_STORE } from './db';
-import { updateMeetingRecordData } from './meetingStore';
+import { getMeetingRecord, updateMeetingRecordData } from './meetingStore';
 
 export const ACTION_STATUSES = ['To Do', 'Doing', 'Done'];
 
@@ -56,7 +56,12 @@ export async function hasImportedActionsForMeeting(meetingId) {
 
 // Syncs meetingRecord.meeting_data.actions_review onto the Action Items
 // board — safe to call repeatedly (re-clicking "Sync" doesn't duplicate
-// cards) and self-healing after cards are deleted from the board.
+// cards) and self-healing after cards are deleted from the board. This is
+// the meeting-\>board half of a two-way link; updateActionItem() below is
+// the board-\>meeting half (editing a linked card writes item/assigned_to/
+// deadline back onto its source actions_review row). Both directions key
+// off the same stable id, so either side can be the one that's out of date
+// and still end up correct after the other side acts.
 //
 // Each actions_review row is matched to a board card via a stable "id" on
 // the row (set by the backend when minutes are generated — see
@@ -194,6 +199,34 @@ async function getActionItem(id) {
     return item || null;
 }
 
+const ACTION_CONTENT_FIELDS = ['item', 'assigned_to', 'deadline'];
+
+// The other half of syncActionItemsFromMeeting's meeting-\>board push: a
+// card created from a meeting row carries meeting_id + source_action_id
+// (see syncActionItemsFromMeeting), which is enough to find its way back to
+// that exact actions_review row regardless of what its text has since
+// become — same stable-id matching, just walked in the other direction.
+// Board-only fields (status, order) intentionally never propagate: a
+// meeting's agenda has no "column" concept, so a drag-and-drop move has
+// nothing to write back.
+async function propagateCardEditToMeeting(card) {
+    if (!card.meeting_id || !card.source_action_id) return;
+    const record = await getMeetingRecord(card.meeting_id);
+    if (!record) return; // the meeting record no longer exists — nothing to sync to
+    const actions = record.meeting_data?.actions_review;
+    if (!Array.isArray(actions)) return;
+    const index = actions.findIndex((a) => a?.id === card.source_action_id);
+    if (index === -1) return; // that row was removed from the meeting record; leave the card as-is
+
+    const patchedActions = actions.map((action, i) => (i === index ? {
+        ...action,
+        item: card.item,
+        assigned_to: card.assigned_to,
+        deadline: card.deadline,
+    } : action));
+    await updateMeetingRecordData(card.meeting_id, { ...record.meeting_data, actions_review: patchedActions });
+}
+
 export async function updateActionItem(id, patch) {
     const existing = await getActionItem(id);
     if (!existing) throw new Error('Action item not found.');
@@ -202,6 +235,10 @@ export async function updateActionItem(id, patch) {
     const tx = db.transaction(ACTION_ITEMS_STORE, 'readwrite');
     tx.objectStore(ACTION_ITEMS_STORE).put(updated);
     await promisifyTransaction(tx);
+
+    if (ACTION_CONTENT_FIELDS.some((key) => key in patch)) {
+        await propagateCardEditToMeeting(updated);
+    }
     return updated;
 }
 
