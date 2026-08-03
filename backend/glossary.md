@@ -7,8 +7,8 @@
 - **GCP**：指的是 Google Cloud Platform (Google Cloud 雲端平台)。
 - **CDP**：指的是 Centralized Data Platform (集中式資料平台)。
 - **HFB**：指的是 Home Furnishing Business。
-- **Showroom (SH)**：指的是 HFB 01-09。
-- **Market Hall (MH)**：指的是 HFB 11-18, 20, 70。
+- **Showroom (SR)**：指的是 HFB 01-09。
+- **Market Hall (MH)**：指的是 HFB 10-18, 20, 70。
 - **IKEA Food (IF)**：指的是 HFBB 60, 61。
 - **IKEA Family**：指的是宜家卡友。
 - **yuu**：指的是由 DFI 零售集團（牛奶公司）於香港及澳門推出的綜合消費獎賞計劃。
@@ -69,6 +69,8 @@
 
 ## 分店代碼
 
+### 台灣（TW）分店
+
 - **PUP**：指的是 Xin Chu Pick-up and Order Point（新竹訂購取貨中心）。
 - **CYS**：指的是 Chiayi（嘉義城市店）。
 - **TAS**：指的是 Taipei City Shop Arena（台北城市店－小巨蛋）。
@@ -78,9 +80,21 @@
 - **XDS**：指的是 Xin Dian（新店店）。
 - **TYS**：指的是 Tao Yuan（桃園店）。
 - **HCS**：指的是 Hsin Chuang（新莊店）。
-- **QPS**：指的是 Tao Yuan（青埔店）。
+- **QPS**：指的是 Qing Pu（青埔店）。
 - **TCS**：指的是 Tai Chung（台中店）。
 - **OTP**：指的是 One Taipei，包含 NHS、HCS、XDS、TAS 分店。
+
+### 香港（HK）分店
+
+- **MTS**：指的是 Macau（澳門店）。
+- **CSR**：指的是 Causeway Bay（銅鑼灣店）。
+- **KBS**：指的是 Kowloon Bay（九龍灣店）。
+- **SSR**：指的是 Sha Tin（沙田店）。
+- **TWS**：指的是 Tsuen Wan（荃灣店）。
+- **TP**：指的是 Tai Po（大埔店）。
+- **TST**：指的是 Tsim Sha Tsui（尖沙咀店）。
+- **TKS**：指的是 Tai Koo Shing（太古城店）。
+- **HH**：指的是 Hang Hau（坑口店）。
 
 ## 業績／財務指標
 
