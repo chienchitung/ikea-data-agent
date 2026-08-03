@@ -616,13 +616,13 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
 
                     {mode === 'upload' ? (
                         <div className="mb-4">
-                            <label className="flex flex-col items-center justify-center gap-2 border-2 border-dashed border-[#DFDFDF] rounded-lg py-6 cursor-pointer hover:bg-[#F5F5F5] transition-colors">
-                                <Upload className="w-6 h-6 text-[#767676]" />
+                            <label className="flex flex-col items-center justify-center gap-1 border-2 border-dashed border-[#DFDFDF] rounded-lg py-6 cursor-pointer hover:bg-[#F5F5F5] transition-colors">
+                                <Upload className="w-6 h-6 text-[#767676] mb-1" />
                                 <span className="text-sm text-[#484848]">
                                     {selectedFile ? selectedFile.name : 'Click to choose an audio or video file'}
                                 </span>
                                 <span className="text-xs text-[#767676]">
-                                    Video files work too — the audio track is extracted automatically. Up to {MAX_UPLOAD_BYTES / (1024 * 1024)}MB.
+                                    Video works too, up to {MAX_UPLOAD_BYTES / (1024 * 1024)}MB
                                 </span>
                                 <input
                                     type="file"
@@ -638,8 +638,8 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
                             {!recordedBlob ? (
                                 <>
                                     {!isRecording && (
-                                        <div className="w-full max-w-xs text-center">
-                                            <label className="flex items-center justify-center gap-2 text-xs text-[#484848]">
+                                        <div className="w-full max-w-sm text-left">
+                                            <label className="flex items-start gap-2 text-xs text-[#484848] cursor-pointer">
                                                 <input
                                                     type="checkbox"
                                                     checked={includeTabAudio}
@@ -651,22 +651,24 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
                                                         if (!e.target.checked) setIncludeVideo(false);
                                                     }}
                                                     disabled={!tabAudioSupported}
-                                                    className="rounded border-[#DFDFDF]"
+                                                    className="mt-0.5 rounded border-[#DFDFDF] shrink-0"
                                                 />
-                                                Also capture an online meeting's audio (share a browser tab)
+                                                <span>
+                                                    Also capture an online meeting's audio (share a browser tab)
+                                                    <span className="block mt-0.5 text-[11px] text-[#767676]">
+                                                        {tabAudioSupported
+                                                            ? 'Catches the other side too, useful on headphones. Chrome/Edge only.'
+                                                            : 'Not supported in this browser — try Chrome or Edge.'}
+                                                    </span>
+                                                </span>
                                             </label>
-                                            <p className="mt-1 text-[11px] text-[#767676]">
-                                                {tabAudioSupported
-                                                    ? 'Recording your mic alone misses the other side if you\'re on headphones. Chrome/Edge only — when prompted, pick the meeting\'s browser tab and check "Share tab audio".'
-                                                    : 'Not supported in this browser — try Chrome or Edge, with the meeting open in a browser tab.'}
-                                            </p>
                                             {includeTabAudio && tabAudioSupported && (
-                                                <label className="mt-2 flex items-center justify-center gap-2 text-xs text-[#484848]">
+                                                <label className="mt-2 ml-6 flex items-center gap-2 text-xs text-[#484848] cursor-pointer">
                                                     <input
                                                         type="checkbox"
                                                         checked={includeVideo}
                                                         onChange={(e) => setIncludeVideo(e.target.checked)}
-                                                        className="rounded border-[#DFDFDF]"
+                                                        className="rounded border-[#DFDFDF] shrink-0"
                                                     />
                                                     Also record the shared tab's video
                                                 </label>
