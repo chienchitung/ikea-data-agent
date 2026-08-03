@@ -663,7 +663,7 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
                                                 </span>
                                             </label>
                                             {includeTabAudio && tabAudioSupported && (
-                                                <label className="mt-2 ml-6 flex items-center gap-2 text-xs text-[#484848] cursor-pointer">
+                                                <label className="mt-2 flex items-center gap-2 text-xs text-[#484848] cursor-pointer">
                                                     <input
                                                         type="checkbox"
                                                         checked={includeVideo}
