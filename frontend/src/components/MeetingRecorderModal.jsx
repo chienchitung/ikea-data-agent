@@ -361,21 +361,26 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
     const audioFileBytes = mode === 'upload' ? (selectedFile?.size || 0) : (recordedBlob?.size || 0);
     const overSizeLimit = audioFileBytes > MAX_UPLOAD_BYTES;
 
-    // Backdrop click / header X / footer Cancel all funnel through here. While
-    // generation is running, a stray click (especially the backdrop, or the X
-    // in the corner right next to where the progress panel sits) shouldn't be
-    // able to silently kill an in-flight transcription — so this only asks
-    // for confirmation at that point instead of cancelling immediately.
+    // Header X / footer Cancel both funnel through here — the backdrop no
+    // longer does (see the outer div below): a stray click anywhere outside
+    // the panel used to close it outright, which was silently killing
+    // in-progress recordings and transcriptions the user never meant to
+    // interrupt. Termination is now only ever reachable through an explicit
+    // action (X, Cancel, or the confirm dialogs' own destructive buttons),
+    // and while anything is actually at risk of being lost, that action asks
+    // for confirmation first instead of cancelling immediately.
     //
-    // A finished-but-unsubmitted recording gets the same treatment: nothing
-    // is written to IndexedDB until generation actually completes (see
-    // handleSubmit's "Saving to your browser…" step), so the recording only
-    // ever exists as an in-memory blob up to that point — closing without
-    // transcribing discards it for good, which is worth a confirmation,
-    // especially for video (bigger, more effort to redo than a quick voice
-    // memo). Only checked for 'record' mode: an unsubmitted upload isn't at
-    // risk the same way, since the original file is still sitting wherever
-    // the user picked it from.
+    // Three things are "at risk" and guarded here: an in-flight generation
+    // (isSubmitting), an active recording that hasn't been stopped yet
+    // (isRecording — nothing to download or discard-confirm about it until
+    // it's stopped, so closing now would silently throw the in-progress
+    // audio away), and a finished-but-unsubmitted recording (recordedBlob —
+    // nothing is written to IndexedDB until generation actually completes,
+    // see handleSubmit's "Saving to your browser…" step, so it only exists
+    // as an in-memory blob up to that point). Both recording cases are only
+    // checked for 'record' mode: an unsubmitted upload isn't at risk the
+    // same way, since the original file is still sitting wherever the user
+    // picked it from.
     //
     // This dialog can't catch the browser tab/window itself being closed —
     // only an in-app "beforeunload" prompt could, and this doesn't add one.
@@ -384,7 +389,7 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
             setShowCancelConfirm(true);
             return;
         }
-        if (mode === 'record' && recordedBlob) {
+        if (mode === 'record' && (isRecording || recordedBlob)) {
             setShowDiscardRecordingConfirm(true);
             return;
         }
@@ -402,10 +407,14 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
     };
 
     // Only reachable via the discard-recording confirmation dialog. Doesn't
-    // need to manually revoke the blob URL or clear state itself — closing
-    // unmounts this modal, and the cleanup effect above already handles that.
+    // need to manually revoke the blob URL or release media resources itself
+    // — closing unmounts this modal, and the cleanup effect above already
+    // handles that. Explicitly stopping the recorder first (when still
+    // active) just avoids it firing onstop and setting state during/after
+    // that unmount.
     const confirmDiscardRecordingAndClose = () => {
         setShowDiscardRecordingConfirm(false);
+        if (isRecording) mediaRecorderRef.current?.stop();
         onClose();
     };
 
@@ -616,13 +625,14 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
 
     return (
         <>
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={handleCancel}>
+        {/* No backdrop onClick here on purpose — see handleCancel's comment.
+            Closing only ever happens through the explicit X / Cancel below. */}
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
             <div
                 role="dialog"
                 aria-modal="true"
                 aria-labelledby="meeting-recorder-heading"
                 className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto"
-                onClick={(e) => e.stopPropagation()}
             >
                 <div className="p-6">
                     <div className="flex items-center justify-between mb-1">
@@ -935,7 +945,8 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
         {/* Confirm-before-discard: closing without transcribing is the only
             way this recording is lost — nothing is saved to the browser
             until generation finishes (see handleSubmit), so this is the
-            last chance to keep it via "Download recording" instead. */}
+            last chance to keep it via "Download recording" instead (once
+            stopped — mid-recording there's nothing to download yet). */}
         {showDiscardRecordingConfirm && (
             <div
                 className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60] p-4"
@@ -950,10 +961,13 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
                     onClick={(e) => e.stopPropagation()}
                     onKeyDown={(e) => { if (e.key === 'Escape') setShowDiscardRecordingConfirm(false); }}
                 >
-                    <h3 id="discard-recording-heading" className="text-base font-semibold text-[#111111] mb-1">Discard this recording?</h3>
+                    <h3 id="discard-recording-heading" className="text-base font-semibold text-[#111111] mb-1">
+                        {isRecording ? 'Stop recording and close?' : 'Discard this recording?'}
+                    </h3>
                     <p id="discard-recording-description" className="text-sm text-[#767676] mb-5">
-                        You haven't generated meeting minutes from it. Closing now discards it for good —
-                        it isn't saved anywhere in your browser unless you transcribe it or download it first.
+                        {isRecording
+                            ? "Recording is still in progress. Closing now stops it and discards the audio — it won't be saved anywhere in your browser."
+                            : "You haven't generated meeting minutes from it. Closing now discards it for good — it isn't saved anywhere in your browser unless you transcribe it or download it first."}
                     </p>
                     <div className="flex justify-end gap-2">
                         <button
@@ -969,7 +983,7 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
                             onClick={confirmDiscardRecordingAndClose}
                             className="px-4 py-2 text-sm font-medium text-white bg-red-500 hover:bg-red-600 rounded-lg transition-colors"
                         >
-                            Discard and close
+                            {isRecording ? 'Stop and discard' : 'Discard and close'}
                         </button>
                     </div>
                 </div>
