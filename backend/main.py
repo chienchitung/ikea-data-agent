@@ -701,6 +701,7 @@ from agents.meeting import (
     audio_dir_for,
     normalize_audio,
     transcribe_audio,
+    transcribe_short_clip,
     generate_minutes,
     build_docx,
     save_meeting_record,
@@ -709,6 +710,7 @@ from agents.meeting import (
     save_prepared_audio,
     load_prepared_audio,
     GroqRateLimitError,
+    GROQ_MAX_UPLOAD_BYTES,
 )
 
 
@@ -724,6 +726,61 @@ def _effective_groq_api_key(provided: Optional[str]) -> Optional[str]:
     # Deliberately client-supplied only, with no server-side env var fallback
     # (unlike Gemini's key above): the backend must never retain a Groq key.
     return (provided or "").strip() or None
+
+
+@app.post("/transcribe")
+async def transcribe_voice_input(
+    audio: UploadFile = File(...),
+    groq_api_key: Optional[str] = Form(None),
+):
+    """
+    Transcribes a short recording (the chat input box's voice-input
+    feature) into plain text via Groq Whisper. Deliberately not the
+    meeting-minutes pipeline — no audio normalization, no chunking, no
+    persistence to disk beyond reading the upload into memory. Voice input
+    is expected to be a few seconds to a couple of minutes, so it's held to
+    Groq's single-request upload limit rather than the meeting pipeline's
+    large-file splitting.
+    """
+    effective_key = _effective_groq_api_key(groq_api_key)
+    if not effective_key:
+        raise HTTPException(status_code=400, detail=product_error(
+            "transcription_provider_unavailable",
+            "No Groq API Key provided",
+            "Voice input requires a Groq API Key, but none was sent with this request.",
+            ["Set your Groq API Key in API Keys"],
+        ))
+
+    audio_bytes = await audio.read()
+    if len(audio_bytes) > GROQ_MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=product_error(
+            "voice_input_too_large",
+            "Recording is too long for voice input",
+            f"Voice input is meant for short clips, under {GROQ_MAX_UPLOAD_BYTES // (1024 * 1024)}MB.",
+            ["Try a shorter recording", "For longer recordings, use Meeting Recording instead"],
+        ))
+
+    try:
+        text = await transcribe_short_clip(audio_bytes, audio.filename or "voice_input.webm", effective_key)
+    except GroqRateLimitError as e:
+        raise HTTPException(status_code=429, detail=product_error(
+            "transcription_rate_limited",
+            "Groq's transcription quota is temporarily exhausted",
+            "This is a temporary quota shared by your Groq API key — it usually clears up within a few minutes.",
+            ["Wait a few minutes and try again"],
+            str(e),
+        ))
+    except Exception as e:
+        print(f"❌ Voice input transcription error: {e}")
+        raise HTTPException(status_code=502, detail=product_error(
+            "transcription_failed",
+            "Could not transcribe the recording",
+            "Groq's transcription service could not process this recording.",
+            ["Try again"],
+            str(e),
+        ))
+
+    return {"text": text}
 
 
 def _meeting_not_found_error(action: str) -> dict:

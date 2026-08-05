@@ -429,7 +429,10 @@ function App() {
     const [displayElapsedSeconds, setDisplayElapsedSeconds] = useState(0);
     const [isUploading, setIsUploading] = useState(false);
     const [isListening, setIsListening] = useState(false);
-    const [speechSupported, setSpeechSupported] = useState(true);
+    const [isTranscribing, setIsTranscribing] = useState(false);
+    const [voiceInputSupported] = useState(
+        () => typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getUserMedia && typeof window.MediaRecorder !== 'undefined'
+    );
     const [uploadProgress, setUploadProgress] = useState(0);
     const [uploadStage, setUploadStage] = useState("");
     const [clarification, setClarification] = useState(null);
@@ -491,19 +494,16 @@ function App() {
     // from "messages changed because this conversation's content actually
     // changed" -- see that effect for why the distinction matters.
     const lastSavedConvIdRef = useRef(null);
-    const recognitionRef = useRef(null);
-    const speechBaseInputRef = useRef("");
-    const speechTranscriptRef = useRef("");
-    const speechInterimRef = useRef("");
-    const speechErrorRef = useRef(false);
-    const speechDiscardRef = useRef(false);
-    const isListeningRef = useRef(false);
-    // 手機瀏覽器（尤其 iOS Safari、以及 Android 音訊裝置搶用時）的語音辨識
-    // session 常常啟動後幾百毫秒內就自行觸發 onend，若無節流會形成
-    // start→onend→start 的緊密迴圈，佔滿主執行緒，使用者感受是「整個
-    // 網頁卡頓」。這兩個 ref 記錄短時間內的重啟次數，超過門檻就放棄。
-    const speechRestartTimestampsRef = useRef([]);
-    const speechRestartTimeoutRef = useRef(null);
+    // Voice input (chat box mic) records via MediaRecorder and transcribes
+    // through Groq Whisper on confirm — see toggleVoiceInput/confirmVoiceInput
+    // below. voiceBaseInputRef holds whatever was already typed before
+    // recording started, so the transcribed text gets appended rather than
+    // replacing it.
+    const voiceStreamRef = useRef(null);
+    const voiceRecorderRef = useRef(null);
+    const voiceChunksRef = useRef([]);
+    const voiceDiscardRef = useRef(false);
+    const voiceBaseInputRef = useRef("");
     const pendingScrollBehaviorRef = useRef("auto");
     const isCurrentConvLoading = loadingConvIds.has(currentConvId);
     // 串流中的答案已經開始顯示（Phase 3 的 streaming 佔位訊息存在）。
@@ -524,10 +524,6 @@ function App() {
     useEffect(() => {
         currentConvIdRef.current = currentConvId;
     }, [currentConvId]);
-
-    useEffect(() => {
-        isListeningRef.current = isListening;
-    }, [isListening]);
 
     useEffect(() => {
         conversationsRef.current = conversations;
@@ -736,118 +732,13 @@ function App() {
         textarea.style.height = `${textarea.scrollHeight}px`;
     }, [input]);
 
+    // Releases the mic if this component ever unmounts mid-recording —
+    // shouldn't normally happen (App is the root component) but avoids
+    // leaking an open getUserMedia stream if it does.
     useEffect(() => {
-        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        if (!SpeechRecognition) {
-            setSpeechSupported(false);
-            return;
-        }
-
-        const recognition = new SpeechRecognition();
-        recognition.lang = 'zh-TW';
-        recognition.continuous = true;
-        recognition.interimResults = true;
-
-        recognition.onresult = (event) => {
-            let interimTranscript = "";
-            for (let i = event.resultIndex; i < event.results.length; i += 1) {
-                const transcript = event.results[i][0].transcript;
-                if (event.results[i].isFinal) {
-                    speechTranscriptRef.current += transcript;
-                } else {
-                    interimTranscript += transcript;
-                }
-            }
-            speechInterimRef.current = interimTranscript;
-        };
-
-        recognition.onerror = (event) => {
-            // Only treat permission/device errors as fatal. `no-speech` fires
-            // routinely during an ordinary thinking pause in continuous
-            // dictation, and `network`/`aborted` are often transient — none
-            // of those should discard everything already transcribed.
-            // `onend` (which always fires after `onerror`) handles recovery.
-            const isFatal = event.error === 'not-allowed' || event.error === 'service-not-allowed' || event.error === 'audio-capture';
-            if (!isFatal) return;
-
-            speechErrorRef.current = true;
-            setIsListening(false);
-            if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-                setMessages(prev => [...prev, {
-                    role: 'assistant',
-                    content: '⚠️ Microphone permission was blocked. Please allow microphone access in your browser settings.'
-                }]);
-            }
-        };
-
-        recognition.onend = () => {
-            if (!speechErrorRef.current && !speechDiscardRef.current) {
-                const baseText = speechBaseInputRef.current.trim();
-                const spokenText = `${speechTranscriptRef.current}${speechInterimRef.current}`.trim();
-                if (spokenText) {
-                    setInput([baseText, spokenText].filter(Boolean).join(baseText ? " " : ""));
-                }
-            }
-            speechInterimRef.current = "";
-
-            // Chrome silently ends recognition on its own after a brief pause
-            // even with continuous=true (typically preceded by a `no-speech`
-            // error). Restart automatically as long as the user hasn't
-            // stopped/cancelled/confirmed — speechTranscriptRef keeps
-            // accumulating across restarts, so this is what actually makes
-            // "continuous" dictation continuous instead of truncating at the
-            // first pause.
-            if (!speechErrorRef.current && !speechDiscardRef.current && isListeningRef.current) {
-                // 節流：3 秒內重啟超過 4 次視為異常迴圈（常見於手機瀏覽器
-                // 音訊 session 反覆立即結束），放棄自動重啟、跳提示，而不是
-                // 讓 start()/onend() 緊密循環佔滿主執行緒。
-                const now = Date.now();
-                const recentRestarts = speechRestartTimestampsRef.current.filter(ts => now - ts < 3000);
-                recentRestarts.push(now);
-                speechRestartTimestampsRef.current = recentRestarts;
-
-                if (recentRestarts.length <= 4) {
-                    // 短延遲再重啟，而不是同步立即呼叫：手機上 onend 觸發時，
-                    // 音訊管線往往還沒釋放乾淨，立刻 start() 容易再次立即
-                    // onend，正是緊密迴圈的成因。
-                    speechRestartTimeoutRef.current = window.setTimeout(() => {
-                        speechRestartTimeoutRef.current = null;
-                        if (!isListeningRef.current) return;
-                        try {
-                            recognition.start();
-                        } catch (error) {
-                            console.error("Speech recognition restart failed:", error);
-                            speechErrorRef.current = false;
-                            speechDiscardRef.current = false;
-                            setIsListening(false);
-                        }
-                    }, 120);
-                    return;
-                }
-
-                console.error("Speech recognition restarted too many times in a row; giving up.");
-                speechRestartTimestampsRef.current = [];
-                setMessages(prev => [...prev, {
-                    role: 'assistant',
-                    content: '⚠️ Voice input was unstable and had to stop. Please try again.'
-                }]);
-            }
-
-            speechRestartTimestampsRef.current = [];
-            speechErrorRef.current = false;
-            speechDiscardRef.current = false;
-            setIsListening(false);
-        };
-
-        recognitionRef.current = recognition;
-
         return () => {
-            if (speechRestartTimeoutRef.current) {
-                window.clearTimeout(speechRestartTimeoutRef.current);
-                speechRestartTimeoutRef.current = null;
-            }
-            recognition.stop();
-            recognitionRef.current = null;
+            voiceRecorderRef.current?.stop();
+            voiceStreamRef.current?.getTracks().forEach((track) => track.stop());
         };
     }, []);
 
@@ -1343,54 +1234,95 @@ function App() {
     };
 
 
-    // 手動停止（切換、取消、確認）都要清掉待執行的自動重啟計時器，
-    // 否則可能在使用者已經停止聽寫後又多重啟一次。
-    const clearPendingSpeechRestart = () => {
-        if (speechRestartTimeoutRef.current) {
-            window.clearTimeout(speechRestartTimeoutRef.current);
-            speechRestartTimeoutRef.current = null;
-        }
-        speechRestartTimestampsRef.current = [];
-    };
+    // Voice input: records via MediaRecorder, then transcribes through Groq
+    // Whisper (see backend POST /transcribe) once the user confirms — there's
+    // no live partial transcript the way Web Speech API had, since Whisper is
+    // a batch API with no streaming mode; setIsTranscribing drives a brief
+    // loading state between "stopped recording" and "text landed in the box".
+    const toggleVoiceInput = async () => {
+        if (!voiceInputSupported || isClarifyingCurrentConv || isListening || isTranscribing) return;
 
-    const toggleVoiceInput = () => {
-        if (!speechSupported || !recognitionRef.current || isClarifyingCurrentConv) return;
-
-        if (isListening) {
-            clearPendingSpeechRestart();
-            recognitionRef.current.stop();
-            setIsListening(false);
+        if (!groqApiKey) {
+            openApiKeysModal();
             return;
         }
 
-        speechBaseInputRef.current = input;
-        speechTranscriptRef.current = "";
-        speechInterimRef.current = "";
-        speechErrorRef.current = false;
-        speechDiscardRef.current = false;
-        clearPendingSpeechRestart();
         try {
-            recognitionRef.current.start();
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            voiceStreamRef.current = stream;
+            voiceChunksRef.current = [];
+            voiceDiscardRef.current = false;
+            voiceBaseInputRef.current = input;
+
+            const mimeType = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4']
+                .find((candidate) => window.MediaRecorder?.isTypeSupported?.(candidate));
+            const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+
+            recorder.ondataavailable = (e) => {
+                if (e.data.size > 0) voiceChunksRef.current.push(e.data);
+            };
+
+            recorder.onstop = async () => {
+                stream.getTracks().forEach((track) => track.stop());
+                voiceStreamRef.current = null;
+
+                const chunks = voiceChunksRef.current;
+                voiceChunksRef.current = [];
+                if (voiceDiscardRef.current || chunks.length === 0) return;
+
+                const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
+                setIsTranscribing(true);
+                try {
+                    const formData = new FormData();
+                    const ext = blob.type.includes('mp4') ? 'm4a' : 'webm';
+                    formData.append('audio', blob, `voice-input.${ext}`);
+                    formData.append('groq_api_key', groqApiKey);
+                    const response = await fetch(`${API_URL}/transcribe`, { method: 'POST', body: formData });
+                    const data = await response.json().catch(() => null);
+                    if (!response.ok) {
+                        throw new Error(data?.detail?.message || data?.message || 'Voice input transcription failed.');
+                    }
+                    const spokenText = (data?.text || '').trim();
+                    if (spokenText) {
+                        const baseText = voiceBaseInputRef.current.trim();
+                        setInput([baseText, spokenText].filter(Boolean).join(baseText ? " " : ""));
+                    }
+                } catch (error) {
+                    console.error("Voice input transcription failed:", error);
+                    setMessages(prev => [...prev, {
+                        role: 'assistant',
+                        content: `⚠️ ${error.message || 'Could not transcribe your voice input. Please try again.'}`
+                    }]);
+                } finally {
+                    setIsTranscribing(false);
+                }
+            };
+
+            recorder.start();
+            voiceRecorderRef.current = recorder;
             setIsListening(true);
         } catch (error) {
-            console.error("Speech recognition failed:", error);
-            setIsListening(false);
+            console.error("Microphone access failed:", error);
+            setMessages(prev => [...prev, {
+                role: 'assistant',
+                content: '⚠️ Could not access the microphone. Please allow microphone permission in your browser and try again.'
+            }]);
         }
     };
 
     const cancelVoiceInput = () => {
-        if (!recognitionRef.current) return;
-        clearPendingSpeechRestart();
-        speechDiscardRef.current = true;
-        recognitionRef.current.stop();
+        if (!voiceRecorderRef.current) return;
+        voiceDiscardRef.current = true;
+        voiceRecorderRef.current.stop();
+        voiceRecorderRef.current = null;
         setIsListening(false);
     };
 
     const confirmVoiceInput = () => {
-        if (!recognitionRef.current) return;
-        clearPendingSpeechRestart();
-        speechDiscardRef.current = false;
-        recognitionRef.current.stop();
+        if (!voiceRecorderRef.current) return;
+        voiceDiscardRef.current = false;
+        voiceRecorderRef.current.stop();
+        voiceRecorderRef.current = null;
         setIsListening(false);
     };
 
@@ -1554,9 +1486,13 @@ function App() {
         if (!input.trim() || isCurrentConvLoading || isClarifyingCurrentConv) return;
 
         const textarea = document.getElementById('chat-input');
-        if (isListening && recognitionRef.current) {
-            recognitionRef.current.stop();
-            setIsListening(false);
+        if (isListening) {
+            // Submitting mid-recording confirms the voice input (stops
+            // recording, kicks off transcription) instead of sending
+            // whatever was already in the box before recording started —
+            // the transcribed text isn't back yet, so there's nothing
+            // meaningful to send this turn.
+            confirmVoiceInput();
             return;
         }
 
@@ -2389,9 +2325,9 @@ function App() {
                     )}
                     <form
                         onSubmit={handleSubmit}
-                        className={`chatbot-input-container ${isListening ? 'listening' : ''} ${input.trim() ? 'has-input' : ''}`}
+                        className={`chatbot-input-container ${isListening || isTranscribing ? 'listening' : ''} ${input.trim() ? 'has-input' : ''}`}
                     >
-                        {!input.trim() && !isListening && <Search className="input-leading-icon" aria-hidden="true" />}
+                        {!input.trim() && !isListening && !isTranscribing && <Search className="input-leading-icon" aria-hidden="true" />}
                         <textarea
                             id="chat-input"
                             value={input}
@@ -2411,7 +2347,7 @@ function App() {
                             className="chatbot-input"
                             rows={1}
                         />
-                        {isListening && (
+                        {(isListening || isTranscribing) && (
                             <div className="voice-waveform" aria-hidden="true">
                                 <span />
                                 <span />
@@ -2448,15 +2384,31 @@ function App() {
                                         <Check />
                                     </button>
                                 </>
+                            ) : isTranscribing ? (
+                                <button
+                                    type="button"
+                                    disabled
+                                    className="voice-action-button voice-confirm-button"
+                                    aria-label="Transcribing voice input"
+                                    title="Transcribing…"
+                                >
+                                    <Loader2 className="animate-spin" />
+                                </button>
                             ) : (
                                 <>
                                     <button
                                         type="button"
                                         onClick={toggleVoiceInput}
-                                        disabled={isClarifyingCurrentConv || !speechSupported}
-                                        className={`mic-button ${isListening ? 'listening' : ''}`}
-                                        aria-label={isListening ? "Stop voice input" : "Voice input"}
-                                        title={!speechSupported ? "Voice input is not supported in this browser" : isListening ? "Stop voice input" : "Voice input"}
+                                        disabled={isClarifyingCurrentConv || !voiceInputSupported}
+                                        className="mic-button"
+                                        aria-label="Voice input"
+                                        title={
+                                            !voiceInputSupported
+                                                ? "Voice input is not supported in this browser"
+                                                : !groqApiKey
+                                                    ? "Voice input requires a Groq API Key — click to set one"
+                                                    : "Voice input"
+                                        }
                                     >
                                         <Mic />
                                     </button>

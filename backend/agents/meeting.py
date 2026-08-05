@@ -418,6 +418,22 @@ def _rate_limit_reporter(
     return _report
 
 
+async def transcribe_short_clip(audio_bytes: bytes, filename: str, groq_api_key: str) -> str:
+    """
+    Transcribes a short, single-request-sized clip (e.g. the chat input
+    box's voice-input feature) into plain text — unlike transcribe_audio,
+    no chunking for oversized files (callers are expected to reject those
+    before calling this), and unlike _segments_to_text, no timestamp/
+    speaker prefixes: just the words, ready to drop into a text field.
+    """
+    segments = await _transcribe_bytes(audio_bytes, filename, groq_api_key)
+    return " ".join(
+        _to_traditional(seg.get("text", "")).strip()
+        for seg in segments
+        if str(seg.get("text", "")).strip()
+    )
+
+
 def _split_audio_ffmpeg(
     path: str, chunk_seconds: int, out_dir: str,
     total_seconds: float = 0.0, on_progress: Optional[Callable[[int], None]] = None,
