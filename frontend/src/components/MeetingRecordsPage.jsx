@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import axios from 'axios';
 import { FileAudio, Plus, Download, Upload, Trash2, Edit2, Check, CheckSquare, Loader2, AlertTriangle, X, Search } from 'lucide-react';
-import { MeetingRecorderModal } from './MeetingRecorderModal';
 import { MeetingMinutesView } from './MeetingMinutesView';
 import {
     listMeetingRecords,
@@ -37,18 +36,11 @@ function formatRelativeTime(ts) {
     return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
-export function MeetingRecordsPage({ apiUrl, geminiApiKey, groqApiKey, onOpenApiKeys, initialMeetingId }) {
+export function MeetingRecordsPage({ apiUrl, groqApiKey, onOpenApiKeys, initialMeetingId, onOpenRecorder }) {
     const [meetings, setMeetings] = useState([]);
     const [isLoading, setIsLoading] = useState(true);
     const [loadError, setLoadError] = useState(false);
-    // Deep-link support (e.g. "open source meeting" from an Action Items
-    // card): this page is only ever mounted fresh when navigated to — it's
-    // swapped in/out via a ternary in App.jsx, not kept alive in the
-    // background — so reading the prop once as the initial state is enough;
-    // there's no later prop change to react to since a new deep link always
-    // arrives via a fresh mount.
     const [activeMeetingId, setActiveMeetingId] = useState(() => initialMeetingId || null);
-    const [showRecorderModal, setShowRecorderModal] = useState(false);
     const [isSelecting, setIsSelecting] = useState(false);
     const [selectedIds, setSelectedIds] = useState(new Set());
     const [renamingMeetingId, setRenamingMeetingId] = useState(null);
@@ -98,6 +90,21 @@ export function MeetingRecordsPage({ apiUrl, geminiApiKey, groqApiKey, onOpenApi
     }, []);
 
     useEffect(() => { fetchMeetings(); }, [fetchMeetings]);
+
+    // The recorder modal is now owned by App.jsx (so it survives navigating
+    // away from this page — see onOpenRecorder), but this page itself can
+    // still be reached without a fresh mount: a completion toast's "View"
+    // button, or the Action Items board's "open source meeting" link, both
+    // route through App.jsx's openMeetingId state and may target a page
+    // that's already showing. Watch initialMeetingId for changes instead of
+    // only reading it once so those deep links work even without a remount,
+    // and refetch since a newly-generated meeting wouldn't otherwise appear
+    // in the list until this page happens to remount.
+    useEffect(() => {
+        if (!initialMeetingId) return;
+        setActiveMeetingId(initialMeetingId);
+        fetchMeetings();
+    }, [initialMeetingId, fetchMeetings]);
 
     const checkStorageCapacity = useCallback(async () => {
         const estimate = await getStorageEstimate();
@@ -221,12 +228,6 @@ export function MeetingRecordsPage({ apiUrl, geminiApiKey, groqApiKey, onOpenApi
         }
     };
 
-    const handleMeetingGenerated = (payload) => {
-        setShowRecorderModal(false);
-        fetchMeetings();
-        if (payload?.meeting_id) setActiveMeetingId(payload.meeting_id);
-    };
-
     // Records only live in this browser's IndexedDB now — no server copy to
     // fall back on — so this is the only way to move them to a new device or
     // recover from a cleared browser profile. meetingIds omitted exports
@@ -283,7 +284,7 @@ export function MeetingRecordsPage({ apiUrl, geminiApiKey, groqApiKey, onOpenApi
             onOpenApiKeys();
             return;
         }
-        setShowRecorderModal(true);
+        onOpenRecorder();
     };
 
     return (
@@ -497,16 +498,6 @@ export function MeetingRecordsPage({ apiUrl, geminiApiKey, groqApiKey, onOpenApi
                     </div>
                 )}
             </div>
-
-            {showRecorderModal && (
-                <MeetingRecorderModal
-                    apiUrl={apiUrl}
-                    geminiApiKey={geminiApiKey}
-                    groqApiKey={groqApiKey}
-                    onClose={() => setShowRecorderModal(false)}
-                    onGenerated={handleMeetingGenerated}
-                />
-            )}
 
             {activeMeetingId && (
                 <MeetingMinutesView

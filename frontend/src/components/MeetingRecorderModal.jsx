@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Mic, Square, Upload, X, Loader2, RotateCcw, Download } from 'lucide-react';
+import { Mic, Square, Upload, X, Loader2, RotateCcw, Download, Minus } from 'lucide-react';
 import { readSseStream } from '../utils/sse';
 import { saveMeetingRecord, saveMeetingAudio } from '../utils/meetingStore';
 
@@ -92,7 +92,12 @@ function recordingFileExtension(mimeType) {
 
 // groqApiKey is set from the Meeting Records page, not here — this modal only
 // reads it (to send with the request and to disable submit when it's missing).
-export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose, onGenerated }) {
+// isMinimized/onMinimize/onExpand let the caller keep this component mounted
+// (so an in-progress recording or generation keeps running) while collapsing
+// it down to a small floating pill — see the isMinimized branch in the return
+// below. None of the pipeline logic above needs to know about this; it only
+// changes what gets rendered.
+export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose, onGenerated, isMinimized, onMinimize, onExpand }) {
     const [mode, setMode] = useState('upload');
     const [selectedFile, setSelectedFile] = useState(null);
     const [recordedBlob, setRecordedBlob] = useState(null);
@@ -569,6 +574,46 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
         }
     };
 
+    // Collapsed state: keeps recording/uploading/generating running in the
+    // background (this component never unmounts) while getting out of the
+    // way so the user can go do something else, e.g. keep chatting. Only a
+    // click-to-expand affordance here on purpose — Cancel/Discard stay
+    // exclusive to the full modal so they aren't duplicated in two places.
+    if (isMinimized) {
+        return (
+            <button
+                type="button"
+                onClick={onExpand}
+                className="fixed bottom-4 right-4 z-50 flex items-center gap-3 bg-white border border-[#DFDFDF] shadow-lg rounded-full pl-4 pr-5 py-3 hover:shadow-xl transition-shadow"
+                aria-label="Expand meeting recorder"
+            >
+                {isRecording ? (
+                    <>
+                        <span className="relative flex h-3 w-3 shrink-0">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
+                            <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500" />
+                        </span>
+                        <span className="text-sm font-medium text-[#111111]">Recording… {formatSeconds(recordingSeconds)}</span>
+                    </>
+                ) : isSubmitting ? (
+                    <>
+                        <Loader2 className="w-4 h-4 animate-spin text-[#0058A3] shrink-0" />
+                        <span className="text-sm font-medium text-[#111111]">{progressLabel || 'Processing…'}</span>
+                        {progressPercent != null && (
+                            <span className="text-xs text-[#767676] tabular-nums">{progressPercent}%</span>
+                        )}
+                    </>
+                ) : (
+                    <>
+                        <Mic className="w-4 h-4 text-[#0058A3] shrink-0" />
+                        <span className="text-sm font-medium text-[#111111]">Meeting recorder</span>
+                    </>
+                )}
+                <span className="text-xs text-[#0058A3] font-medium">Expand</span>
+            </button>
+        );
+    }
+
     return (
         <>
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={handleCancel}>
@@ -582,9 +627,14 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
                 <div className="p-6">
                     <div className="flex items-center justify-between mb-1">
                         <h2 id="meeting-recorder-heading" className="text-lg font-semibold text-[#111111]">Add Meeting Recording</h2>
-                        <button onClick={handleCancel} className="p-1 hover:bg-[#F5F5F5] rounded-full transition-colors" aria-label="Close">
-                            <X className="w-5 h-5 text-[#767676]" />
-                        </button>
+                        <div className="flex items-center gap-1">
+                            <button onClick={onMinimize} className="p-1 hover:bg-[#F5F5F5] rounded-full transition-colors" aria-label="Minimize">
+                                <Minus className="w-5 h-5 text-[#767676]" />
+                            </button>
+                            <button onClick={handleCancel} className="p-1 hover:bg-[#F5F5F5] rounded-full transition-colors" aria-label="Close">
+                                <X className="w-5 h-5 text-[#767676]" />
+                            </button>
+                        </div>
                     </div>
                     <p className="text-sm text-[#767676] mb-4">Upload a recording or record now, then I'll turn it into a structured meeting minutes document.</p>
 

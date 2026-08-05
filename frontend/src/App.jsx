@@ -19,6 +19,13 @@ const MeetingRecordsPage = lazy(() =>
     import('./components/MeetingRecordsPage').then((m) => ({ default: m.MeetingRecordsPage }))
 );
 
+// Rendered outside MeetingRecordsPage now (see recorderOpen below) so a
+// recording/upload/transcription in progress survives navigating to a
+// different page — lazy for the same reason as MeetingRecordsPage above.
+const MeetingRecorderModal = lazy(() =>
+    import('./components/MeetingRecorderModal').then((m) => ({ default: m.MeetingRecorderModal }))
+);
+
 // Same rationale as MeetingRecordsPage above, plus it pulls in @dnd-kit/core
 // for the drag-and-drop board — no reason to ship that to everyone either.
 const ActionItemsBoard = lazy(() =>
@@ -423,6 +430,18 @@ function App() {
     // from Meeting Records so a later plain visit to that page doesn't
     // reopen a stale deep link.
     const [openMeetingId, setOpenMeetingId] = useState(null);
+    // The recorder modal is owned here (not by MeetingRecordsPage) and
+    // rendered as a page-independent sibling below, specifically so an
+    // in-progress recording/upload/transcription survives navigating to a
+    // different page — minimizing it no longer means destroying it. Only
+    // one recorder session can be open at a time app-wide.
+    const [recorderOpen, setRecorderOpen] = useState(false);
+    const [recorderMinimized, setRecorderMinimized] = useState(false);
+    // Set once a background (minimized or on another page) generation
+    // finishes, so the user gets a dismissible confirmation with a way to
+    // jump to the result instead of being silently auto-navigated there —
+    // see openRecorder/handleRecorderGenerated below.
+    const [completedMeetingToast, setCompletedMeetingToast] = useState(null);
     const [loadingConvIds, setLoadingConvIds] = useState(new Set());
     const [convStatuses, setConvStatuses] = useState({});
     const [clarifyingConvId, setClarifyingConvId] = useState(null);
@@ -863,6 +882,43 @@ function App() {
         setApiKeyInput(geminiApiKey);
         setGroqApiKeyInput(groqApiKey);
         setShowApiKeyModal(true);
+    };
+
+    // Passed to MeetingRecordsPage as onOpenRecorder. The recorder modal
+    // itself lives outside the page-switching ternary below (see
+    // recorderOpen's render) specifically so it keeps running — recording,
+    // uploading, transcribing — no matter what page the user navigates to
+    // afterward.
+    const openRecorder = () => {
+        setRecorderMinimized(false);
+        setRecorderOpen(true);
+    };
+
+    const closeRecorder = () => {
+        setRecorderOpen(false);
+        setRecorderMinimized(false);
+    };
+
+    // Deliberately doesn't auto-navigate to the new meeting's minutes —
+    // generation now regularly finishes while the user is elsewhere (that's
+    // the whole point of minimizing), and yanking them away from whatever
+    // they're doing the moment it completes would be jarring. A dismissible
+    // toast with a "View" button lets them jump to it on their own terms.
+    const handleRecorderGenerated = (payload) => {
+        closeRecorder();
+        setCompletedMeetingToast(payload?.meeting_id ? {
+            meetingId: payload.meeting_id,
+            title: payload?.minutes?.meeting_title || 'Meeting minutes',
+        } : null);
+    };
+
+    const viewCompletedMeeting = () => {
+        if (!completedMeetingToast) return;
+        pendingScrollBehaviorRef.current = "auto";
+        setShowActionBoard(false);
+        setOpenMeetingId(completedMeetingToast.meetingId);
+        setShowMeetingsPage(true);
+        setCompletedMeetingToast(null);
     };
 
     // Saves whichever of the two API key drafts is non-empty and closes the
@@ -2174,7 +2230,7 @@ function App() {
                             <Loader2 className="w-6 h-6 animate-spin text-[#0058A3]" />
                         </div>
                     }>
-                        <MeetingRecordsPage apiUrl={API_URL} geminiApiKey={geminiApiKey} groqApiKey={groqApiKey} onOpenApiKeys={openApiKeysModal} initialMeetingId={openMeetingId} />
+                        <MeetingRecordsPage apiUrl={API_URL} groqApiKey={groqApiKey} onOpenApiKeys={openApiKeysModal} initialMeetingId={openMeetingId} onOpenRecorder={openRecorder} />
                     </Suspense>
                 ) : showActionBoard ? (
                     <Suspense fallback={
@@ -2597,6 +2653,50 @@ function App() {
                     </>
                 );
             })()}
+
+            {/* ── Meeting Recorder (page-independent — see recorderOpen) ── */}
+            {recorderOpen && (
+                <Suspense fallback={null}>
+                    <MeetingRecorderModal
+                        apiUrl={API_URL}
+                        geminiApiKey={geminiApiKey}
+                        groqApiKey={groqApiKey}
+                        isMinimized={recorderMinimized}
+                        onMinimize={() => setRecorderMinimized(true)}
+                        onExpand={() => setRecorderMinimized(false)}
+                        onClose={closeRecorder}
+                        onGenerated={handleRecorderGenerated}
+                    />
+                </Suspense>
+            )}
+
+            {/* ── Meeting generation completion toast ── */}
+            {completedMeetingToast && (
+                <div className="fixed bottom-4 left-4 z-50 flex items-center gap-3 bg-white border border-[#DFDFDF] shadow-lg rounded-xl px-4 py-3 max-w-sm">
+                    <FileAudio className="w-5 h-5 text-[#0058A3] shrink-0" />
+                    <div className="min-w-0">
+                        <p className="text-sm font-medium text-[#111111] truncate">{completedMeetingToast.title} is ready</p>
+                        <p className="text-xs text-[#767676]">Meeting minutes have been generated.</p>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                        <button
+                            type="button"
+                            onClick={viewCompletedMeeting}
+                            className="px-3 py-1.5 text-xs font-medium text-white bg-[#0058A3] hover:bg-[#004F93] rounded-lg transition-colors"
+                        >
+                            View
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => setCompletedMeetingToast(null)}
+                            className="p-1.5 hover:bg-[#F5F5F5] rounded-full transition-colors"
+                            aria-label="Dismiss"
+                        >
+                            <X className="w-4 h-4 text-[#767676]" />
+                        </button>
+                    </div>
+                </div>
+            )}
 
             {/* ── API Keys Modal ── */}
             {showApiKeyModal && (
