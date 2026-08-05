@@ -362,13 +362,14 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
     const overSizeLimit = audioFileBytes > MAX_UPLOAD_BYTES;
 
     // Header X / footer Cancel both funnel through here — the backdrop no
-    // longer does (see the outer div below): a stray click anywhere outside
-    // the panel used to close it outright, which was silently killing
-    // in-progress recordings and transcriptions the user never meant to
-    // interrupt. Termination is now only ever reachable through an explicit
-    // action (X, Cancel, or the confirm dialogs' own destructive buttons),
-    // and while anything is actually at risk of being lost, that action asks
-    // for confirmation first instead of cancelling immediately.
+    // longer does (it minimizes instead, see the outer div below): a stray
+    // click anywhere outside the panel used to close it outright, which was
+    // silently killing in-progress recordings and transcriptions the user
+    // never meant to interrupt. Termination is now only ever reachable
+    // through an explicit action (X, Cancel, or the confirm dialogs' own
+    // destructive buttons), and while anything is actually at risk of being
+    // lost, that action asks for confirmation first instead of cancelling
+    // immediately.
     //
     // Three things are "at risk" and guarded here: an in-flight generation
     // (isSubmitting), an active recording that hasn't been stopped yet
@@ -618,21 +619,24 @@ export function MeetingRecorderModal({ apiUrl, geminiApiKey, groqApiKey, onClose
                         <span className="text-sm font-medium text-[#111111]">Meeting recorder</span>
                     </>
                 )}
-                <span className="text-xs text-[#0058A3] font-medium">Expand</span>
             </button>
         );
     }
 
     return (
         <>
-        {/* No backdrop onClick here on purpose — see handleCancel's comment.
-            Closing only ever happens through the explicit X / Cancel below. */}
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+        {/* Backdrop click minimizes rather than closing/discarding — the
+            same reasoning as handleCancel below applies (a stray click
+            outside the panel shouldn't be able to interrupt anything), but
+            unlike the X/Cancel it doesn't even need to ask: minimizing never
+            loses work, it's always safe. */}
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onMinimize}>
             <div
                 role="dialog"
                 aria-modal="true"
                 aria-labelledby="meeting-recorder-heading"
                 className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto"
+                onClick={(e) => e.stopPropagation()}
             >
                 <div className="p-6">
                     <div className="flex items-center justify-between mb-1">
