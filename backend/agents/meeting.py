@@ -336,6 +336,22 @@ def _segments_to_text(segments: list) -> str:
 GROQ_RATE_LIMIT_MAX_RETRIES = 2
 GROQ_RATE_LIMIT_DEFAULT_WAIT_SECONDS = 60.0
 
+# Whisper is trained to always emit some caption-like text, even for pure
+# silence or background noise — it doesn't have a "nothing was said" output,
+# so it hallucinates plausible-sounding phrases instead (a well-documented
+# failure mode: mic permission granted but nothing spoken, a muted input
+# device, or a quiet gap in a longer meeting recording). Groq's verbose_json
+# response carries a per-segment `no_speech_prob` — the model's own estimate
+# that the segment contains no speech at all — so segments above this
+# threshold are dropped before anything downstream (voice input, meeting
+# transcripts) ever sees them. 0.6 matches OpenAI's own reference Whisper
+# implementation's default no_speech_threshold.
+NO_SPEECH_PROB_THRESHOLD = 0.6
+
+
+def _drop_silent_segments(segments: list) -> list:
+    return [seg for seg in segments if float(seg.get("no_speech_prob") or 0.0) <= NO_SPEECH_PROB_THRESHOLD]
+
 
 class GroqRateLimitError(Exception):
     """Raised when Groq's Whisper API is still rate-limiting a chunk after all retries are exhausted."""
@@ -392,7 +408,7 @@ async def _transcribe_bytes(
             )
         if response.status_code != 429:
             response.raise_for_status()
-            return response.json().get("segments") or []
+            return _drop_silent_segments(response.json().get("segments") or [])
 
         if attempt == GROQ_RATE_LIMIT_MAX_RETRIES:
             raise GroqRateLimitError(
